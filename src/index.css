@@ -1,0 +1,200 @@
+@import "tailwindcss";
+
+@theme {
+  /* system font stack — no web font download required for offline use */
+  --font-sans: "Inter", "Segoe UI", ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Space Grotesk", "Segoe UI", ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, "Roboto Mono", ui-monospace, monospace;
+
+  --color-ink-950: #070b12;
+  --color-ink-900: #0a111c;
+  --color-ink-850: #0d1520;
+  --color-ink-800: #111b29;
+  --color-ink-700: #182435;
+  --color-ink-600: #223249;
+  --color-ink-500: #33465f;
+  --color-ink-400: #51637d;
+  --color-ink-300: #7d8ea6;
+  --color-ink-200: #aebacd;
+  --color-ink-100: #dbe2ec;
+
+  --color-amber-glow: #f5b33c;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+/* smoother interactions across the app */
+button,
+input,
+select,
+textarea,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  opacity: 0.35;
+}
+input[type="number"]:hover::-webkit-outer-spin-button,
+input[type="number"]:hover::-webkit-inner-spin-button {
+  opacity: 1;
+}
+/* keep long lists from repainting the whole page */
+.list-perf {
+  content-visibility: auto;
+  contain-intrinsic-size: 72px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+body {
+  @apply bg-ink-950 text-ink-100 font-sans antialiased;
+  background-image:
+    radial-gradient(1200px 500px at 85% -10%, rgba(245, 179, 60, 0.055), transparent 60%),
+    radial-gradient(900px 600px at -10% 110%, rgba(56, 130, 246, 0.05), transparent 55%);
+  background-attachment: fixed;
+}
+
+::selection {
+  background: rgba(245, 179, 60, 0.35);
+  color: #fff;
+}
+
+/* ---------- scrollbars ---------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #22314a transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #22314a;
+  border-radius: 8px;
+  border: 2px solid #070b12;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------- common controls ---------- */
+.field-label {
+  @apply block text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-300 mb-1.5;
+}
+
+.inp {
+  @apply w-full rounded-lg border border-ink-600/70 bg-ink-900/90 px-3 py-2 text-sm text-ink-100 outline-none transition-all;
+  font-variant-numeric: tabular-nums;
+}
+.inp::placeholder {
+  color: #4a5a73;
+}
+.inp:hover {
+  border-color: #33465f;
+}
+.inp:focus {
+  border-color: #f5b33c;
+  box-shadow: 0 0 0 3px rgba(245, 179, 60, 0.15);
+}
+
+select.inp {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%237d8ea6' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 30px;
+}
+
+input[type="checkbox"].chk {
+  @apply h-4 w-4 rounded border-ink-500 bg-ink-800 accent-amber-500 cursor-pointer;
+}
+
+/* ---------- cards ---------- */
+.card {
+  @apply rounded-2xl border border-white/[0.055] bg-ink-850/90 shadow-[0_10px_40px_-12px_rgba(0,0,0,0.65)] backdrop-blur-sm;
+}
+
+.card-h {
+  @apply font-display text-[15px] font-semibold tracking-wide text-ink-100 flex items-center gap-2.5;
+}
+
+.hint {
+  @apply text-xs text-ink-300 leading-relaxed;
+}
+
+.sep {
+  @apply border-0 border-t border-white/[0.06] my-4;
+}
+
+/* ---------- tab nav ---------- */
+.tab-btn {
+  @apply relative flex items-center gap-2 whitespace-nowrap rounded-lg px-3.5 py-2 text-[13px] font-medium text-ink-300 transition-all duration-200 hover:text-ink-100 hover:bg-white/[0.04];
+}
+.tab-btn.active {
+  @apply text-ink-950 bg-amber-glow shadow-[0_4px_18px_-4px_rgba(245,179,60,0.55)];
+}
+.tab-btn.active svg {
+  stroke-width: 2.4;
+}
+
+/* ---------- misc animations ---------- */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.anim-rise {
+  animation: rise 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+.pulse-dot {
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+
+/* viewer canvas */
+.viewer-canvas canvas {
+  display: block;
+  border-radius: 12px;
+  outline: none;
+}
+
+/* table */
+.tbl th {
+  @apply text-left text-[10.5px] font-semibold uppercase tracking-[0.12em] text-ink-300 px-3 py-2 border-b border-white/[0.07];
+}
+.tbl td {
+  @apply px-3 py-1.5 text-[13px] border-b border-white/[0.04] text-ink-200;
+  font-variant-numeric: tabular-nums;
+}
+.tbl tr:hover td {
+  background: rgba(255, 255, 255, 0.025);
+}
