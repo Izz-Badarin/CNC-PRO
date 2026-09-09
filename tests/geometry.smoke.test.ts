@@ -3,7 +3,7 @@ import { layout3DCabs } from "../src/lib/layout3d";
 import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, doorHingeCount, makeCabinet } from "../src/lib/defaults";
 import { buildDxf, buildDxfForSheet } from "../src/lib/dxf";
 import { layoutCabs, overlapBoxes, panelPositions } from "../src/tabs/View2DTab";
-import { bomReportHtml, frontElevationHtml, frontElevationDxf, frontElevationSvg } from "../src/lib/export";
+import { bomReportHtml, frontElevationHtml, frontElevationDxf, frontElevationSvg, projectJson, readProjectFile } from "../src/lib/export";
 import { explodedReportHtml } from "../src/lib/explodedReport";
 import * as THREE from "three";
 import { OBJExporter } from "three/examples/jsm/exporters/OBJExporter.js";
@@ -692,9 +692,32 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   check("empty 3D bounds remain empty", modelBounds(new THREE.Group()).isEmpty());
 }
 
-if (failures) {
-  console.log(`\n${failures} test(s) FAILED`);
-  process.exit(1);
-} else {
-  console.log("\nAll tests passed.");
-}
+/* 22 — saved project round-trip must keep raw panels (Save .json → reopen) */
+const roundTripPanels = (async () => {
+  const cabs = [makeCabinet("base", 600, 720, 560, "Saved-01")];
+  const project = {
+    name: "RoundTrip",
+    type: "kitchen",
+    customerId: null,
+    status: "draft",
+    notes: "",
+    panels: [
+      { id: "p1", name: "Oak Panel", side: "L", w: 1200, h: 600, thk: 0, mat: "mdf", finish: "oak" },
+    ],
+  } as any;
+  const json = projectJson(cabs, S, project);
+  const data = JSON.parse(json);
+  check("save json includes project.panels", Array.isArray(data.project?.panels) && data.project.panels.length === 1);
+  const loaded = await readProjectFile(new File([json], "project.json", { type: "application/json" }));
+  check("load returns project with panels", loaded.project?.panels?.length === 1 && loaded.project.panels[0].name === "Oak Panel");
+  check("load still returns cabinets", loaded.cabinets.length === 1 && loaded.cabinets[0].id === cabs[0].id);
+})();
+
+roundTripPanels.then(() => {
+  if (failures) {
+    console.log(`\n${failures} test(s) FAILED`);
+    process.exit(1);
+  } else {
+    console.log("\nAll tests passed.");
+  }
+});

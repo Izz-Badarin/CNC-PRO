@@ -19,7 +19,7 @@ import {
 } from "./model";
 import { nestParts } from "./nesting";
 import { layoutCabs, panelPositions } from "./layout2d";
-import { plyMaterialById, partMatName } from "./defaults";
+import { plyMaterialById, partMatName, SETTINGS_VERSION, type LibraryItem } from "./defaults";
 
 const allParts = (c: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = []) => allPartsMerged(c, S, ov, panels);
 
@@ -749,14 +749,38 @@ export function bomReportHtml(
   </body></html>`;
 }
 
-export function projectJson(cabs: Cabinet[], S: Settings): string {
-  return JSON.stringify({ version: 5, settings: S, cabinets: cabs }, null, 2);
+export interface ProjectFileData {
+  version?: number;
+  settings?: Settings;
+  cabinets: Cabinet[];
+  project?: ProjectInfo;
+  customers?: Customer[];
+  library?: LibraryItem[];
+  grain?: GrainOverrides;
 }
 
-export async function readProjectFile(file: File): Promise<{ cabinets: Cabinet[]; settings?: Settings }> {
+export function projectJson(cabs: Cabinet[], S: Settings, project?: ProjectInfo, customers?: Customer[], library?: LibraryItem[], grain?: GrainOverrides): string {
+  return JSON.stringify({ version: SETTINGS_VERSION, settings: S, cabinets: cabs, project, customers, library, grain }, null, 2);
+}
+
+/**
+ * Read a saved project .json. Returns EVERYTHING the Save button wrote —
+ * cabinets, settings AND project (which carries the raw panels), customers,
+ * library and grain. Returning only cabinets/settings is what caused panels
+ * to vanish when reopening a saved file.
+ */
+export async function readProjectFile(file: File): Promise<ProjectFileData> {
   const text = await file.text();
   const data = JSON.parse(text);
   if (Array.isArray(data)) return { cabinets: data };
-  if (data.cabinets) return { cabinets: data.cabinets, settings: data.settings };
+  if (data.cabinets)
+    return {
+      cabinets: data.cabinets,
+      settings: data.settings,
+      project: data.project,
+      customers: data.customers,
+      library: data.library,
+      grain: data.grain,
+    };
   throw new Error("Invalid project file");
 }
