@@ -1,11 +1,8 @@
 import { useEffect, useRef } from "react";
 import type { Cabinet, PanelItem, Settings } from "../types";
-import { CabinetViewer, type ViewStyle } from "../three/scene";
+import { CabinetViewer } from "../three/scene";
 import { useDebounced } from "../lib/useDebounced";
 import * as THREE from "three";
-
-// Stable defaults: a fresh [] would retrigger useDebounced and rebuild forever.
-const EMPTY_PANELS: PanelItem[] = [];
 
 export function ThreeCanvas({
   cabinets,
@@ -15,12 +12,7 @@ export function ThreeCanvas({
   doorsOpen = false,
   drawersOpen = false,
   followLayout = false,
-  panels = EMPTY_PANELS,
-  viewStyle = "realistic",
-  showEdges = false,
-  showLabels = false,
-  showRoom = false,
-  framing = 1,
+  panels = [],
   onReady,
   onCabinetClick,
   className,
@@ -33,16 +25,6 @@ export function ThreeCanvas({
   drawersOpen?: boolean;
   followLayout?: boolean;
   panels?: PanelItem[];
-  /** realistic = textured render · technical = panel outlines · blueprint = x-ray */
-  viewStyle?: ViewStyle;
-  /** outline every panel (crisp CAD-style edges) */
-  showEdges?: boolean;
-  /** name + size tag floating above every cabinet */
-  showLabels?: boolean;
-  /** back wall + floor — the run sits in a room instead of a void */
-  showRoom?: boolean;
-  /** manual zoom of the automatic framing: 0.5 = closer, 2 = further out */
-  framing?: number;
   onReady?: (v: CabinetViewer) => void;
   onCabinetClick?: (cab: Cabinet | null) => void;
   className?: string;
@@ -105,26 +87,6 @@ export function ThreeCanvas({
   }, [showDims]);
 
   useEffect(() => {
-    viewerRef.current?.setStyle(viewStyle);
-  }, [viewStyle]);
-
-  useEffect(() => {
-    viewerRef.current?.setEdges(showEdges);
-  }, [showEdges]);
-
-  useEffect(() => {
-    viewerRef.current?.setCabinetTags(showLabels);
-  }, [showLabels]);
-
-  useEffect(() => {
-    viewerRef.current?.setRoom(showRoom);
-  }, [showRoom]);
-
-  useEffect(() => {
-    viewerRef.current?.setFraming(framing);
-  }, [framing]);
-
-  useEffect(() => {
     if (viewerRef.current) viewerRef.current.doorsOpen = doorsOpen;
   }, [doorsOpen]);
 
@@ -133,7 +95,7 @@ export function ThreeCanvas({
   }, [drawersOpen]);
 
   return (
-    <div ref={ref} className={`viewer-canvas ${className ?? ""}`} style={{ width: "100%", height: "100%", minWidth: 0, overflow: "hidden", cursor: onCabinetClick ? "pointer" : "default" }} onClick={onCabinetClick ? onClick : undefined} />
+    <div ref={ref} className={className} style={{ cursor: onCabinetClick ? "pointer" : "default" }} onClick={onCabinetClick ? onClick : undefined} />
   );
 }
 
