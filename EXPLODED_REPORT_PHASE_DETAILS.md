@@ -250,3 +250,48 @@ gh pr create --title "Exploded per-cabinet report" --body-file EXPLODED_REPORT_P
 ## 8. No act in this turn
 
 This file is documentation only. No source files edited.
+
+---
+
+## Phase 15 – Report fixes + interactive explode + nesting FFD (2026-09-09)
+
+**STATUS:** implemented & tested (tsc, `npm test`, vite build green).
+
+User-reported defects fixed:
+
+1. **2D exploded schematic was wrong** – parts were drawn shifted right by their own
+   width (`x += cw` ran BEFORE `rx = x - cellPad`), so wide parts overflowed the page.
+   Fixed in `explodedCabinetSvg` (draw at cell start, then advance). Verified: 0 shapes
+   outside the viewBox on the user's 755×2680×595 cabinet and a 7-cabinet project.
+2. **3D photos: bigger + cabinet only** – per-cab captures now 1280×960 (was 640×480),
+   q 0.92, 2×2 grid (`.auto4`, max-height 440px) on a full-width report section, and
+   `captureCabinetShots` no longer feeds project `panels` into the viewer, so the
+   photos show ONLY the cabinet. New 4th shot: **EXPLODED 3D** via
+   `CabinetViewer.setExploded(scale)` (per-part offsets: sides ±X, tops +Y fanned by
+   height, bottoms −Y, back −Z, doors/handles +Z, drawers +Z, kick +Z; dims hidden
+   while exploded; camera re-frames on transitions only).
+3. **Front Elevation (single) bigger** – `frontElevationSvg` gained a TIGHT mode for
+   single-cabinet/no-panels calls: canvas follows the cabinet aspect (portrait
+   allowed, up to 1560×2300), rendered full-width in the report.
+4. **Open Door View hinge count** – leaves now carry the REAL count + cup positions
+   (`effectiveHingeCount` + `hingeCupYs`, 140mm-from-ends rule, user override wins),
+   drawn on the hinged edge with an "n× Ø35" tag; sliding doors show a track instead
+   of cups; door/leaf widths drawn at true scale (clamped to the canvas margins);
+   suppressed doors (fixed panel / visible drawers / cabinet full door) are no longer
+   drawn. The same suppression + counting rules were unified across
+   `perCabinetHardware`, the BOM (BomTab), and `glassDoorRefs` (which previously
+   listed hinges for doors the generator suppresses).
+5. **Dynamic explode toggle in the report HTML** – new "Interactive Exploded View
+   (2.5D)" page per cabinet: dimetric SVG (sx=(x−z)·cos30, sy=(x+z)·sin30−y, painter
+   sort by x+z) with a slider 0…1 + Assembled/Exploded buttons, ~4 KB of inline JS,
+   pre-rendered at t=1 for print/no-JS (beforeprint resets to exploded), hinge cups
+   fade in with the explode. Plus an **Explode** toggle in the 3D View tab
+   (`ThreeCanvas` → `viewer.setExploded`).
+6. **Nesting: FFD + lexicographic score** (previous session, still verified here) –
+   `maxRectsFFD` + `FFD_SORTS` in both sync and budget paths, candidates scored by
+   [unplaced, sheets, sorted-util-desc] computed from `usedArea/sheetArea`.
+   7-cabinet probe: back 3 sheets [85.3/57.4/35.0], plywood 7 sheets
+   [91.0/89.8/90.7/89.1/74.1/68.8/56.5] — last sheet 39.6%→56.5%, 0 unplaced.
+
+Known physical limit (not a bug): parts LONGER than the sheet (e.g. a 2580mm side on
+a 2440×1220 board) remain unplaced and are listed in the report's Unplaced column.

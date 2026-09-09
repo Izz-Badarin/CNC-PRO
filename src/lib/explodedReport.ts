@@ -7,10 +7,15 @@ import {
   type RotationOverrides,
   bandingByMaterial,
   columnFaceWidth,
+  columnFaceX,
   columnLayout,
+  coverPanelDims,
+  coverCenterX,
   doorDims,
-  doorHingeCount,
   drawerBank,
+  drawerBoxDims,
+  effectiveHingeCount,
+  hingeCupYs,
   kickH as modelKickH,
   stackOn as modelStackOn,
   stackedHeights as modelStackedHeights,
@@ -112,11 +117,12 @@ function explodedCabinetSvg(cab: Cabinet, S: Settings, grain: GrainOverrides, ro
       rowH = 0;
     }
     rowH = Math.max(rowH, ch);
-    x += cw;
-
+    // draw FIRST at the cell's left edge, then advance — drawing after the
+    // advance shifted every part right by its own width (overflowed the page)
     const st = style(p);
-    const rx = x - cellPad;
+    const rx = x;
     const ry = y + 14;
+    x += cw;
     // real cut outline for polygon parts, plain rect otherwise
     if (p.shape === "poly" && p.outline.length > 2) {
       const xs = p.outline.map((pt) => pt[0]);
@@ -183,6 +189,446 @@ function explodedCabinetSvg(cab: Cabinet, S: Settings, grain: GrainOverrides, ro
 
   out += `</svg>`;
   return out;
+}
+
+/* ================= interactive exploded diagram (dynamic in the HTML) =================
+ * A 2.5D (dimetric) cabinet drawing rendered as SVG + a tiny inline script.
+ * Every part is a box with an ASSEMBLED position (from the same layout math
+ * as the part generator) and an EXPLODE offset vector. The report ships the
+ * diagram pre-rendered at t = 1 (exploded — safe for print / no-JS), and the
+ * inline script re-projects the same data for any slider value t ∈ [0,1]:
+ *   0 = fully assembled · 1 = fully exploded.
+ * The projection is a classic 30° dimetric:
+ *   sx = (x − z)·cos30   sy = (x + z)·sin30 − y      (y up, z toward viewer)
+ * and the painter's order sorts by (x+z, y) — boxes never interpenetrate, so
+ * that ordering is exact. No external assets — a few hundred bytes of JS.
+ */
+
+interface XpPart {
+  /** short name for the label */
+  n: string;
+  /** label line, e.g. "2580 × 571 × 16.5" (L×W×T, longest first) */
+  l: string;
+  /** assembled box: origin (x,y,z) mm + size (w,h,d) mm — y up, z = front */
+  x: number; y: number; z: number; w: number; h: number; d: number;
+  /** explode offset vector (mm) — final pos = box + t·off */
+  ox: number; oy: number; oz: number;
+  /** [top, front, right] face fills */
+  c: [string, string, string];
+  /** hinge cups for door leaves (mm cup offset from the leaf's left edge, ys from leaf bottom) */
+  hc?: { n: number; ys: number[]; cx: number; dia: number };
+}
+
+const XP_PAL: Record<string, [string, string, string]> = {
+  ply: ["#ecd8ab", "#dfc493", "#c1a06c"],
+  mdf: ["#f4f1ea", "#e9e4d7", "#cfc8b7"],
+  oak: ["#cfa471", "#c0925c", "#9d7445"],
+  back: ["#dcc79e", "#d0b88c", "#b29a72"],
+  kick: ["#d9ba8b", "#cdaa76", "#ae8d58"],
+  drawer: ["#e5d0a4", "#d8bf8c", "#ba9e66"],
+  glass: ["rgba(196,224,242,0.60)", "rgba(176,210,232,0.55)", "rgba(146,186,214,0.50)"],
+};
+
+const XP_C30 = 0.8660254; // cos(30°) — MUST match the inline JS
+const XP_S30 = 0.5; // sin(30°)
+
+/** project a cabinet-space point (mm) to canvas px */
+const xpProj = (px: number, py: number, pz: number, o: { x: number; y: number }, s: number): [number, number] => [
+  o.x + (px - pz) * XP_C30 * s,
+  o.y + ((px + pz) * XP_S30 - py) * s,
+];
+
+function xpDimsLabel(w: number, h: number, d: number): string {
+  const a = [w, h, d].sort((x, y) => y - x).map((v) => (Math.round(v * 10) / 10).toString());
+  return `${a[0]} × ${a[1]} × ${a[2]}`;
+}
+
+/**
+ * Build the placed boxes for ONE cabinet — the same layout math as the part
+ * generator (rows → columns → drawer bank → shelf zone → doors), so every box
+ * sits exactly where its cut part would sit in the real cabinet.
+ */
+function buildExplodeParts(cab: Cabinet, S: Settings): XpPart[] {
+  const T = S.bodyThk;
+  const BT = S.backThk;
+  const W = cab.width, H = cab.height, D = cab.depth;
+  const kick = modelKickH(cab, S);
+  const BH = H - kick;
+  const carcD = D - BT; // carcass front lands exactly at z = D
+  const parts: XpPart[] = [];
+  const add = (p: Omit<XpPart, "l" | "n">, name: string) =>
+    parts.push({ ...p, n: name, l: xpDimsLabel(p.w, p.h, p.d) });
+
+  if (cab.type === "L" || cab.type === "C" || cab.type === "cornerBase" || cab.type === "cornerWall") {
+    // corner units — approximate body so the interactive view still shows the
+    // cabinet (sides as the two walls, top, bottom, back); details in cut list
+    const d = D;
+    add({ x: 0, y: kick, z: BT, w: T, h: BH, d: d, ox: -0.45 * W, oy: 0, oz: 0, c: XP_PAL.ply }, "Side panel L (notched)");
+    add({ x: W - T, y: kick, z: BT, w: T, h: BH, d: d, ox: 0.45 * W, oy: 0, oz: 0, c: XP_PAL.ply }, "Side panel R (notched)");
+    add({ x: T, y: H - T, z: BT, w: W - 2 * T, h: T, d: d, ox: 0, oy: 0.35 * BH, oz: 0, c: XP_PAL.ply }, "Top (pentagon)");
+    add({ x: T, y: kick, z: BT, w: W - 2 * T, h: T, d: d, ox: 0, oy: -0.2 * H, oz: 0, c: XP_PAL.ply }, "Bottom (pentagon)");
+    if (cab.hasBack !== false) add({ x: 1, y: kick, z: 0, w: W - 2, h: BH, d: BT, ox: 0, oy: 0, oz: -0.5 * D, c: XP_PAL.back }, "Back");
+    if (kick > 0) add({ x: T, y: 0, z: D - S.kickDepth, w: W - 2 * T, h: kick, d: S.kickDepth, ox: 0, oy: -0.12 * H, oz: 0.5 * D, c: XP_PAL.kick }, "Toe kick front");
+    return parts;
+  }
+
+  const stacked = modelStackOn(cab);
+  const rows = cab.rows;
+  const rowY0: number[] = [];
+  {
+    let y = kick;
+    rows.forEach((r) => {
+      rowY0.push(y);
+      y += r.h;
+    });
+  }
+
+  // ---- kick ----
+  if (kick > 0) {
+    add({ x: T, y: 0, z: D - S.kickDepth, w: W - 2 * T, h: kick, d: S.kickDepth, ox: 0, oy: -0.14 * H, oz: 0.5 * D, c: XP_PAL.kick }, "Toe kick front");
+    add({ x: 0, y: 0, z: D - S.kickDepth, w: T, h: kick, d: S.kickDepth, ox: -0.3 * W, oy: -0.14 * H, oz: 0.5 * D, c: XP_PAL.kick }, "Toe kick side L");
+    add({ x: W - T, y: 0, z: D - S.kickDepth, w: T, h: kick, d: S.kickDepth, ox: 0.3 * W, oy: -0.14 * H, oz: 0.5 * D, c: XP_PAL.kick }, "Toe kick side R");
+  }
+
+  // ---- back: one per box (stacked) or one for the whole body ----
+  if (cab.hasBack !== false) {
+    if (stacked) {
+      rows.forEach((r, ri) =>
+        add({ x: 1, y: rowY0[ri], z: 0, w: W - 2, h: r.h, d: BT, ox: 0, oy: 0, oz: -0.5 * D, c: XP_PAL.back }, `Back R${ri + 1}`),
+      );
+    } else {
+      add({ x: 1, y: kick, z: 0, w: W - 2, h: BH, d: BT, ox: 0, oy: 0, oz: -0.5 * D, c: XP_PAL.back }, "Back");
+    }
+  }
+
+  // ---- carcass per box/row ----
+  rows.forEach((row, ri) => {
+    const y0 = rowY0[ri], y1 = y0 + row.h;
+    const tag = rows.length > 1 ? ` R${ri + 1}` : "";
+    // sides
+    add({ x: 0, y: y0, z: BT, w: T, h: row.h, d: carcD, ox: -0.45 * W, oy: 0, oz: 0, c: XP_PAL.ply }, `Side panel L${tag}`);
+    add({ x: W - T, y: y0, z: BT, w: T, h: row.h, d: carcD, ox: 0.45 * W, oy: 0, oz: 0, c: XP_PAL.ply }, `Side panel R${tag}`);
+    // bottom + top
+    add({ x: T, y: y0, z: BT, w: W - 2 * T, h: T, d: carcD, ox: 0, oy: (y0 <= kick + 1 ? -0.2 : -0.08) * H, oz: 0, c: XP_PAL.ply }, `Bottom${tag}`);
+    add({ x: T, y: y1 - T, z: BT, w: W - 2 * T, h: T, d: carcD, ox: 0, oy: 0.32 * H * (0.4 + 0.6 * (y1 / H)), oz: 0, c: XP_PAL.ply }, `Top${tag}`);
+    // row divider (multi-row, non-stacked)
+    if (!stacked && ri < rows.length - 1)
+      add({ x: T, y: y1 - T, z: BT, w: W - 2 * T, h: T, d: carcD, ox: 0, oy: 0.16 * H, oz: 0, c: XP_PAL.ply }, `Row section R${ri + 1}/R${ri + 2}`);
+
+    // ---- columns ----
+    const lays = columnLayout(cab, row, S);
+    lays.forEach((lay, ci) => {
+      const col = lay.col;
+      const innerX = T + lay.x;
+      const faceX = columnFaceX(lay, S);
+      const faceW = lays.length === 1 ? W : columnFaceWidth(cab, lay, S);
+      const cTag = lays.length > 1 ? ` R${ri + 1}C${ci + 1}` : ` R${ri + 1}`;
+      // vertical divider between columns
+      if (!lay.last)
+        add({ x: innerX + lay.w, y: y0 + T, z: BT, w: T, h: row.h - T - S.dividerDeduct, d: carcD, ox: 0, oy: 0.25 * H, oz: 0.3 * D, c: XP_PAL.ply }, `Vertical divider${cTag}`);
+
+      const hasDr = columnHasDrawers(col);
+      const allHidden = hasDr && col.drawers.every((dr) => dr.hidden);
+      const bank = hasDr ? drawerBank(col, row.h, S) : { y: 0, h: 0 };
+      const aboveBank = (col.drawerAlign ?? "bottom") !== "top";
+      const zoneY = hasDr ? (aboveBank ? bank.y + bank.h : 0) : 0;
+      const zoneH = hasDr ? (aboveBank ? row.h - bank.y - bank.h : bank.y) : row.h;
+      const shelfYs = (n: number): number[] => {
+        if (n <= 0 || zoneH <= 0) return [];
+        if (col.shelfMode === "manual" && (col.shelfPositions?.length ?? 0) > 0)
+          return (col.shelfPositions ?? []).slice(0, n).map((yy) => zoneY + Math.min(Math.max(yy, 4), Math.max(4, zoneH - 4)));
+        return Array.from({ length: n }, (_, k) => zoneY + (zoneH * (k + 1)) / (n + 1));
+      };
+
+      // MDF niche back
+      if (col.mdfBack)
+        add({ x: faceX, y: y0, z: BT, w: faceW, h: row.h, d: col.mdfBackThk ?? S.mdfThk, ox: 0, oy: 0, oz: -0.28 * D, c: XP_PAL.mdf }, `MDF back panel${cTag}`);
+
+      // shelves
+      shelfYs(col.shelves).forEach((sy, k) => {
+        const sh = (aboveBank ? k : col.shelves - 1 - k); // fan order
+        add({ x: innerX + (lay.w - (lay.w - S.shelfIncrease)) / 2, y: y0 + sy, z: BT, w: lay.w - S.shelfIncrease, h: T, d: carcD - S.shelfFrontSetback, ox: 0, oy: 0.06 * H + 40 * sh, oz: 0.55 * D + 25 * sh, c: XP_PAL.ply }, `Shelf${cTag} #${k + 1}`);
+      });
+
+      // rail shelves
+      if (col.rail && col.rail !== "off" && col.railShelf) {
+        railShelfYs(col, S, row.h).forEach((sy, k) =>
+          add({ x: innerX, y: y0 + sy, z: BT, w: lay.w - S.shelfIncrease, h: T, d: carcD - S.shelfFrontSetback, ox: 0, oy: 0.06 * H + 40 * k, oz: 0.55 * D + 25 * k, c: XP_PAL.ply }, `Shelf above rail${cTag} #${k + 1}`),
+        );
+      }
+
+      // drawers: fronts + boxes + splitter
+      if (hasDr) {
+        let dy = bank.y;
+        col.drawers.forEach((dr, k) => {
+          const fT = dr.frontMdf ? S.mdfThk : S.drawerThk;
+          const front: [string, string, string] = dr.frontMdf ? (S.mdfFinish === "oak" ? XP_PAL.oak : XP_PAL.mdf) : XP_PAL.ply;
+          add({ x: faceX, y: y0 + dy, z: D - fT, w: faceW, h: dr.frontHeight, d: fT, ox: 0, oy: 0, oz: 1.25 * D + 25 * k, c: front }, `${dr.hidden ? "Hidden " : ""}Drawer front${cTag} #${k + 1}`);
+          const dims = drawerBoxDims(faceW, dr, S);
+          add({ x: innerX + (lay.w - dims.boxW) / 2, y: y0 + dy, z: BT, w: dims.boxW, h: dims.sideH, d: dims.boxD, ox: 0, oy: 0, oz: 1.7 * D + 25 * k, c: XP_PAL.drawer }, `Drawer box${cTag} #${k + 1}`);
+          dy += dr.frontHeight;
+        });
+        if (col.splitter)
+          add({ x: innerX, y: y0 + bank.y + bank.h - T, z: BT, w: lay.w, h: T, d: carcD - S.shelfFrontSetback, ox: 0, oy: 0.1 * H, oz: 0.8 * D, c: XP_PAL.ply }, `Drawer splitter${cTag}`);
+        (col.splitterShelves ?? 0) > 0 &&
+          add({ x: innerX, y: y0 + bank.y + bank.h + T, z: BT, w: lay.w - S.shelfIncrease, h: T, d: carcD - S.shelfFrontSetback, ox: 0, oy: 0.12 * H, oz: 0.8 * D, c: XP_PAL.ply }, `Shelf above splitter${cTag}`);
+      }
+
+      // fixed panel
+      if (col.fixed)
+        add({ x: innerX, y: y0 + T, z: BT, w: lay.w, h: row.h - 2 * T, d: carcD - S.shelfFrontSetback, ox: 0, oy: 0.05 * H, oz: 0.6 * D, c: XP_PAL.ply }, `Fixed panel${cTag}`);
+
+      // doors (same suppression as the generator)
+      const cabDoor = stacked && !!cab.fullDoor && cab.fullDoor !== "off";
+      const fullCols = new Set<number>();
+      rows.forEach((r) => r.columns.forEach((c, i) => { if (c.door && c.door.full) fullCols.add(i); }));
+      const suppressed = cabDoor || (fullCols.has(ci) ? col.door !== null && !col.door.full : false);
+      if (col.door && !col.fixed && (!hasDr || allHidden) && !suppressed) {
+        const door = col.door;
+        const span = door.full ? BH : row.h;
+        const dd = doorDims(faceW, span, door, S);
+        const fT = door.material === "mdf" ? S.mdfThk : S.bodyThk;
+        const pal = door.material === "glass" ? XP_PAL.glass : door.material === "mdf" ? (S.mdfFinish === "oak" ? XP_PAL.oak : XP_PAL.mdf) : XP_PAL.ply;
+        const dY = door.full ? kick + (BH - dd.h) / 2 : y0 + (row.h - dd.h) / 2;
+        const gapOuter = door.style === "inset" ? S.bodyThk + S.doorGap : S.doorGap;
+        const gapMid = dd.count === 2 ? Math.max(4, faceW - 2 * gapOuter - 2 * dd.w) : 0;
+        const totalW = dd.count === 1 ? dd.w : 2 * dd.w + gapMid;
+        const x0 = faceX + (faceW - totalW) / 2;
+        const nH = effectiveHingeCount(door, dd.h);
+        const cups = hingeCupYs(dd.h, nH);
+        const cupL = (j: number) => {
+          const hingedLeft = dd.count === 1 ? door.swing === "left" : j === 0;
+          return hingedLeft ? S.hingeCupEdge : dd.w - S.hingeCupEdge;
+        };
+        for (let j = 0; j < dd.count; j++) {
+          const lx = door.type === "sliding" ? faceX + j * (faceW - dd.w) / 2 : x0 + j * (dd.w + gapMid);
+          const zOff = door.type === "sliding" && j === 1 ? fT + 5 : 0;
+          const dName =
+            door.type === "sliding"
+              ? `Sliding door${cTag} #${j + 1}`
+              : `Door${cTag}${dd.count === 2 ? (j === 0 ? " L" : " R") : ""}`;
+          add(
+            { x: lx, y: dY, z: D - fT + zOff, w: dd.w, h: dd.h, d: fT, ox: dd.count === 2 ? (j === 0 ? -0.1 : 0.1) * W : 0, oy: 0.06 * H, oz: 0.85 * D + zOff, c: pal },
+            dName,
+          );
+          // hinge cups ride along on the data so the JS can mark them (t>0.35)
+          parts[parts.length - 1].hc = { n: nH, ys: cups, cx: cupL(j), dia: S.hingeCupDiameter };
+        }
+      }
+    });
+  });
+
+  // ---- cabinet-level full door (stacked cabinets only, like the generator) ----
+  if (stacked && cab.fullDoor && cab.fullDoor !== "off") {
+    const raw = cab.fullDoor as string;
+    const suffix = raw.includes("-") ? raw.split("-")[1] : "";
+    const type: "double" | "single" = suffix === "double" ? "double" : suffix === "left" || suffix === "right" ? "single" : W > 620 ? "double" : "single";
+    const fd: any = {
+      type, style: "overlay", swing: suffix === "right" ? "right" : "left",
+      material: raw.startsWith("glass") ? "glass" : "mdf", mdfThk: S.mdfThk,
+      hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true, hingeCount: cab.fullDoorHinges,
+    };
+    const dd = doorDims(W, BH, fd, S);
+    const fT = S.mdfThk;
+    const pal = fd.material === "glass" ? XP_PAL.glass : XP_PAL.mdf;
+    const gapMid = dd.count === 2 ? Math.max(4, W - 2 * S.doorGap - 2 * dd.w) : 0;
+    const totalW = dd.count === 1 ? dd.w : 2 * dd.w + gapMid;
+    const nH = effectiveHingeCount(fd, dd.h);
+    const cups = hingeCupYs(dd.h, nH);
+    for (let j = 0; j < dd.count; j++) {
+      const lx = (W - totalW) / 2 + j * (dd.w + gapMid);
+      const cupL = dd.count === 1 ? (fd.swing === "left" ? S.hingeCupEdge : dd.w - S.hingeCupEdge) : j === 0 ? S.hingeCupEdge : dd.w - S.hingeCupEdge;
+      add(
+        { x: lx, y: kick + (BH - dd.h) / 2, z: D - fT, w: dd.w, h: dd.h, d: fT, ox: dd.count === 2 ? (j === 0 ? -0.1 : 0.1) * W : 0, oy: 0.08 * H, oz: 0.9 * D, c: pal },
+        `Full door${dd.count === 2 ? (j === 0 ? " L" : " R") : ""}`,
+      );
+      (parts[parts.length - 1] as any).hc = { n: nH, ys: cups, cx: cupL, dia: S.hingeCupDiameter };
+    }
+  }
+
+  // ---- cover panels (same dims + centering as the 3D/2D views) ----
+  (cab.covers ?? []).forEach((cv) => {
+    const dims = coverPanelDims(cab, S, cv);
+    const pal = cv.mat === "mdf" ? (cv.finish ?? S.mdfFinish) === "oak" ? XP_PAL.oak : XP_PAL.mdf : XP_PAL.ply;
+    const cx = coverCenterX(cab, S);
+    if (cv.side === "L")
+      add({ x: -dims.thk, y: 0, z: (D - dims.w) / 2, w: dims.thk, h: dims.h, d: dims.w, ox: -0.28 * W, oy: 0, oz: 0, c: pal }, "Cover panel L");
+    else if (cv.side === "R")
+      add({ x: W, y: 0, z: (D - dims.w) / 2, w: dims.thk, h: dims.h, d: dims.w, ox: 0.28 * W, oy: 0, oz: 0, c: pal }, "Cover panel R");
+    else if (cv.side === "T")
+      add({ x: cx - dims.w / 2, y: H, z: (D - dims.h) / 2, w: dims.w, h: dims.thk, d: dims.h, ox: 0, oy: 0.3 * H + 40, oz: 0, c: pal }, "Cover panel T");
+    else
+      add({ x: cx - dims.w / 2, y: -kick - dims.thk, z: (D - dims.h) / 2, w: dims.w, h: dims.thk, d: dims.h, ox: 0, oy: -0.28 * H, oz: 0, c: pal }, "Cover panel B");
+  });
+
+  return parts;
+}
+
+/** project ALL corners of a part box (at explode factor t) into canvas px */
+function xpBoxCorners(p: XpPart, t: number, o: { x: number; y: number }, s: number): [number, number][] {
+  const x = p.x + p.ox * t, y = p.y + p.oy * t, z = p.z + p.oz * t;
+  return (
+    [
+      [x, y, z], [x + p.w, y, z], [x + p.w, y + p.h, z], [x, y + p.h, z],
+      [x, y, z + p.d], [x + p.w, y, z + p.d], [x + p.w, y + p.h, z + p.d], [x, y + p.h, z + p.d],
+    ] as [number, number, number][]
+  ).map((c) => xpProj(c[0], c[1], c[2], o, s));
+}
+
+/** render one part box as three face polygons (right, front, top) */
+function xpFaces(p: XpPart, t: number, o: { x: number; y: number }, s: number): { pts: [number, number][]; fill: string }[] {
+  const c = xpBoxCorners(p, t, o, s);
+  // c: 0=x0y0z0 1=x1y0z0 2=x1y1z0 3=x0y1z0 4=x0y0z1 5=x1y0z1 6=x1y1z1 7=x0y1z1
+  const f = (idx: number[], fill: string) => ({ pts: idx.map((i) => c[i]), fill });
+  return [
+    f([1, 5, 6, 2], p.c[2]), // right
+    f([4, 5, 6, 7], p.c[1]), // front
+    f([3, 7, 6, 2], p.c[0]), // top
+  ];
+}
+
+const f1 = (n: number) => (Math.round(n * 100) / 100).toString();
+
+/** static (t=1) SVG of the exploded diagram — the print / no-JS fallback */
+function renderExplodeStatic(parts: XpPart[], o: { x: number; y: number }, s: number, VW: number, VH: number): string {
+  const list = parts
+    .map((p) => ({ p, depth: p.x + p.ox + p.w + p.z + p.oz + p.d, topY: p.y + p.oy + p.h }))
+    .sort((a, b) => a.depth - b.depth || a.topY - b.topY);
+  let out = `<rect width="${VW}" height="${VH}" fill="#ffffff"/>`;
+  for (const { p } of list) {
+    const faces = xpFaces(p, 1, o, s);
+    for (const f of faces)
+      out += `<polygon points="${f.pts.map((q) => `${f1(q[0])},${f1(q[1])}`).join(" ")}" fill="${f.fill}" stroke="#5b4a2f" stroke-width="0.9" stroke-linejoin="round"/>`;
+    // label at the top-front-right corner
+    const lab = xpProj(p.x + p.ox + p.w, p.y + p.oy + p.h, p.z + p.oz + p.d, o, s);
+    const big = Math.max(p.w * s, p.h * s, p.d * s) > 26;
+    if (big) {
+      out += `<text x="${f1(lab[0] + 5)}" y="${f1(lab[1] - 4)}" font-size="9.5" font-weight="700" fill="#333">${escH(p.n)}</text>`;
+      out += `<text x="${f1(lab[0] + 5)}" y="${f1(lab[1] + 6)}" font-size="8.5" fill="#666">${escH(p.l)} mm</text>`;
+    }
+  }
+  return out;
+}
+
+const XP_JS = `
+(function () {
+  var C = 0.8660254, S3 = 0.5;
+  var blocks = [];
+  function P(o, s, x, y, z) { return [o.x + (x - z) * C * s, o.y + ((x + z) * S3 - y) * s]; }
+  function render(b, t) {
+    var d = b.data, o = d.o, s = d.s, svg = b.svg;
+    var list = d.parts.map(function (p) {
+      return { p: p, x: p.x + p.ox * t, y: p.y + p.oy * t, z: p.z + p.oz * t,
+               depth: p.x + p.ox + p.w + p.z + p.oz + p.d, topY: p.y + p.oy + p.h };
+    }).sort(function (a, bb) { return (a.depth - bb.depth) || (a.topY - bb.topY); });
+    var out = '';
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i], p = it.p, x1 = it.x + p.w, y1 = it.y + p.h, z1 = it.z + p.d;
+      var c = [
+        [it.x, it.y, it.z], [x1, it.y, it.z], [x1, y1, it.z], [it.x, y1, it.z],
+        [it.x, it.y, z1], [x1, it.y, z1], [x1, y1, z1], [it.x, y1, z1]
+      ].map(function (q) { return P(o, s, q[0], q[1], q[2]); });
+      var face = function (idx, fill) {
+        var pts = idx.map(function (j) { return c[j][0].toFixed(1) + ',' + c[j][1].toFixed(1); }).join(' ');
+        return '<polygon points="' + pts + '" fill="' + fill + '" stroke="#5b4a2f" stroke-width="0.9" stroke-linejoin="round"/>';
+      };
+      out += face([1, 5, 6, 2], p.c[2]) + face([4, 5, 6, 7], p.c[1]) + face([3, 7, 6, 2], p.c[0]);
+      if (Math.max(p.w * s, p.h * s, p.d * s) > 26) {
+        var lab = P(o, s, x1, y1, z1);
+        var lo = Math.min(1, t * 1.25).toFixed(2);
+        out += '<g opacity="' + lo + '"><text x="' + (lab[0] + 5).toFixed(1) + '" y="' + (lab[1] - 4).toFixed(1) +
+          '" font-size="9.5" font-weight="700" fill="#333">' + p.n + '</text><text x="' + (lab[0] + 5).toFixed(1) +
+          '" y="' + (lab[1] + 6).toFixed(1) + '" font-size="8.5" fill="#666">' + p.l + ' mm</text></g>';
+      }
+      // hinge cups (door leaves) on the leaf front face — fade in with the explode
+      if (p.hc && t > 0.35) {
+        var cups = p.hc;
+        var a = Math.min(1, (t - 0.35) * 1.6);
+        for (var k = 0; k < cups.ys.length; k++) {
+          var cx = P(o, s, it.x + cups.cx, it.y + cups.ys[k], z1);
+          out += '<circle cx="' + cx[0].toFixed(1) + '" cy="' + cx[1].toFixed(1) +
+            '" r="' + Math.max(2.2, Math.min(6.5, (cups.dia / 2) * s * 10)).toFixed(1) +
+            '" fill="rgba(248,113,113,' + a.toFixed(2) + ')" stroke="#7f1d1d" stroke-width="0.7"/>';
+        }
+      }
+    }
+    svg.innerHTML = out;
+    if (b.slider) b.slider.value = String(t);
+  }
+  function animate(b, from, to, dur) {
+    stop(b);
+    var t0 = null;
+    function step(now) {
+      if (t0 === null) t0 = now;
+      var u = Math.min(1, (now - t0) / dur);
+      var e = u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
+      render(b, from + (to - from) * e);
+      if (u < 1) b.raf = requestAnimationFrame(step); else b.raf = null;
+    }
+    b.raf = requestAnimationFrame(step);
+  }
+  function stop(b) { if (b.raf) { cancelAnimationFrame(b.raf); b.raf = null; } }
+  document.querySelectorAll('.xp-block').forEach(function (wrap) {
+    var svg = wrap.querySelector('svg.xp-svg');
+    var dataEl = wrap.querySelector('script.xp-data');
+    if (!svg || !dataEl) return;
+    var data;
+    try { data = JSON.parse(dataEl.textContent); } catch (e) { return; }
+    var b = { svg: svg, data: data, slider: wrap.querySelector('.xp-slider'), raf: null, t: 1 };
+    blocks.push(b);
+    render(b, 1);
+    if (b.slider) b.slider.addEventListener('input', function () { stop(b); render(b, parseFloat(b.slider.value)); });
+    var bA = wrap.querySelector('.xp-assemble'), bE = wrap.querySelector('.xp-explode');
+    if (bA) bA.addEventListener('click', function () { animate(b, b.t, 0, 750); b.t = 0; });
+    if (bE) bE.addEventListener('click', function () { animate(b, b.t, 1, 750); b.t = 1; });
+    // when the user drags the slider mid-animation we must track the value
+    if (b.slider) b.slider.addEventListener('change', function () { b.t = parseFloat(b.slider.value); });
+  });
+  // print always shows the exploded state
+  if (window.addEventListener) window.addEventListener('beforeprint', function () { blocks.forEach(function (b) { render(b, 1); b.t = 1; }); });
+})();
+`;
+
+/** full interactive block: controls + svg (pre-rendered exploded) + data */
+function interactiveExplodeHtml(cab: Cabinet, S: Settings): string {
+  const parts = buildExplodeParts(cab, S);
+  if (parts.length < 3)
+    return `<div class="card small">Interactive exploded view is not available for this cabinet type — see the 2D parts layout instead.</div>`;
+
+  // canvas: fit the t=1 (exploded) extent, prefer landscape, go portrait for tall units
+  const portrait = cab.height > cab.width * 1.25;
+  const VW = portrait ? 980 : 1150;
+  const VH = portrait ? 1150 : 800;
+  const padL = 30, padR = 150, padT = 30, padB = 24;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of parts) {
+    for (const t of [0, 1]) {
+      for (const c of xpBoxCorners(p, t, { x: 0, y: 0 }, 1)) {
+        minX = Math.min(minX, c[0]); minY = Math.min(minY, c[1]);
+        maxX = Math.max(maxX, c[0]); maxY = Math.max(maxY, c[1]);
+      }
+    }
+  }
+  const extW = Math.max(1, maxX - minX), extH = Math.max(1, maxY - minY);
+  const s = Math.min((VW - padL - padR) / extW, (VH - padT - padB) / extH, 0.22);
+  const o = {
+    x: padL + (VW - padL - padR - extW * s) / 2 - minX * s,
+    y: padT + (VH - padT - padB - extH * s) / 2 - minY * s,
+  };
+  const body = renderExplodeStatic(parts, o, s, VW, VH);
+  // JSON data — escape '<' so part names can never close the script tag
+  const data = JSON.stringify({ o, s, parts }).replace(/</g, "\\u003c");
+  return `
+  <div class="xp-block">
+    <div class="xp-ctrl no-print">
+      <button type="button" class="xp-assemble">▣ Assembled</button>
+      <input type="range" class="xp-slider" min="0" max="1" step="0.01" value="1" aria-label="Explode factor"/>
+      <button type="button" class="xp-explode">⬚ Exploded</button>
+      <span class="xp-hint">drag the slider — 0 = assembled · 1 = exploded</span>
+    </div>
+    <svg class="xp-svg" xmlns="http://www.w3.org/2000/svg" width="${VW}" height="${VH}" viewBox="0 0 ${VW} ${VH}" font-family="Arial, Helvetica, sans-serif">${body}</svg>
+    <script type="application/json" class="xp-data">${data}</script>
+  </div>`;
 }
 
 /** Open door view – front with doors open 90° outward, drawers pulled, shelves visible */
@@ -271,58 +717,109 @@ function openDoorViewSvg(cab: Cabinet, S: Settings): string {
     y0+=row.h;
   });
 
-  // doors open – draw outside
-  let doorIndex=0;
-  const openDoors: {x:number; y:number; w:number; h:number; label:string}[]=[];
-  if (cab.fullDoor && cab.fullDoor!=='off'){
-    const fullH = modelStackOn(cab) ? modelStackedHeights(cab).reduce((a,h)=>a+h,0)-kick : BH;
-    const isDouble = (cab.fullDoor as string).includes('double') || W>620 && (cab.fullDoor==='mdf' || cab.fullDoor==='glass');
-    if (isDouble){
-      openDoors.push({x: cabX - (W/2)*sc -20, y: cabTop, w: W/2*sc, h: fullH*sc, label: `Door L ${Math.round(W/2)}×${fullH}`});
-      openDoors.push({x: cabX + W*sc +20, y: cabTop, w: W/2*sc, h: fullH*sc, label: `Door R ${Math.round(W/2)}×${fullH}`});
+  // doors open – draw outside with the REAL hinge count and cup positions
+  // (same rule as the part generator: effectiveHingeCount + hingeCupYs)
+  interface OpenDoor {
+    x: number; y: number; w: number; h: number; label: string;
+    /** cup positions (mm from leaf bottom) on the given edge — 'R' = right edge of the leaf */
+    hinges?: { n: number; ys: number[]; edge: "L" | "R" };
+    sliding?: boolean;
+    glass?: boolean;
+  }
+  let doorIndex = 0;
+  const openDoors: OpenDoor[] = [];
+  // clamp open-leaf widths to the space beside the cabinet (wide double doors
+  // would otherwise draw off-canvas) — labels keep the true dimensions
+  const leafW = (d: number) =>
+    Math.min(d * sc, Math.max(30, cabX - 17), Math.max(30, VW - 17 - cabX - W * sc));
+  const fullDoorActive = modelStackOn(cab) && !!cab.fullDoor && cab.fullDoor !== "off";
+  if (fullDoorActive) {
+    // one long door (or pair) across the whole stack — exactly like genCabinetFullDoor
+    const raw = cab.fullDoor as string;
+    const suffix = raw.includes("-") ? raw.split("-")[1] : "";
+    const isDouble = suffix === "double" || (suffix !== "left" && suffix !== "right" && W > 620);
+    const fdSpec: any = {
+      type: isDouble ? "double" : "single", style: "overlay", swing: suffix === "right" ? "right" : "left",
+      material: raw.startsWith("glass") ? "glass" : "mdf", mdfThk: S.mdfThk,
+      hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true, hingeCount: cab.fullDoorHinges,
+    };
+    const fullH = modelStackedHeights(cab).reduce((a, h) => a + h, 0) - kick;
+    const dd = doorDims(W, fullH, fdSpec, S);
+    const nH = effectiveHingeCount(fdSpec, dd.h);
+    const cups = hingeCupYs(dd.h, nH);
+    const yT = base - (kick + fullH) * sc;
+    if (isDouble) {
+      const lw = leafW(dd.w);
+      openDoors.push({ x: cabX - lw - 15, y: yT, w: lw, h: dd.h * sc, label: `Full door L ${Math.round(dd.w)}×${Math.round(dd.h)}`, hinges: { n: nH, ys: cups, edge: "R" }, glass: fdSpec.material === "glass" });
+      openDoors.push({ x: cabX + W * sc + 15, y: yT, w: lw, h: dd.h * sc, label: `Full door R ${Math.round(dd.w)}×${Math.round(dd.h)}`, hinges: { n: nH, ys: cups, edge: "L" }, glass: fdSpec.material === "glass" });
     } else {
-      const side = (cab.fullDoor as string).includes('right') ? 'R' : 'L';
-      const ox2 = side==='L' ? cabX - W*sc*0.55 -20 : cabX+W*sc+20;
-      openDoors.push({x: ox2, y: cabTop, w: W*sc*0.5, h: fullH*sc, label: `Full Door ${W}×${fullH}`});
+      const left = fdSpec.swing === "left";
+      const lw = leafW(dd.w);
+      openDoors.push({ x: left ? cabX - lw - 15 : cabX + W * sc + 15, y: yT, w: lw, h: dd.h * sc, label: `Full door ${W}×${fullH} · ${left ? "L" : "R"}`, hinges: { n: nH, ys: cups, edge: left ? "R" : "L" }, glass: fdSpec.material === "glass" });
     }
   } else {
     // per-row Y accumulator: each door must hang next to ITS OWN row, not at
     // the final y0 (which by now equals the full carcass height)
     let ry0 = kick;
-    cab.rows.forEach(row=>{
+    cab.rows.forEach((row) => {
       const lays = columnLayout(cab, row, S);
-      lays.forEach(lay=>{
+      lays.forEach((lay) => {
         const col = lay.col;
-        if (!col.door || col.fixed) return;
+        // SAME suppression as the part generator: fixed panels and columns
+        // with visible drawers have NO door — drawing one here would promise
+        // hinges/leaves that don't exist
+        const hasDr = columnHasDrawers(col);
+        const allHidden = hasDr && col.drawers.every((d) => d.hidden);
+        if (!col.door || col.fixed || (hasDr && !allHidden)) return;
         const fullSpan = col.door.full ? BH : row.h;
         // face width exactly like the generator (single column = full width,
         // otherwise the column face with its carcass-edge overlays)
         const faceW = lays.length === 1 ? W : columnFaceWidth(cab, lay, S);
         const d = doorDims(faceW, fullSpan, col.door, S);
-        const y = col.door.full ? base - (kick+fullSpan)*sc : base - (ry0+fullSpan)*sc;
-        if (col.door.type==='double'){
-          openDoors.push({x: cabX - d.w*sc*0.5 -15, y: y, w: d.w*sc*0.5, h: d.h*sc, label: `Door ${doorIndex+1}L ${d.w}×${d.h}`});
-          openDoors.push({x: cabX+W*sc+15, y: y, w: d.w*sc*0.5, h: d.h*sc, label: `Door ${doorIndex+1}R ${d.w}×${d.h}`});
-          doorIndex+=2;
+        const y = col.door.full ? base - (kick + fullSpan) * sc : base - (ry0 + fullSpan) * sc;
+        const nH = effectiveHingeCount(col.door, d.h);
+        const cups = hingeCupYs(d.h, nH);
+        const glass = col.door.material === "glass";
+        if (col.door.type === "sliding") {
+          // two overlapping leaves on a track — NO hinge cups
+          openDoors.push({ x: cabX - d.w * sc * 0.18 - 8, y, w: d.w * sc, h: d.h * sc, label: `Sliding #${doorIndex + 1} ${Math.round(d.w)}×${Math.round(d.h)}`, sliding: true, glass });
+          openDoors.push({ x: cabX + d.w * sc * 0.18 + 8, y, w: d.w * sc, h: d.h * sc, label: `Sliding #${doorIndex + 2} ${Math.round(d.w)}×${Math.round(d.h)}`, sliding: true, glass });
+          doorIndex += 2;
+        } else if (col.door.type === "double") {
+          const lw = leafW(d.w);
+          openDoors.push({ x: cabX - lw - 15, y, w: lw, h: d.h * sc, label: `Door ${doorIndex + 1}L ${Math.round(d.w)}×${Math.round(d.h)}`, hinges: { n: nH, ys: cups, edge: "R" }, glass });
+          openDoors.push({ x: cabX + W * sc + 15, y, w: lw, h: d.h * sc, label: `Door ${doorIndex + 2}R ${Math.round(d.w)}×${Math.round(d.h)}`, hinges: { n: nH, ys: cups, edge: "L" }, glass });
+          doorIndex += 2;
         } else {
-          const side = col.door.swing;
-          const ox2 = side==='left' ? cabX - d.w*sc*0.5 -15 : cabX+W*sc+15;
-          openDoors.push({x: ox2, y: y, w: d.w*sc*0.5, h: d.h*sc, label: `Door ${doorIndex+1} ${d.w}×${d.h} ${side}`});
+          const left = col.door.swing === "left";
+          const lw = leafW(d.w);
+          openDoors.push({ x: left ? cabX - lw - 15 : cabX + W * sc + 15, y, w: lw, h: d.h * sc, label: `Door ${doorIndex + 1} ${Math.round(d.w)}×${Math.round(d.h)} ${left ? "L" : "R"}`, hinges: { n: nH, ys: cups, edge: left ? "R" : "L" }, glass });
           doorIndex++;
         }
       });
       ry0 += row.h;
     });
   }
-  openDoors.forEach(od=>{
-    out += `<rect x="${f(od.x)}" y="${f(od.y)}" width="${f(od.w)}" height="${f(od.h)}" fill="#c2d6e8" stroke="#2a4a6a" stroke-width="1"/>`;
-    // hinge
-    out += `<circle cx="${f(od.x+5)}" cy="${f(od.y+od.h*0.15)}" r="2.5" fill="#c9ccd4" stroke="#222"/>`;
-    out += `<circle cx="${f(od.x+5)}" cy="${f(od.y+od.h*0.85)}" r="2.5" fill="#c9ccd4" stroke="#222"/>`;
-    out += `<text x="${f(od.x+od.w/2)}" y="${f(od.y-4)}" font-size="7" fill="#2a4a6a" text-anchor="middle">${escH(od.label)}</text>`;
+  openDoors.forEach((od) => {
+    const fill = od.glass ? "rgba(176,210,235,0.55)" : od.sliding ? "rgba(194,214,232,0.75)" : "#c2d6e8";
+    out += `<rect x="${f(od.x)}" y="${f(od.y)}" width="${f(od.w)}" height="${f(od.h)}" fill="${fill}" stroke="#2a4a6a" stroke-width="1" stroke-dasharray="${od.glass ? "5 3" : ""}"/>`;
+    if (od.sliding) {
+      // track marks at the top instead of hinge cups
+      out += `<line x1="${f(od.x + 3)}" y1="${f(od.y + 4)}" x2="${f(od.x + od.w - 3)}" y2="${f(od.y + 4)}" stroke="#444" stroke-width="2"/>`;
+      out += `<text x="${f(od.x + od.w / 2)}" y="${f(od.y + 14)}" font-size="6.5" fill="#444" text-anchor="middle">TRACK — no hinge cups</text>`;
+    } else if (od.hinges && od.hinges.n > 0) {
+      // the REAL cups: n of them, 140mm from ends, on the HINGED edge
+      // (a leaf opened to the left is hinged on its RIGHT edge, and vice versa)
+      const hx = od.hinges.edge === "R" ? od.x + od.w - 5 : od.x + 5;
+      for (const cupY of od.hinges.ys)
+        out += `<circle cx="${f(hx)}" cy="${f(od.y + od.h - cupY * sc)}" r="3.1" fill="#f87171" stroke="#7f1d1d" stroke-width="0.6"/>`;
+      const tagY = od.y + od.h + 9;
+      out += `<text x="${f(hx)}" y="${f(tagY)}" font-size="7" fill="#b91c1c" text-anchor="middle">${od.hinges.n}× Ø${S.hingeCupDiameter}</text>`;
+    }
+    out += `<text x="${f(od.x + od.w / 2)}" y="${f(od.y - 4)}" font-size="7" fill="#2a4a6a" text-anchor="middle">${escH(od.label)}</text>`;
     // leader line to cabinet
-    const cx1 = od.x + od.w/2 < cabX ? od.x+od.w : od.x;
-    out += `<line x1="${f(cx1)}" y1="${f(od.y+od.h/2)}" x2="${f(od.x+od.w/2 < cabX ? cabX : cabX+W*sc)}" y2="${f(od.y+od.h/2)}" stroke="#999" stroke-dasharray="2 2" stroke-width="0.6"/>`;
+    const cx1 = od.x + od.w / 2 < cabX ? od.x + od.w : od.x;
+    out += `<line x1="${f(cx1)}" y1="${f(od.y + od.h / 2)}" x2="${f(od.x + od.w / 2 < cabX ? cabX : cabX + W * sc)}" y2="${f(od.y + od.h / 2)}" stroke="#999" stroke-dasharray="2 2" stroke-width="0.6"/>`;
   });
 
   // dimensions
@@ -414,48 +911,47 @@ function perCabinetCutTable(cab: Cabinet, S: Settings, grain: GrainOverrides, ro
 }
 
 function perCabinetHardware(cab: Cabinet, S: Settings): string {
-  let hinges=0, rails=0;
-  const slides: Record<number,number> = {};
-  const fullSpan = (modelStackOn(cab) ? modelStackedHeights(cab).reduce((a,h)=>a+h,0) : cab.height) - modelKickH(cab,S);
-  cab.rows.forEach(row=>{
+  let hinges = 0, rails = 0;
+  const slides: Record<number, number> = {};
+  const kick = modelKickH(cab, S);
+  const fullSpan = (modelStackOn(cab) ? modelStackedHeights(cab).reduce((a, h) => a + h, 0) : cab.height) - kick;
+  // a cabinet-level full door (stacked cabinets only) suppresses EVERY
+  // per-column door — exactly like the part generator (buildStackedBody)
+  const fullDoorActive = modelStackOn(cab) && !!cab.fullDoor && cab.fullDoor !== "off";
+  const columnHasDrawersLocal = (col: Cabinet["rows"][number]["columns"][number]) => columnHasDrawers(col);
+  cab.rows.forEach((row) => {
     const lays = columnLayout(cab, row, S);
-    row.columns.forEach((col,ci)=>{
-      if (col.door && col.door.material==='glass' && col.door.type!=='sliding'){
-        const faceW = lays.length===1? cab.width : columnFaceWidth(cab, lays[ci], S);
-        const leafH = doorDims(faceW, col.door.full? fullSpan : row.h, col.door, S).h;
-        hinges += Math.min(6, Math.max(1, col.door.hingeCount ?? doorHingeCount(leafH)));
+    row.columns.forEach((col, ci) => {
+      if (col.door && !col.fixed && !fullDoorActive) {
+        const allHidden = col.drawers.length > 0 && col.drawers.every((dr) => dr.hidden);
+        if (!columnHasDrawersLocal(col) || allHidden) {
+          // same leaf dims + clamp as the generator: leaves × (1..6 cups each);
+          // sliding doors take 0 (effectiveHingeCount returns 0 for them)
+          const lay = lays.find((l) => l.col.id === col.id) ?? lays[ci];
+          const faceW = lays.length === 1 ? cab.width : columnFaceWidth(cab, lay, S);
+          const dd = doorDims(faceW, col.door.full ? fullSpan : row.h, col.door, S);
+          hinges += dd.count * effectiveHingeCount(col.door, dd.h);
+        }
       }
-      col.drawers.forEach(dr=>{
+      col.drawers.forEach((dr) => {
         const cm = Math.round(dr.slideDepthCm);
-        slides[cm]=(slides[cm]??0)+1;
+        slides[cm] = (slides[cm] ?? 0) + 1;
       });
-      if (col.rail && col.rail!=='off') rails += col.rail==='double'?2:1;
+      if (col.rail && col.rail !== "off") rails += col.rail === "double" ? 2 : 1;
     });
   });
-  if ((cab.fullDoor as string)?.startsWith('glass')){
-    const leafH = doorDims(cab.width, fullSpan, {type: cab.width>620?'double':'single', style:'overlay', swing:'left', material:'glass', mdfThk:S.mdfThk, hingeBrand:'Universal 35mm', hasHandle:false, handlePos:'center', full:true, hingeCount:cab.fullDoorHinges} as any, S).h;
-    hinges += Math.min(6, Math.max(1, cab.fullDoorHinges ?? doorHingeCount(leafH)));
-  }
-  // MDF doors hinges — face width exactly like the generator (single column =
-  // full cabinet width, otherwise the column face with carcass-edge overlays)
-  cab.rows.forEach(row=>{
-    const lays = columnLayout(cab, row, S);
-    row.columns.forEach(col=>{
-      if (col.door && col.door.material!=='glass'){
-        const lay = lays.find(l=>l.col.id===col.id);
-        if (!lay) return;
-        const faceW = lays.length===1? cab.width : columnFaceWidth(cab, lay, S);
-        const leafH = doorDims(faceW, col.door.full? fullSpan : row.h, col.door, S).h;
-        const cnt = col.door.hingeCount ?? doorHingeCount(leafH);
-        hinges += col.door.type==='double'? cnt*2 : cnt;
-      }
-    });
-  });
-  if (cab.fullDoor && (cab.fullDoor as string).startsWith('mdf')){
-    const leafH = doorDims(cab.width, fullSpan, {type: cab.width>620?'double':'single', style:'overlay', swing:'left', material:'mdf', mdfThk:S.mdfThk, hingeBrand:'Universal 35mm', hasHandle:false, handlePos:'center', full:true, hingeCount:cab.fullDoorHinges} as any, S).h;
-    const cnt = cab.fullDoorHinges ?? doorHingeCount(leafH);
-    const isDouble = (cab.fullDoor as string).includes('double') || cab.width>620 && (cab.fullDoor==='mdf');
-    hinges += isDouble ? cnt*2 : cnt;
+  if (fullDoorActive) {
+    // count the full door exactly like genCabinetFullDoor
+    const raw = cab.fullDoor as string;
+    const suffix = raw.includes("-") ? raw.split("-")[1] : "";
+    const isDouble = suffix === "double" || (suffix !== "left" && suffix !== "right" && cab.width > 620);
+    const fdSpec: any = {
+      type: isDouble ? "double" : "single", style: "overlay", swing: suffix === "right" ? "right" : "left",
+      material: raw.startsWith("glass") ? "glass" : "mdf", mdfThk: S.mdfThk,
+      hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true, hingeCount: cab.fullDoorHinges,
+    };
+    const dd = doorDims(cab.width, fullSpan, fdSpec, S);
+    hinges += dd.count * effectiveHingeCount(fdSpec, dd.h);
   }
   // shelves coexist with drawers (they sit above/below the bank), so they count
   // even in drawer columns — plus splitter shelves and rail shelves
@@ -535,8 +1031,15 @@ export function explodedReportHtml(
     .toc li{margin:2px 0}
     .exploded-grid{display:grid;grid-template-columns:1fr;gap:8px}
     .drill-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-    .auto3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
-    .auto3 .shot img{max-height:220px}
+    .auto4{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .auto4 .shot img{max-height:440px}
+    .xp-block{border:1px solid #bbb;border-radius:8px;padding:10px;background:#fff}
+    .xp-ctrl{display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap}
+    .xp-ctrl button{font:700 11px/1 Arial,Helvetica,sans-serif;padding:6px 12px;border:1px solid #333;border-radius:6px;background:#f5f5f5;cursor:pointer}
+    .xp-ctrl button:hover{background:#e8e8e8}
+    .xp-slider{flex:1;min-width:180px;accent-color:#b45309}
+    .xp-hint{font-size:10px;color:#666}
+    .xp-svg{width:100%;height:auto;display:block;border:1px solid #e5e5e5;border-radius:6px;background:#fff}
     @media print{.no-print{display:none}}
   `;
 
@@ -567,12 +1070,26 @@ export function explodedReportHtml(
     const cutTable = perCabinetCutTable(cab, settings, grain, rot);
     const hwTable = perCabinetHardware(cab, settings);
     const isoShot = opts.perCabinetScreenshots?.[cab.id] ? `<div class="shot"><img src="${opts.perCabinetScreenshots[cab.id]}" alt="${escH(cab.name)} iso"/><div class="small">Iso view – ${escH(cab.name)}</div></div>` : '';
-    const explodedShot = opts.explodedScreenshots?.[cab.id] ? `<div class="shot"><img src="${opts.explodedScreenshots[cab.id]}" alt="${escH(cab.name)} exploded"/><div class="small">Exploded 3D – per-part: side L −150 X · side R +150 X · top +120 Y · bottom −40 Y · back −120 Z · door +250 Z (45° open) · drawer +300 Z</div></div>` : '';
-    // automatic ISO / front / left photos — captured headlessly, no screenshots needed
+    const explodedShot = opts.explodedScreenshots?.[cab.id] ? `<div class="shot"><img src="${opts.explodedScreenshots[cab.id]}" alt="${escH(cab.name)} exploded"/><div class="small">Exploded 3D (user screenshot)</div></div>` : '';
+    // automatic ISO / front / left / EXPLODED photos — captured headlessly,
+    // no user screenshots needed; the photo shows ONLY this cabinet (no panels)
     const auto = opts.autoShots?.[cab.id];
-    const autoHtml = auto && (auto.iso || auto.front || auto.left)
-      ? `<div class="auto3">${[["ISO", auto.iso], ["FRONT", auto.front], ["LEFT", auto.left]].filter(([, src]) => !!src).map(([label, src]) => `<div class="shot"><img src="${src}" alt="${escH(cab.name)} ${label}"/><div class="small">${label} – auto capture</div></div>`).join("")}</div>`
-      : "";
+    const autoPairs: [string, string][] = auto
+      ? (
+          [
+            ["ISO", auto.iso],
+            ["FRONT", auto.front],
+            ["LEFT", auto.left],
+            ["EXPLODED 3D", auto.exploded],
+          ] as [string, string][]
+        ).filter(([, src]) => !!src)
+      : [];
+    const autoHtml =
+      autoPairs.length > 0
+        ? `<div class="auto4">${autoPairs
+            .map(([label, src]) => `<div class="shot"><img src="${src}" alt="${escH(cab.name)} ${label}"/><div class="small">${label} – auto capture</div></div>`)
+            .join("")}</div>`
+        : "";
 
     // panel size summary for this cab
     const parts = allPartsMerged([cab], settings, grain, [], rot);
@@ -584,12 +1101,15 @@ export function explodedReportHtml(
       <h2>Cabinet ${idx+1}/${cabinets.length} – ${escH(cab.name)} – ${cab.width}×${cab.height}×${cab.depth} – ${escH(cab.type)} – Qty ${cab.qty}</h2>
       <div class="card small">Plywood: ${escH(matLabel(settings,{material:'plywood', matId:cab.matId??undefined}))} · ${cab.hasToeKick?'kick':'no-kick'} · ${cab.hasBack===false?'no-back':'back'} · ${cab.hasFronts===false?'no-fronts':'fronts'} · ${modelStackOn(cab)?'stacked '+modelStackedHeights(cab).join('+')+'mm':'single box'} · ${cab.slot && cab.slot!=='none'?'slot '+cab.slot+' '+ (cab.slotFromFront ?? settings.slotFromFront)+'mm':''}</div>
       ${kpis}
-      <div style="margin-top:10px" class="grid2">
-        <div><h3>Front Elevation (single)</h3><div class="elevation">${cabFront}</div></div>
-        <div><h3>3D Iso + Exploded 3D</h3>${isoShot || autoHtml || '<div class="card small">No per-cab photos yet – tick “Auto ISO / front / left photos” when generating the report.</div>'}${explodedShot}</div>
+      <div style="margin-top:10px">
+        <h3>Front Elevation (single)</h3>
+        <div class="elevation">${cabFront}</div>
       </div>
-      ${isoShot && autoHtml ? `<div style="margin-top:8px"><h3>Automatic photos (ISO / front / left)</h3>${autoHtml}</div>` : ""}
-      <div class="footer"><span>${escH(projName)} – ${escH(cab.name)} – Front + Iso</span><span>Page Cab ${idx+1} – Front</span></div>
+      <div style="margin-top:10px">
+        <h3>3D photos — ISO / Front / Left / Exploded (auto capture · cabinet only, no panels)</h3>
+        ${autoHtml || isoShot || explodedShot || '<div class="card small">No 3D photos – tick “Auto ISO / front / left / exploded photos” when generating the report.</div>'}
+      </div>
+      <div class="footer"><span>${escH(projName)} – ${escH(cab.name)} – Front + 3D</span><span>Page Cab ${idx+1} – Front</span></div>
     </div>
 
     <div class="page">
@@ -597,6 +1117,13 @@ export function explodedReportHtml(
       <p class="small">Every real cut part of this cabinet, drawn at scale from the same part generator as the cut list / nesting / DXF (same L-W rotation rule). Each part shows its true name, W×H×thk, qty, hole count, edge-banding ticks (orange) and grain-lock flag; polygon parts keep their exact cut outline (notched sides, kick-cut top/bottom, drawer boxes). Dashed = veneer back / glass reference (not drilled).</p>
       <div class="elevation">${explodedSvg}</div>
       <div class="footer"><span>${escH(projName)} – ${escH(cab.name)} – Exploded 2D</span><span>Cab ${idx+1} – Exploded</span></div>
+    </div>
+
+    <div class="page">
+      <h2>${escH(cab.name)} – Interactive Exploded View (2.5D — assemble ⇄ explode)</h2>
+      <p class="small">Dynamic diagram: drag the slider (or press Assembled / Exploded) to move every part between its real assembled seat and a fully exploded position. Part boxes come from the same layout math as the part generator, so positions are true to the cabinet; hinge cups are marked on door leaves (fade in with the explode). The printed / no-JS fallback shows the exploded state.</p>
+      ${interactiveExplodeHtml(cab, settings)}
+      <div class="footer"><span>${escH(projName)} – ${escH(cab.name)} – Interactive Explode</span><span>Cab ${idx+1} – Interactive</span></div>
     </div>
 
     <div class="page">
@@ -641,7 +1168,7 @@ export function explodedReportHtml(
     </div>
     <div class="card" style="margin-top:12px;text-align:left"><b>Contents – Per Cabinet Pages</b><ol class="toc" style="margin:6px 0 0 18px">
       <li><a href="#overall">Overall 3D + Front Elevation</a></li>
-      ${cabinets.map((c,i)=>`<li><a href="#cab-${c.id}">${i+1}. ${escH(c.name)} – ${c.width}×${c.height}×${c.depth} – Exploded / Open Door / Drilling / Cut List / Hardware</a></li>`).join('')}
+      ${cabinets.map((c,i)=>`<li><a href="#cab-${c.id}">${i+1}. ${escH(c.name)} – ${c.width}×${c.height}×${c.depth} – Front + 3D / Exploded 2D / Interactive Explode / Open Door / Drilling / Cut List + Hardware</a></li>`).join('')}
       <li><a href="#overall-bom">Overall BOM + Cut List (first 200 rows) + Nesting</a></li>
     </ol></div>
     <div class="footer"><span>${escH(projName)} – ${escH(dateStr)}</span><span>Cover – Exploded Report</span></div>
@@ -672,5 +1199,8 @@ export function explodedReportHtml(
     <div class="grid2"><div class="card" style="height:70px">Signature / Date<br/><br/><br/></div><div class="card" style="height:70px">Approved / Notes<br/><br/><br/></div></div>
     <div class="footer"><span>${escH(projName)} – ${escH(nowStr)} – CNC-PRO v11</span><span>End – Exploded Report</span></div>
   </div>
+  <script>
+  ${XP_JS}
+  </script>
   </body></html>`;
 }

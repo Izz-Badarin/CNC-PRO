@@ -21,6 +21,7 @@ import {
   stackedHeights,
 } from "../lib/model";
 import { plyMaterialById, plyMaterialOf } from "../lib/defaults";
+import { modelBounds } from "./bounds";
 
 /* ================= materials ================= */
 
@@ -262,6 +263,8 @@ export interface BuiltCabinet {
   drawers: DrawerAnim[];
   dims: THREE.Group;
   width: number;
+  height: number;
+  depth: number;
 }
 
 const OPEN_ANGLE = (108 * Math.PI) / 180;
@@ -322,7 +325,7 @@ export function buildCabinetGroup(cab: Cabinet, S: Settings): BuiltCabinet {
   // tag the group so raycasting can identify which cabinet was clicked
   grp.userData = { cabId: cab.id, cab };
 
-  return { group: grp, doors, drawers, dims, width: cab.width };
+  return { group: grp, doors, drawers, dims, width: cab.width, height: cab.height, depth: cab.depth };
 }
 
 /**
@@ -1119,6 +1122,10 @@ export class CabinetViewer {
   private dirLight: THREE.DirectionalLight;
   doorsOpen = false;
   drawersOpen = false;
+  /** last applied explode scale (0 assembled … 1 exploded) — reframes only on change */
+  private explodedK = 0;
+  /** dimension-overlay on/off, restored when leaving the exploded state */
+  private dimsFlag = true;
   layerVis: Record<Tag, boolean> = { carcass: true, door: true, drawer: true, shelf: true, back: true, handle: true, kick: true, panel: true };
   private disposed = false;
   private visible = true;
@@ -1221,6 +1228,10 @@ export class CabinetViewer {
   setData(cabs: Cabinet[], S: Settings, opts: ViewerOptions) {
     woodOpacity = clampOp(S.opacityPlywood); // carcass panels use the plywood texture
     mats = m(S);
+    this.dimsFlag = opts.showDims;
+    // fresh meshes → the explode base positions are re-captured on the next
+    // setExploded call (callers re-apply their state right after setData)
+    this.explodedK = 0;
     this.built.forEach((b) => disposeObject(b.group));
     this.built = [];
     this.panelGroups.forEach((g) => disposeObject(g));
@@ -1313,7 +1324,9 @@ export class CabinetViewer {
   }
 
   setShowDims(v: boolean) {
-    this.built.forEach((b) => (b.dims.visible = v));
+    this.dimsFlag = v;
+    // honor the current explode state: dims stay hidden while exploded
+    this.built.forEach((b) => (b.dims.visible = this.explodedK > 0.01 ? false : v));
   }
 
   private applyLayers(bc: BuiltCabinet) {
@@ -1350,6 +1363,85 @@ export class CabinetViewer {
     this.controls.target.copy(this.center);
     this.camera.position.copy(this.center.clone().addScaledVector(d, dist));
     this.controls.update();
+  }
+
+  /**
+   * Explode / re-assemble every built cabinet (scale 0 = assembled, 1 = fully
+   * exploded). Each tagged part slides out along its natural direction:
+   * sides ±X, tops +Y (fanned by height), bottoms −Y, back −Z, doors/handles
+   * +Z, drawers +Z (further out), kick +Z. Base positions are remembered the
+   * first time a mesh is seen, so toggling back is exact. Dimension overlays
+   * are hidden while exploded (their previous on/off state is restored on
+   * re-assemble) and the camera re-frames only on state transitions.
+   */
+  setExploded(scale: number) {
+    const k = Math.max(0, Math.min(1, scale));
+    const entering = k > 0.01 && this.explodedK <= 0.01;
+    const leaving = k <= 0.01 && this.explodedK > 0.01;
+    this.built.forEach((b) => {
+      const W = Math.max(1, b.width);
+      const H = Math.max(1, b.height);
+      const D = Math.max(1, b.depth);
+      b.group.updateWorldMatrix(true, true);
+      b.group.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const tag = mesh.userData?.tag as Tag | undefined;
+        if (!tag || tag === "panel") return;
+        if (mesh.userData.basePos === undefined) mesh.userData.basePos = mesh.position.clone();
+        const base = mesh.userData.basePos as THREE.Vector3;
+        // part's own size (geometry is in mm, mesh-local) for side detection
+        let gw = 0;
+        if (mesh.geometry) {
+          if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+          const bb = mesh.geometry.boundingBox;
+          if (bb) gw = bb.max.x - bb.min.x;
+        }
+        const worldY = o.getWorldPosition(new THREE.Vector3()).y;
+        const relY = THREE.MathUtils.clamp((worldY - b.group.position.y) / (H * 0.001), 0, 1);
+        const off = new THREE.Vector3(0, 0, 0);
+        if (tag === "back") off.z = -0.45 * D;
+        else if (tag === "door") off.z = 0.8 * D;
+        else if (tag === "handle") off.z = 0.85 * D;
+        else if (tag === "drawer") off.z = 1.0 * D;
+        else if (tag === "kick") off.z = 0.55 * D;
+        else if (tag === "shelf") {
+          off.y = 0.1 * H;
+          off.z = 0.3 * D;
+        } else if (tag === "carcass") {
+          if (gw <= 26 && (base.x < W * 0.1 || base.x > W * 0.9)) {
+            // thin in X at the outer edge → side panel (or its slot strip)
+            off.x = base.x < W / 2 ? -0.3 * W : 0.3 * W;
+          } else if (gw <= 26) {
+            // interior vertical part (divider, niche, slot): up + forward
+            off.y = 0.25 * H;
+            off.z = 0.3 * D;
+          } else if (base.y < 40) {
+            off.y = -0.16 * H; // bottom panel
+          } else {
+            // top spans / box dividers — fan upward with height
+            off.y = 0.3 * H * (0.35 + 0.65 * relY);
+          }
+        }
+        mesh.position.copy(base).addScaledVector(off, k);
+      });
+      if (b.dims) b.dims.visible = k <= 0.01 ? this.dimsFlag : false;
+    });
+    if (entering || leaving) this.reframe();
+    this.explodedK = k;
+  }
+
+  /** re-fit camera target + framing to the current physical bounds */
+  reframe() {
+    const bbox = modelBounds(this.builtWrap);
+    if (!bbox.isEmpty()) {
+      bbox.getCenter(this.center);
+      const size = bbox.getSize(new THREE.Vector3());
+      this.radius = Math.max(size.x, size.y, size.z, 0.6) / 2;
+      this.dirLight.position.set(this.center.x + this.radius * 1.4, this.radius * 2.6 + 1.2, this.center.z + this.radius * 1.8);
+      this.dirLight.target.position.copy(this.center);
+    }
+    this.controls.target.copy(this.center);
   }
 
   /**

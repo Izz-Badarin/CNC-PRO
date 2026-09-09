@@ -114,12 +114,23 @@ export function dimsForGroup(key: string, S: Settings): { w: number; h: number }
 
 /* ================= scoring ================= */
 
-type Score = [number, number, number]; // unplaced, sheets, wasteArea — lower is better
+/**
+ * unplaced, sheets, utilDesc (sheet utilizations, best sheet first).
+ * Lower unplaced wins, then fewer sheets, then — crucially — the FILL
+ * DISTRIBUTION: layouts that fill the earlier sheets fuller are preferred,
+ * i.e. "a sheet is only opened when the previous one is (nearly) full".
+ * Two layouts with the same sheet count are compared sheet by sheet from the
+ * fullest one; a 90/60/40 split beats a 70/70/50 one.
+ */
+type Score = [number, number, number[]];
 
-/** lower is better: fewest unplaced, then fewest sheets, then least waste */
+/**
+ * utilizations straight from usedArea (Sheet.util is only finalized AFTER the
+ * candidate comparison, so it must never feed the score)
+ */
 function scoreOf(unplaced: number, sheets: Sheet[], sheetArea: number): Score {
-  const used = sheets.reduce((a, s) => a + s.usedArea, 0);
-  return [unplaced, sheets.length, sheets.length * sheetArea - used];
+  const utils = sheets.map((s) => s.usedArea / sheetArea).sort((a, b) => b - a);
+  return [unplaced, sheets.length, utils];
 }
 
 /**
@@ -144,7 +155,15 @@ export function layoutIsValid(sheets: Sheet[], SW: number, SH: number): boolean 
   return true;
 }
 
-const better = (a: Score, b: Score) => a[0] < b[0] || (a[0] === b[0] && (a[1] < b[1] || (a[1] === b[1] && a[2] < b[2])));
+/** a beats b: fewer unplaced → fewer sheets → earlier sheets fuller first */
+const better = (a: Score, b: Score): boolean => {
+  if (a[0] !== b[0]) return a[0] < b[0];
+  if (a[1] !== b[1]) return a[1] < b[1];
+  const ua = a[2], ub = b[2];
+  const n = Math.min(ua.length, ub.length);
+  for (let i = 0; i < n; i++) if (ua[i] !== ub[i]) return ua[i] > ub[i];
+  return ua.length > ub.length; // equal so far → the fuller set of sheets wins
+};
 
 /* ================= sort strategies ================= */
 
@@ -159,6 +178,7 @@ const SORTS: Record<string, (a: Item, b: Item) => number> = {
 
 const SHELF_SORTS = ["height_desc", "height_width", "area_desc", "width_desc", "max_side", "perimeter"];
 const MR_SORTS = ["area_desc", "height_desc", "width_desc", "perimeter"];
+const FFD_SORTS = ["area_desc", "height_desc", "max_side"];
 const MR_HEUR = ["BAF", "BSSF", "BLSF"] as const;
 const GUILLOTINE_SPLITS = ["SAS", "SLAS"] as const;
 
@@ -270,6 +290,50 @@ function shelfPack(
   return { sheets, unplaced };
 }
 
+/**
+ * Split the free-rect list after placing a w×h part at the bottom-left corner
+ * of `at`. Shared by MaxRects and the FFD variant — placement keeps a
+ * disjoint, complete free-rect description (with containment pruning), so the
+ * geometry stays exact and can never overlap.
+ */
+function splitFreeRects(freeRects: FreeRect[], w: number, h: number, at: FreeRect, minSide = 30) {
+  const rx = at.x;
+  const ry = at.y;
+  const next: FreeRect[] = [];
+  for (const fr of freeRects) {
+    if (fr.x >= rx + w || fr.x + fr.w <= rx || fr.y >= ry + h || fr.y + fr.h <= ry) {
+      next.push(fr);
+      continue;
+    }
+    // right
+    if (fr.x + fr.w > rx + w) next.push({ x: rx + w, y: fr.y, w: fr.x + fr.w - (rx + w), h: fr.h });
+    // top
+    if (fr.y + fr.h > ry + h) next.push({ x: fr.x, y: ry + h, w: fr.w, h: fr.y + fr.h - (ry + h) });
+    // left
+    if (fr.x < rx) next.push({ x: fr.x, y: fr.y, w: rx - fr.x, h: fr.h });
+    // bottom
+    if (fr.y < ry) next.push({ x: fr.x, y: fr.y, w: fr.w, h: ry - fr.y });
+  }
+  // prune contained / too small
+  const pruned: FreeRect[] = [];
+  for (let i = 0; i < next.length; i++) {
+    const a = next[i];
+    if (a.w < minSide || a.h < minSide) continue;
+    let contained = false;
+    for (let j = 0; j < next.length; j++) {
+      if (i === j) continue;
+      const b = next[j];
+      if (a.x >= b.x && a.y >= b.y && a.x + a.w <= b.x + b.w && a.y + a.h <= b.y + b.h) {
+        contained = true;
+        break;
+      }
+    }
+    if (!contained) pruned.push(a);
+  }
+  freeRects.length = 0;
+  freeRects.push(...pruned);
+}
+
 /* ================= MaxRects packing ================= */
 
 function maxRectsPack(
@@ -345,43 +409,95 @@ function maxRectsPack(
     s.placed.push({ part: it.part, x: fr.x, y: fr.y, w: w - clr, h: h - clr, rotated: rot });
     s.usedArea += it.w * it.h;
   }
-  function splitFree(freeRects: FreeRect[], w: number, h: number, at?: FreeRect) {
-    const rx = at ? at.x : 0;
-    const ry = at ? at.y : 0;
-    const next: FreeRect[] = [];
-    for (const fr of freeRects) {
-      if (fr.x >= rx + w || fr.x + fr.w <= rx || fr.y >= ry + h || fr.y + fr.h <= ry) {
-        next.push(fr);
-        continue;
-      }
-      // right
-      if (fr.x + fr.w > rx + w) next.push({ x: rx + w, y: fr.y, w: fr.x + fr.w - (rx + w), h: fr.h });
-      // top
-      if (fr.y + fr.h > ry + h) next.push({ x: fr.x, y: ry + h, w: fr.w, h: fr.y + fr.h - (ry + h) });
-      // left
-      if (fr.x < rx) next.push({ x: fr.x, y: fr.y, w: rx - fr.x, h: fr.h });
-      // bottom
-      if (fr.y < ry) next.push({ x: fr.x, y: fr.y, w: fr.w, h: ry - fr.y });
-    }
-    // prune contained / too small
-    const pruned: FreeRect[] = [];
-    for (let i = 0; i < next.length; i++) {
-      const a = next[i];
-      if (a.w < 30 || a.h < 30) continue;
-      let contained = false;
-      for (let j = 0; j < next.length; j++) {
-        if (i === j) continue;
-        const b = next[j];
-        if (a.x >= b.x && a.y >= b.y && a.x + a.w <= b.x + b.w && a.y + a.h <= b.y + b.h) {
-          contained = true;
-          break;
+  function splitFree(freeRects: FreeRect[], w: number, h: number, at: FreeRect) {
+    splitFreeRects(freeRects, w, h, at, 30);
+  }
+}
+
+/* ================= FFD (fill-first) MaxRects =================
+ * The classic "keep every sheet full before the next one opens" behaviour the
+ * shop wants: items are processed largest-first and each one is placed on the
+ * OLDEST sheet where it still fits (first-fit), never jumping to sheet N+1
+ * while sheet N still has a hole for it. Inside a sheet the worst-short-side-
+ * fit rectangle wins (tight fits close gaps, loose ones are kept for later),
+ * ties broken by the smallest long-side leftover, then top-left position.
+ * Sheets stay open afterwards, so SMALL pieces still back-fill every earlier
+ * gap — sheet 1 is only ever closed with nothing left that fits in it.
+ */
+function maxRectsFFD(
+  itemsIn: Item[],
+  SW: number,
+  SH: number,
+  sortKey: string,
+  allowRot: boolean,
+  clr: number,
+  maxSheets: number,
+): { sheets: Sheet[]; unplaced: Item[]; freeFinal: FreeRect[][] } {
+  const items = [...itemsIn].sort(SORTS[sortKey]);
+  const unplaced: Item[] = [];
+  const open: { sheet: Sheet; free: FreeRect[] }[] = [{ sheet: newShell(0), free: [{ x: 0, y: 0, w: SW, h: SH }] }];
+
+  for (const it of items) {
+    const pw = it.w + clr;
+    const ph = it.h + clr;
+    const canRot = allowRot && !it.part.grain && it.w !== it.h;
+    let best: { si: number; rect: FreeRect; w: number; h: number; rot: boolean } | null = null;
+    let bestSS = Infinity; // short-side leftover (lower = tighter)
+    let bestLS = Infinity; // long-side leftover (tie-break)
+
+    // FIRST sheet that fits wins — sheets are tried in opening order
+    for (let si = 0; si < open.length && !best; si++) {
+      const free = open[si].free;
+      for (const fr of free) {
+        const opts: { w: number; h: number; rot: boolean }[] = [{ w: pw, h: ph, rot: false }];
+        if (canRot) opts.push({ w: ph, h: pw, rot: true });
+        for (const o of opts) {
+          if (o.w > fr.w + 1e-6 || o.h > fr.h + 1e-6) continue;
+          // WSSF: smallest short-side leftover, then smallest long-side
+          // leftover, then top-left — keeps the sheet's perimeter tidy
+          const ss = Math.min(fr.w - o.w, fr.h - o.h);
+          const ls = Math.max(fr.w - o.w, fr.h - o.h);
+          if (
+            ss < bestSS ||
+            (ss === bestSS &&
+              (ls < bestLS || (ls === bestLS && (fr.x < (best?.rect.x ?? 0) || (fr.x === (best?.rect.x ?? 0) && fr.y < (best?.rect.y ?? 0))))))
+          ) {
+            best = { si, rect: fr, w: o.w, h: o.h, rot: o.rot };
+            bestSS = ss;
+            bestLS = ls;
+          }
         }
       }
-      if (!contained) pruned.push(a);
     }
-    freeRects.length = 0;
-    freeRects.push(...pruned);
+
+    if (!best) {
+      const fits = pw <= SW && ph <= SH;
+      const fitsRot = canRot && ph <= SW && pw <= SH;
+      if ((!fits && !fitsRot) || open.length >= maxSheets) {
+        unplaced.push(it);
+        continue;
+      }
+      open.push({ sheet: newShell(open.length), free: [{ x: 0, y: 0, w: SW, h: SH }] });
+      const rot = !fits;
+      const w = rot ? ph : pw;
+      const h = rot ? pw : ph;
+      open[open.length - 1].sheet.placed.push({ part: it.part, x: 0, y: 0, w: w - clr, h: h - clr, rotated: rot });
+      open[open.length - 1].sheet.usedArea += it.w * it.h;
+      splitFreeRects(open[open.length - 1].free, w, h, { x: 0, y: 0, w: SW, h: SH }, 30);
+      continue;
+    }
+
+    const tgt = open[best.si];
+    tgt.sheet.placed.push({ part: it.part, x: best.rect.x, y: best.rect.y, w: best.w - clr, h: best.h - clr, rotated: best.rot });
+    tgt.sheet.usedArea += it.w * it.h;
+    splitFreeRects(tgt.free, best.w, best.h, best.rect, 30);
   }
+
+  return {
+    sheets: open.map((o) => o.sheet),
+    unplaced,
+    freeFinal: open.map((o) => o.free),
+  };
 }
 
 /* ================= guillotine packing (OptiNest style) =================
@@ -589,6 +705,15 @@ function nestGroupSync(items: Item[], key: string, S: Settings): NestGroup {
       }
     }
   }
+  // phase 4: FFD — fill-first MaxRects: a sheet is only opened when the
+  // previous one has no hole left for the current part (shop favourite)
+  for (const rot of rotOpts) {
+    for (const sort of FFD_SORTS) {
+      const res = maxRectsFFD(items, SW, SH, sort, rot, clr, S.maxSheets);
+      res.sheets.forEach((s, i) => (s.offcuts = (res.freeFinal[i] ?? []).filter((f) => f.w >= S.minOffcut && f.h >= S.minOffcut).slice(0, 3)));
+      push({ sheets: res.sheets, unplaced: res.unplaced }, `ffd/${sort}${rot ? "+rot" : ""}`);
+    }
+  }
   let best = candidates[0];
   candidates.forEach((c) => {
     if (better(c.score, best.score)) best = c;
@@ -780,6 +905,12 @@ async function nestGroupBudget(
           r.sheets.forEach((s, i) => (s.offcuts = (r.freeFinal[i] ?? []).slice(0, 3)));
           return { sheets: r.sheets, unplaced: r.unplaced.length, unplacedItems: r.unplaced, score: scoreOf(r.unplaced.length, r.sheets, sheetArea), strategy: `guillotine/${sort}/${sp}${rot ? "+rot" : ""}` };
         });
+    for (const sort of FFD_SORTS)
+      plan.push(() => {
+        const r = maxRectsFFD(itemsIn, SW, SH, sort, rot, clr, S.maxSheets);
+        r.sheets.forEach((s, i) => (s.offcuts = (r.freeFinal[i] ?? []).filter((f) => f.w >= S.minOffcut && f.h >= S.minOffcut).slice(0, 3)));
+        return { sheets: r.sheets, unplaced: r.unplaced.length, unplacedItems: r.unplaced, score: scoreOf(r.unplaced.length, r.sheets, sheetArea), strategy: `ffd/${sort}${rot ? "+rot" : ""}` };
+      });
   }
 
   let best: RunResult | null = null;
