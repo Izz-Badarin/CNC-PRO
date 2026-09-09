@@ -1043,27 +1043,33 @@ function buildPanel3D(pn: PanelItem, S: Settings): THREE.Group {
   const w = Number.isFinite(pn.w) ? pn.w : 5;
   const h = Number.isFinite(pn.h) ? pn.h : 5;
   const t = Number.isFinite(pn.thk) ? pn.thk : 0;
-  const thk = t > 0 ? t : pn.material === "plywood" ? S.bodyThk : pn.material === "back" ? S.backThk : S.mdfThk;
+  // same rules as generatePanelParts: 0 = auto · unknown material = plywood
+  const mat = pn.material ?? "plywood";
+  const thk = t > 0 ? t : mat === "mdf" ? S.mdfThk : mat === "back" ? S.backThk : S.bodyThk;
   const W = Math.max(5, w);
   const H = Math.max(5, h);
-  let mat: THREE.Material;
-  if (pn.material === "plywood") {
+  let mat3: THREE.Material;
+  if (mat === "plywood") {
     const ply = plyMaterialById(S, pn.matId ?? null);
-    mat = ply && ply.solid ? plyBoxMat(ply) : woodMat(W, H, ply, true);
-  } else if (pn.material === "back") {
-    mat = new THREE.MeshStandardMaterial({ color: "#5d6b52", roughness: 0.9, metalness: 0.02 });
+    mat3 = ply && ply.solid ? plyBoxMat(ply) : woodMat(W, H, ply, true);
+  } else if (mat === "back") {
+    mat3 = new THREE.MeshStandardMaterial({ color: "#5d6b52", roughness: 0.9, metalness: 0.02 });
   } else {
     const finish = pn.finish ?? S.mdfFinish ?? "white";
-    mat =
+    mat3 =
       finish === "oak"
         ? woodMat(W, H, OAK_MDF_PLY, true)
         : new THREE.MeshStandardMaterial({ color: S.colorMdf, roughness: 0.55, metalness: 0.02 });
   }
-  const m = box(W, H, thk, mat, "panel");
+  const m = box(W, H, thk, mat3, "panel");
   // stands on the floor, floating 60mm in front of the cabinet wall plane so
   // it reads as a separate object
   m.position.set(W / 2, H / 2, thk / 2 + 60);
   g.add(m);
+  // geometry is in mm — scale to metres like every cabinet group, so the panel
+  // is the same size as the cut part instead of 1000× too big (which inflated
+  // the scene bounding box and broke the camera framing)
+  g.scale.setScalar(0.001);
   return g;
 }
 
@@ -1247,7 +1253,9 @@ export class CabinetViewer {
     if (opts.panels && opts.panels.length) {
       let px = x + 80;
       opts.panels.forEach((pn) => {
-        if (!Number.isFinite(pn.w) || !Number.isFinite(pn.h)) return;
+        // same validity rule as generatePanelParts — a 0/invalid size would
+        // draw a sliver or poison the scene bounding box
+        if (!pn || !(pn.w > 0) || !(pn.h > 0)) return;
         const grp = buildPanel3D(pn, S);
         const laidP = opts.followLayout && !!pn.layout && Number.isFinite(pn.layout.x) && Number.isFinite(pn.layout.y ?? 0);
         if (laidP) {
