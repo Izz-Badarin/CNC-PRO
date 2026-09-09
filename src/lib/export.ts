@@ -5,6 +5,7 @@ import {
   bandStr,
   drillOps,
   type GrainOverrides,
+  type RotationOverrides,
   bandingByMaterial,
   columnFaceWidth,
   columnLayout,
@@ -19,9 +20,10 @@ import {
 } from "./model";
 import { nestParts } from "./nesting";
 import { layoutCabs, panelPositions } from "./layout2d";
-import { plyMaterialById, partMatName, SETTINGS_VERSION, type LibraryItem } from "./defaults";
+import { plyMaterialById, partMatName, SETTINGS_VERSION, wastePctOf, applyWaste, type LibraryItem } from "./defaults";
 
-const allParts = (c: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = []) => allPartsMerged(c, S, ov, panels);
+const allParts = (c: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = [], rot: RotationOverrides = {}) =>
+  allPartsMerged(c, S, ov, panels, rot);
 
 /** human material label honoring per-cabinet plywood materials (ply name / veneer back follows ply) */
 const matLabel = (S: Settings, p: { material: string; matId?: string }) => partMatName(S, p);
@@ -284,11 +286,11 @@ export function frontElevationDxf(cabs: Cabinet[], panels: PanelItem[] = []): st
 }
 
 /* ---------------- cut list csv ---------------- */
-export function cutListCsv(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = []): string {
+export function cutListCsv(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = [], rot: RotationOverrides = {}): string {
   const rows: (string | number)[][] = [
     ["Cabinet", "Part", "Material", "Grain locked", "Length mm", "Width mm", "Qty", "Edge banding", "Bend length m", "Holes", "Shape"],
   ];
-  allParts(cabs, S, ov, panels).forEach((p) => {
+  allParts(cabs, S, ov, panels, rot).forEach((p) => {
   rows.push([
     p.cabName,
     p.name,
@@ -307,9 +309,9 @@ export function cutListCsv(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}
 }
 
 /* ---------------- drilling csv ---------------- */
-export function drillingCsv(cabs: Cabinet[], S: Settings): string {
+export function drillingCsv(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = [], rot: RotationOverrides = {}): string {
   const rows: (string | number)[][] = [["Cabinet", "Part", "Material", "Instance", "X mm", "Y mm", "Dia mm", "Depth mm", "Type"]];
-  drillOps(cabs, S)
+  drillOps(cabs, S, ov, panels, rot)
     .filter((o) => o.x >= 0)
     .forEach((o) => rows.push([o.cabName, o.part, o.material, o.instance, o.x, o.y, o.dia, o.depth, o.type]));
   return csv(rows);
@@ -318,9 +320,9 @@ export function drillingCsv(cabs: Cabinet[], S: Settings): string {
 
 
 /* ---------------- nesting csv ---------------- */
-export function nestingCsv(cabs: Cabinet[], S: Settings, panels: PanelItem[] = []): string {
+export function nestingCsv(cabs: Cabinet[], S: Settings, panels: PanelItem[] = [], ov: GrainOverrides = {}, rot: RotationOverrides = {}): string {
   const rows: (string | number)[][] = [["Sheet group", "Sheet #", "Cabinet", "Part", "X mm", "Y mm", "W mm", "H mm", "Rotated"]];
-  nestParts(allParts(cabs, S, {}, panels), S).forEach((g) =>
+  nestParts(allParts(cabs, S, ov, panels, rot), S).forEach((g) =>
     g.sheets.forEach((s) =>
       s.placed.forEach((pp) =>
         rows.push([g.key, s.index + 1, pp.part.cabName, pp.part.name, pp.x, pp.y, pp.w, pp.h, pp.rotated ? "yes" : "no"]),
@@ -331,8 +333,8 @@ export function nestingCsv(cabs: Cabinet[], S: Settings, panels: PanelItem[] = [
 }
 
 /* ---------------- HTML / print ---------------- */
-export function cutListHtml(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = []): string {
-  const parts = allParts(cabs, S, ov, panels);
+export function cutListHtml(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = [], rot: RotationOverrides = {}): string {
+  const parts = allParts(cabs, S, ov, panels, rot);
   const trs = parts
     .map(
       (p, i) => `<tr><td>${i + 1}</td><td>${p.cabName}</td><td>${p.name}</td><td>${matLabel(S, p)}</td>
@@ -349,9 +351,9 @@ export function cutListHtml(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {
   <tbody>${trs}</tbody></table><script>window.onload=()=>window.print()</script></body></html>`;
 }
 
-export function labelsHtml(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = []): string {
+export function labelsHtml(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = [], rot: RotationOverrides = {}): string {
   const cards: string[] = [];
-  allParts(cabs, S, ov, panels).forEach((p) => {
+  allParts(cabs, S, ov, panels, rot).forEach((p) => {
     for (let i = 0; i < p.qty; i++) {
       const edges = [
         p.band.top ? `<span class="e">TOP</span>` : "",
@@ -414,6 +416,7 @@ export function bomReportHtml(
   project?: ProjectInfo | null,
   customers?: Customer[] | null,
   opts: BomReportOpts = {},
+  rot: RotationOverrides = {},
 ): string {
   const now = new Date();
   const nowStr = now.toLocaleString();
@@ -425,15 +428,16 @@ export function bomReportHtml(
   const customer = customers?.find((c) => c.id === project?.customerId) ?? null;
 
   const frontSvg = frontElevationSvg(cabinets, panels);
-  const parts = allParts(cabinets, settings, grain, panels);
-  const merged = allPartsMerged(cabinets, settings, grain, panels);
+  const parts = allParts(cabinets, settings, grain, panels, rot);
+  const merged = allPartsMerged(cabinets, settings, grain, panels, rot);
   const nesting = nestParts(parts, settings);
   const totalSheets = nesting.reduce((a, g) => a + g.sheets.length, 0);
   const totalParts = merged.reduce((a, p) => a + p.qty, 0);
   const totalArea = merged.reduce((a, p) => a + (p.w * p.h * p.qty) / 1e6, 0);
   const totalBend = merged.reduce((a, p) => a + (bandLengthMm(p) * p.qty) / 1000, 0);
   const totalHoles = merged.reduce((a, p) => a + p.holes.length * p.qty, 0);
-  const banding = bandingByMaterial(cabinets, settings);
+  const banding = bandingByMaterial(cabinets, settings, grain, panels, rot);
+  const wastePct = wastePctOf(settings);
 
   let hinges = 0,
     hangingRails = 0;
@@ -623,8 +627,10 @@ export function bomReportHtml(
     })
     .join("");
 
+  // every BOM line shows the NET (real) quantity and the ORDER quantity with
+  // the waste/loss allowance on top — what to actually buy to stay safe
   const bomTable = bomRows
-    .map((r) => `<tr><td>${escH(r.category)}</td><td>${escH(r.item)}</td><td class="num">${r.qty}</td><td>${escH(r.unit)}</td><td class="small">${escH(r.note || "")}</td></tr>`)
+    .map((r) => `<tr><td>${escH(r.category)}</td><td>${escH(r.item)}</td><td class="num">${r.qty}</td><td class="num"><b>${applyWaste(r.qty, r.unit, wastePct)}</b></td><td>${escH(r.unit)}</td><td class="small">${escH(r.note || "")}</td></tr>`)
     .join("");
 
   const cutByMat = [...materialsByKey.entries()]
@@ -647,7 +653,7 @@ export function bomReportHtml(
       const sheets = g.sheets.length;
       const util = (g.avgUtil * 100).toFixed(1);
       const offcuts = g.sheets.flatMap((s) => s.offcuts).length;
-      return `<tr><td>${escH(g.key)}</td><td class="num">${sheets}</td><td class="num">${g.partCount}</td><td class="num">${(g.totalArea / 1e6).toFixed(2)} m2</td><td class="num">${util}%</td><td>${escH(g.strategy || "")} - ${offcuts} offcuts</td><td class="num">${g.unplaced}</td></tr>`;
+      return `<tr><td>${escH(g.key)}</td><td class="num">${sheets}</td><td class="num"><b>${applyWaste(sheets, "sheets", wastePct)}</b></td><td class="num">${g.partCount}</td><td class="num">${(g.totalArea / 1e6).toFixed(2)} m2</td><td class="num">${util}%</td><td>${escH(g.strategy || "")} - ${offcuts} offcuts</td><td class="num">${g.unplaced}</td></tr>`;
     })
     .join("");
 
@@ -686,7 +692,8 @@ export function bomReportHtml(
         <span class="small">Panels: ${panels.map((p) => escH(p.name)).join(", ") || "-"}</span><br/><br/>
         <span class="small">Settings: body ${settings.bodyThk}mm - MDF ${settings.mdfThk}mm - back ${settings.backThk}mm - bit ${settings.bitDiameter}mm - shelf ${settings.holeDiameter}mm<br/>
         Hinge auto &lt;900-&gt;2 900-1799-&gt;3 1800-2399-&gt;4 2400-2999-&gt;5 &gt;=3000-&gt;6 - cups 140mm from ends<br/>
-        Rail pilots 2x ${settings.bitDiameter}mm per rail - min gap above rail ${settings.railShelfMinGap}mm</span>
+        Rail pilots 2x ${settings.bitDiameter}mm per rail - first shelf +${settings.railShelfGap}mm above rail, rest &gt;= ${settings.railShelfMinGap}mm<br/>
+        BOM waste allowance ${wastePct}% (Net -&gt; Order columns)</span>
       </div></div>
     </div>
     <h3 style="margin-top:14px">Front Elevation - Dimensioned (D2)</h3>
@@ -706,8 +713,8 @@ export function bomReportHtml(
 
   <div class="page" id="p4">
     <h2>Bill of Materials - Materials and Hardware (M + U + L)</h2>
-    <p class="small">Sheet counts from actual nesting output. Slides counted per drawer at real slide depth (pairs/drawer). Hinges from new rule incl. glass and full doors. Handles removed everywhere.</p>
-    <table><thead><tr><th>Category</th><th>Item</th><th>Qty</th><th>Unit</th><th>Note</th></tr></thead><tbody>${bomTable}</tbody></table>
+    <p class="small">Sheet counts from actual nesting output. Slides counted per drawer at real slide depth (pairs/drawer). Hinges from new rule incl. glass and full doors. Handles removed everywhere. Net = real quantity · Order = net + ${wastePct}% waste/loss allowance (what to buy).</p>
+    <table><thead><tr><th>Category</th><th>Item</th><th>Net</th><th>Order (+${wastePct}%)</th><th>Unit</th><th>Note</th></tr></thead><tbody>${bomTable}</tbody></table>
     <div class="footer"><span>${escH(projName)} - BOM</span><span>Page 4 / 7</span></div>
   </div>
 
@@ -720,7 +727,7 @@ export function bomReportHtml(
 
   <div class="page" id="p6">
     <h2>Nesting Summary - One-material-at-a-time (N) + Strategies</h2>
-    <table><thead><tr><th>Group</th><th>Sheets</th><th>Parts</th><th>Area</th><th>Avg util</th><th>Strategy / Offcuts</th><th>Unplaced</th></tr></thead><tbody>${nestingTable || '<tr><td colspan="7">No nesting</td></tr>'}</tbody></table>
+    <table><thead><tr><th>Group</th><th>Sheets (net)</th><th>Order (+${wastePct}%)</th><th>Parts</th><th>Area</th><th>Avg util</th><th>Strategy / Offcuts</th><th>Unplaced</th></tr></thead><tbody>${nestingTable || '<tr><td colspan="8">No nesting</td></tr>'}</tbody></table>
     <h3>Sheet size rules</h3>
     <div class="card small">Plywood / Veneer back: 2440x1220 locked. MDF: ${escH(settings.mdfSheet)} (auto = tall >2420 on 3050x1220 else 2440x1220). Margin ${settings.sheetMargin}mm - clearance ${settings.partClearance}mm - min offcut ${settings.minOffcut}mm - max sheets ${settings.maxSheets} - grainLock ${settings.grainLock ? "ON" : "OFF"} - nestFrom ${escH(settings.nestFrom)} - direction ${escH(settings.nestDirection)}</div>
     <div class="footer"><span>${escH(projName)} - Nesting - ${totalSheets} sheets</span><span>Page 6 / 7</span></div>
@@ -729,7 +736,7 @@ export function bomReportHtml(
   <div class="page" id="p7">
     <h2>Edge Banding and Drilling Notes</h2>
     <h3>Edge banding per material</h3>
-    <table><thead><tr><th>Material</th><th>Meters</th><th>Width mm</th><th>Note</th></tr></thead><tbody>${banding.map((b) => `<tr><td>${escH(b.material)}</td><td class="num">${b.meters.toFixed(2)}</td><td class="num">${b.mm.toFixed(0)}</td><td class="small">${b.meters.toFixed(2)} m - ${b.mm}mm tape</td></tr>`).join("") || '<tr><td colspan="4">No banding</td></tr>'}</tbody></table>
+    <table><thead><tr><th>Material</th><th>Net meters</th><th>Order (+${wastePct}%)</th><th>Net mm</th><th>Note</th></tr></thead><tbody>${banding.map((b) => `<tr><td>${escH(b.material)}</td><td class="num">${b.meters.toFixed(2)}</td><td class="num"><b>${applyWaste(b.meters, "m", wastePct).toFixed(1)}</b></td><td class="num">${b.mm.toFixed(0)}</td><td class="small">real ${b.meters.toFixed(2)} m - buy ${applyWaste(b.meters, "m", wastePct).toFixed(1)} m to be safe</td></tr>`).join("") || '<tr><td colspan="5">No banding</td></tr>'}</tbody></table>
     <h3>Drilling</h3>
     <div class="card small">
       Shelf pins ${settings.holeDiameter}mm (${settings.shelfHolesPerSide}/side at ${settings.shelfHoleCenter}mm) - rail pilots ${settings.bitDiameter}mm (2 per rail)<br/>
@@ -757,10 +764,11 @@ export interface ProjectFileData {
   customers?: Customer[];
   library?: LibraryItem[];
   grain?: GrainOverrides;
+  rotation?: RotationOverrides;
 }
 
-export function projectJson(cabs: Cabinet[], S: Settings, project?: ProjectInfo, customers?: Customer[], library?: LibraryItem[], grain?: GrainOverrides): string {
-  return JSON.stringify({ version: SETTINGS_VERSION, settings: S, cabinets: cabs, project, customers, library, grain }, null, 2);
+export function projectJson(cabs: Cabinet[], S: Settings, project?: ProjectInfo, customers?: Customer[], library?: LibraryItem[], grain?: GrainOverrides, rotation?: RotationOverrides): string {
+  return JSON.stringify({ version: SETTINGS_VERSION, settings: S, cabinets: cabs, project, customers, library, grain, rotation }, null, 2);
 }
 
 /**
@@ -781,6 +789,7 @@ export async function readProjectFile(file: File): Promise<ProjectFileData> {
       customers: data.customers,
       library: data.library,
       grain: data.grain,
+      rotation: data.rotation,
     };
   throw new Error("Invalid project file");
 }

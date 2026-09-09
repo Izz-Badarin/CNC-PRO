@@ -1,17 +1,18 @@
 import { modelBounds } from "../src/three/bounds";
 import { layout3DCabs } from "../src/lib/layout3d";
-import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, doorHingeCount, makeCabinet, plyMaterialById } from "../src/lib/defaults";
+import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, applyWaste, doorHingeCount, makeCabinet, migrateSettings, plyMaterialById, wastePctOf } from "../src/lib/defaults";
 import { buildDxf, buildDxfForSheet } from "../src/lib/dxf";
 import { buildSideSvg, layoutCabs, overlapBoxes, panelPositions } from "../src/tabs/View2DTab";
 import { bomReportHtml, frontElevationHtml, frontElevationDxf, frontElevationSvg, projectJson, readProjectFile } from "../src/lib/export";
 import { explodedReportHtml } from "../src/lib/explodedReport";
 import * as THREE from "three";
 import { OBJExporter } from "three/examples/jsm/exporters/OBJExporter.js";
-import { allParts, bandLengthMm, carcassDepth, coverCenterX, coverPanelDims, doorDims, drillOps, fullDoorAutoDims, generateCabinetParts, glassDoorRefs, kickH, railShelfYs, stackOn, stackedHeights, totalBandingM, validateCabinet } from "../src/lib/model";
+import { allParts, allPartsMerged, applyManualRotation, bandLengthMm, canonicalPartId, carcassDepth, coverCenterX, coverPanelDims, doorDims, drillOps, fullDoorAutoDims, generateCabinetParts, glassDoorRefs, kickH, railShelfYs, rotatePartManual, rotatePartOnce, stackOn, stackedHeights, totalBandingM, validateCabinet } from "../src/lib/model";
 import type { Part } from "../src/types";
 import { nestParts, layoutIsValid, sheetDimsFor } from "../src/lib/nesting";
 import type { Settings } from "../src/types";
 import { buildCabinetGroup } from "../src/three/scene";
+import { captureCabinetShots } from "../src/lib/cabShots";
 
 /* Node has no DOM — scene.ts bakes textures / label sprites on a 2D canvas.
  * A minimal stub keeps those code paths alive in the smoke suite. */
@@ -292,7 +293,9 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   const col = { id: "c1", width: 0, shelves: 0, fixed: false, drawers: [] as import("../src/types").DrawerSpec[], door: null, rail: "suits" as const, railHeight: 1000, railShelf: true };
   const autoYs = railShelfYs(col, S, 2000);
   check("railShelf auto: 1000mm space / 250 gap → 3 shelves", autoYs.length === 3, `${autoYs.length}`);
-  check("railShelf auto: every gap ≥ 250", autoYs.every((y, i) => y - (i === 0 ? 1000 : autoYs[i - 1]) >= 249.9), autoYs.map((y) => Math.round(y)).join(","));
+  // 60mm-first rule: shelf #1 pinned at rail + railShelfGap, the REST keeps ≥ minGap
+  check("railShelf auto: first shelf at rail + 60", Math.abs(autoYs[0] - 1060) < 0.01, `${autoYs[0]}`);
+  check("railShelf auto: every gap after the first ≥ 250", autoYs.slice(1).every((y, i) => y - autoYs[i] >= 249.9), autoYs.map((y) => Math.round(y)).join(","));
   const manYs = railShelfYs({ ...col, railShelfMode: "manual", shelfPositions: [1200, 1600], railShelfCount: 2 }, S, 2000);
   check("railShelf manual: exact Y positions", manYs.length === 2 && manYs[0] === 1200 && manYs[1] === 1600, manYs.map((y) => Math.round(y)).join(","));
   const baseDoor = { type: "single" as const, style: "overlay" as const, swing: "left" as const, material: "mdf" as const, mdfThk: 19, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center" as const };
@@ -593,7 +596,7 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   c.qty = 2; // BOM counts both copies
   const html = bomReportHtml([c], S);
   check("bom report: glass door line present with size", /Glass door - \d+x\d+/.test(html), "no 'Glass door' BOM row");
-  check("bom report: glass door qty = cabinet qty (2)", /Glass door - \d+x\d+<\/td><td class="num">2<\/td><td>pcs<\/td>/.test(html), "qty 2 not found");
+  check("bom report: glass door qty = cabinet qty (2)", /Glass door - \d+x\d+<\/td><td class="num">2<\/td><td class="num"><b>3<\/b><\/td><td>pcs<\/td>/.test(html), "net 2 / order 3 not found");
   check("bom report: glass row notes NOT in DXF", html.includes("NOT in DXF"));
   // and the DXF must not contain the word glass at all (no text, no layer, no label)
   const dxfAll = buildDxf([c], S, null, true);
@@ -880,6 +883,123 @@ const S: Settings = { ...DEFAULT_SETTINGS };
 }
 
 
+/* ============ manual 90° cut-list rotation (cut list → nesting / DXF / drilling / BOM) ============ */
+{
+  const c = makeCabinet("base", 600, 720, 560, "Rot");
+  const z = c.rows[0].columns[0];
+  z.drawers = [{ id: "d1", hidden: false, frontHeight: 220, slideDepthCm: 35, frontMdf: true }];
+  z.door = null;
+  const base = allParts([c], S);
+  const sideL = base.find((p) => p.name === "Side panel L")!;
+  // canonical id is rotation-invariant — the SAME piece keeps its key either way
+  check("rotation: canonical id stable across manual 90°", canonicalPartId(sideL) === canonicalPartId(rotatePartManual(sideL)));
+  // manual rotation swaps L/W, keeps every hole inside, remaps band Top→Right
+  const man = rotatePartManual(sideL);
+  check("rotation: manual 90° swaps W/H", man.w === sideL.h && man.h === sideL.w, `${sideL.w}×${sideL.h} → ${man.w}×${man.h}`);
+  check("rotation: hole count preserved", man.holes.length === sideL.holes.length);
+  check("rotation: every hole stays inside the panel", man.holes.every((h) => h.x >= 0 && h.y >= 0 && h.x <= man.w && h.y <= man.h));
+  check("rotation: note marks the manual pass", man.note.includes("manual 90°"), man.note);
+  const topBand: Part = { ...sideL, w: 100, h: 200, band: { top: true }, holes: [], grooves: [], outline: [], note: "" };
+  check("rotation: band Top→Right through the same map", rotatePartManual(topBand).band.right === true && !rotatePartManual(topBand).band.top);
+  // end to end: the override flows through allParts → merge → drillOps
+  const rot = { [canonicalPartId(sideL)]: true };
+  const rotSide = allParts([c], S, {}, [], rot).find((p) => p.name === "Side panel L")!;
+  check("rotation: allParts honors the override", rotSide.w === sideL.h && rotSide.h === sideL.w && rotSide.note.includes("manual 90°"));
+  check("rotation: merged list keeps the rotated dims", allPartsMerged([c], S, {}, [], rot).find((p) => p.name === "Side panel L")!.w === sideL.h);
+  const ops0 = drillOps([c], S).filter((o) => o.part === "Side panel L" && o.x >= 0);
+  const ops1 = drillOps([c], S, {}, [], rot).filter((o) => o.part === "Side panel L" && o.x >= 0);
+  check("rotation: drilling sees the same holes, rotated", ops0.length === ops1.length && ops1.every((o) => o.x >= 0 && o.y >= 0 && o.x <= sideL.h && o.y <= sideL.w), `${ops0.length}/${ops1.length}`);
+  // nesting + DXF consume the rotated geometry
+  const nestIn = allPartsMerged([c], S, {}, [], rot).find((p) => p.name === "Side panel L")!;
+  const placed = nestParts([nestIn], S)[0]?.sheets[0]?.placed[0];
+  check("rotation: nesting packs the rotated size", !!placed && ((placed.w === nestIn.w && placed.h === nestIn.h) || (placed.w === nestIn.h && placed.h === nestIn.w)), `${placed?.w}×${placed?.h}`);
+  const dxf0 = buildDxf([c], S, "plywood", false, {}, S.defaultPlyId, []);
+  const dxf1 = buildDxf([c], S, "plywood", false, {}, S.defaultPlyId, [], rot);
+  check("rotation: DXF output reflects the override", dxf0.includes("LINE") && dxf0 !== dxf1);
+  // empty overrides = byte-identical behaviour to before the feature
+  check("rotation: no overrides → unchanged parts", JSON.stringify(allParts([c], S)) === JSON.stringify(applyManualRotation(allParts([c], S), {})));
+}
+
+/* ============ drawer bottom veneer follows the cabinet plywood ============ */
+{
+  const S2: Settings = {
+    ...S,
+    plyMaterials: [...(S.plyMaterials ?? []), { id: "ply-oak", name: "Oak", color: "#c9a06a", opacity: 1, solid: false }],
+  };
+  const c = makeCabinet("base", 600, 720, 560, "DrwMat");
+  c.matId = "ply-oak";
+  const z = c.rows[0].columns[0];
+  z.drawers = [{ id: "d1", hidden: false, frontHeight: 220, slideDepthCm: 35, frontMdf: true }];
+  z.door = null;
+  const bottom = allParts([c], S2).find((p) => p.name.includes("Drawer bottom"))!;
+  check("drawer bottom: veneer material kept", bottom.material === "back", bottom.material);
+  check("drawer bottom: follows the cabinet plywood (oak)", bottom.matId === "ply-oak", `${bottom.matId}`);
+  check("drawer bottom: grain locks like the back panel", bottom.grain === true, `${bottom.grain}`);
+  const group = nestParts(allParts([c], S2), S2).find((g) => g.material === "back");
+  check("drawer bottom: nested with its plywood, not back@def", group?.matId === "ply-oak", `${group?.matId}`);
+  const cW = makeCabinet("base", 600, 720, 560, "DrwWhite");
+  cW.rows[0].columns[0].drawers = [{ id: "d1", hidden: false, frontHeight: 220, slideDepthCm: 35, frontMdf: true }];
+  cW.rows[0].columns[0].door = null;
+  const wBot = allParts([cW], S2).find((p) => p.name.includes("Drawer bottom"))!;
+  check("drawer bottom: no matId → project default plywood", wBot.matId === DEFAULT_PLY_ID, `${wBot.matId}`);
+}
+
+/* ============ exploded per-cabinet precision: maps drawn from true part geometry ============ */
+{
+  const c = makeCabinet("base", 600, 720, 560, "ExplPrec");
+  const z = c.rows[0].columns[0];
+  z.drawers = [{ id: "d1", hidden: false, frontHeight: 220, slideDepthCm: 35, frontMdf: true }];
+  z.door = null;
+  c.slot = "both";
+  const sideL = allPartsMerged([c], S).find((p) => p.name === "Side panel L")!;
+  // the invariant that keeps every hole inside its panel: all features live in the part frame
+  const inside = allPartsMerged([c], S).every(
+    (p) => p.holes.every((h) => h.x >= -0.01 && h.y >= -0.01 && h.x <= p.w + 0.01 && h.y <= p.h + 0.01),
+  );
+  check("exploded: every hole of every part is inside its own W×H", inside);
+  const html = explodedReportHtml([c], S, [], {}, null, null, {}, {});
+  check("exploded: drilling map uses the TRUE cut size", html.includes(`Side panel L – ${sideL.w}×${sideL.h}`), `${sideL.w}×${sideL.h}`);
+  check("exploded: drilling map shows the TRUE hole count", html.includes(`${sideL.holes.length} holes`), `${sideL.holes.length}`);
+  check("exploded: banded (front) edge labeled for orientation", html.includes("FRONT (banded)"));
+  check("exploded: per-part holes drawn on the layout", html.includes("amber/cyan/red dots"));
+}
+
+/* ============ automatic ISO / front / left captures degrade gracefully headless ============ */
+const autoShotTest = captureCabinetShots(makeCabinet("custom", 900, 720, 560, "Custom-01"), S).then((shots) => {
+  check("autoshots: headless (no window) → empty triple, no throw", shots.iso === "" && shots.front === "" && shots.left === "");
+});
+
+/* ============ rail shelves: 60mm-first rule, extras only when the space is big ============ */
+{
+  const col = (railHeight: number) => ({ id: "c1", width: 0, shelves: 0, fixed: false, drawers: [] as import("../src/types").DrawerSpec[], door: null, rail: "suits" as const, railHeight, railShelf: true });
+  check("railShelf 60-first: tiny space → no shelf", railShelfYs(col(1960), S, 2000).length === 0);
+  const single = railShelfYs(col(1700), S, 2000);
+  check("railShelf 60-first: small space → exactly the 60mm shelf + holes", single.length === 1 && Math.abs(single[0] - 1760) < 0.01, single.join(","));
+  const S80: Settings = { ...S, railShelfGap: 80 };
+  check("railShelf 60-first: custom offset honored", Math.abs(railShelfYs(col(1700), S80, 2000)[0] - 1780) < 0.01);
+  // the first shelf's pin holes really are drilled into the side panels
+  const c = makeCabinet("custom", 900, 2000, 560, "Rail60");
+  const z = c.rows[0].columns[0];
+  z.rail = "suits";
+  z.railHeight = 1000;
+  z.railShelf = true;
+  const pins = allParts([c], S).find((p) => p.name === "Side panel L")!.holes.filter((h) => h.kind === "shelf");
+  check("railShelf 60-first: first shelf brings pin holes", pins.length >= 4, `${pins.length}`);
+}
+
+/* ============ BOM waste: net + order quantities on every line ============ */
+{
+  check("waste: missing field → 10% default", wastePctOf({}) === 10 && wastePctOf(null) === 10);
+  check("waste: explicit 0 honored, >100 clamped", wastePctOf({ bomWastePct: 0 }) === 0 && wastePctOf({ bomWastePct: 150 }) === 100);
+  check("waste: sheets/pcs ceil to whole units", applyWaste(10, "sheets", 10) === 11 && applyWaste(2, "pcs", 10) === 3 && applyWaste(3, "pairs", 10) === 4);
+  check("waste: meters ceil to 0.1", applyWaste(12.34, "m", 10) === 13.6, `${applyWaste(12.34, "m", 10)}`);
+  check("waste: zero stays zero", applyWaste(0, "sheets", 10) === 0 && applyWaste(0, "m", 10) === 0);
+  check("waste: old settings migrate to 10%", migrateSettings({}).bomWastePct === 10 && migrateSettings({ bomWastePct: 5 }).bomWastePct === 5);
+  const c = makeCabinet("base", 600, 720, 560, "Waste");
+  check("waste: BOM report has Net/Order columns", bomReportHtml([c], S).includes("Order (+10%)"));
+  check("waste: exploded report has Net/Order columns", explodedReportHtml([c], S).includes("Order (+10%)"));
+}
+
 const roundTripPanels = (async () => {
   const cabs = [makeCabinet("base", 600, 720, 560, "Saved-01")];
   const project = {
@@ -900,7 +1020,7 @@ const roundTripPanels = (async () => {
   check("load still returns cabinets", loaded.cabinets.length === 1 && loaded.cabinets[0].id === cabs[0].id);
 })();
 
-roundTripPanels.then(() => {
+Promise.all([autoShotTest, roundTripPanels]).then(() => {
   if (failures) {
     console.log(`\n${failures} test(s) FAILED`);
     process.exit(1);
