@@ -4,6 +4,9 @@ import { CabinetViewer, type ViewStyle } from "../three/scene";
 import { useDebounced } from "../lib/useDebounced";
 import * as THREE from "three";
 
+// Stable defaults: a fresh [] would retrigger useDebounced and rebuild forever.
+const EMPTY_PANELS: PanelItem[] = [];
+
 export function ThreeCanvas({
   cabinets,
   settings,
@@ -12,7 +15,7 @@ export function ThreeCanvas({
   doorsOpen = false,
   drawersOpen = false,
   followLayout = false,
-  panels = [],
+  panels = EMPTY_PANELS,
   viewStyle = "realistic",
   showEdges = false,
   showLabels = false,
@@ -130,7 +133,7 @@ export function ThreeCanvas({
   }, [drawersOpen]);
 
   return (
-    <div ref={ref} className={className} style={{ cursor: onCabinetClick ? "pointer" : "default" }} onClick={onCabinetClick ? onClick : undefined} />
+    <div ref={ref} className={`viewer-canvas ${className ?? ""}`} style={{ width: "100%", height: "100%", minWidth: 0, overflow: "hidden", cursor: onCabinetClick ? "pointer" : "default" }} onClick={onCabinetClick ? onClick : undefined} />
   );
 }
 

@@ -1,3 +1,4 @@
+import { layout3DCabs } from "../lib/layout3d";
 import { useRef, useState } from "react";
 import { Camera, DoorClosed, DoorOpen, Download, Layers, Link2, Maximize2, Move3d, RotateCcw, SquareMousePointer } from "lucide-react";
 import type { Cabinet, PanelItem, Settings } from "../types";
@@ -37,17 +38,12 @@ export function View3DTab({
   const [framing, setFraming] = useState(1);
 
   const anyLaid = cabinets.some((c) => c.layout);
-  // true run footprint when following the 2D arrangement (stacked units count
-  // their width once along the wall, not their height)
-  const totalRun =
-    followLayout && anyLaid
-      ? (() => {
-          const xs = cabinets.flatMap((c) => (c.layout ? [c.layout.x, c.layout.x + c.width] : []));
-          return xs.length ? Math.max(...xs) - Math.min(0, ...xs) : cabinets.reduce((a, c) => a + c.width, 0);
-        })()
-      : cabinets.reduce((a, c) => a + c.width, 0) + spacing * Math.max(0, cabinets.length - 1);
+  const positions = layout3DCabs(cabinets, followLayout, spacing);
+  const totalRun = positions.length
+    ? Math.max(...positions.map(p => p.x + p.cab.width)) - Math.min(0, ...positions.map(p => p.x))
+    : 0;
 
-  if (cabinets.length === 0) {
+  if (cabinets.length === 0 && panels.length === 0) {
     return (
       <div className="card p-4 anim-rise">
         <Empty title="Nothing to render" sub="Add cabinets in the Project tab, then return here for the full 360° run." icon={<Move3d size={26} />} />
@@ -56,7 +52,7 @@ export function View3DTab({
   }
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[320px_1fr] anim-rise">
+    <div className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)] anim-rise">
       <div className="card p-4 h-fit space-y-4">
         <div>
           <h3 className="card-h text-[14px]"><Move3d size={15} className="text-amber-400" /> View Controls</h3>
@@ -67,8 +63,8 @@ export function View3DTab({
         <div>
           <div className="field-label !mb-2 flex items-center gap-1.5"><Camera size={12} /> Camera</div>
           <div className="grid grid-cols-3 gap-1.5">
-            <Btn size="sm" onClick={() => viewer.current?.setView("fit")}><Maximize2 size={13} /> Fit</Btn>
-            <Btn size="sm" onClick={() => viewer.current?.setView("reset")}><RotateCcw size={13} /> Reset</Btn>
+            <Btn size="sm" onClick={() => { setFraming(1); viewer.current?.setFraming(1); viewer.current?.setView("fit"); }}><Maximize2 size={13} /> Fit</Btn>
+            <Btn size="sm" onClick={() => { setFraming(1); viewer.current?.setFraming(1); viewer.current?.setView("reset"); }}><RotateCcw size={13} /> Reset</Btn>
             <Btn size="sm" onClick={() => viewer.current?.setView("iso")}>Iso</Btn>
             <Btn size="sm" onClick={() => viewer.current?.setView("front")}>Front</Btn>
             <Btn size="sm" onClick={() => viewer.current?.setView("elevation")} title="Flat straight-on elevation of the whole run">Elevation</Btn>
@@ -175,7 +171,7 @@ export function View3DTab({
         </div>
       </div>
 
-      <div className="card p-4">
+      <div className="card p-4 min-w-0">
         <div className="flex items-center justify-between">
           <h3 className="card-h text-[14px]">All cabinets — 360°</h3>
           <div className="flex items-center gap-2">
