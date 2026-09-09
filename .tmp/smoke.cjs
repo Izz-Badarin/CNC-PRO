@@ -1774,6 +1774,13 @@ function plyMaterialById(S2, id) {
   return def ?? lib[0];
 }
 var plyMaterialOf = (S2, cab) => plyMaterialById(S2, cab.matId);
+var partMatName = (S2, p) => {
+  if (p.material === "plywood") return plyMaterialById(S2, p.matId ?? null).name;
+  if (p.material === "back") return `Veneer back \xB7 ${plyMaterialById(S2, p.matId ?? null).name}`;
+  if (p.material === "mdf") return "MDF";
+  if (p.material === "glass") return "Glass (ref)";
+  return p.material;
+};
 var DEFAULT_SLIDE_HOLE_PATTERNS = {
   "25": [39, 71, 167, 231],
   "30": [39, 71, 167, 231],
@@ -1901,7 +1908,7 @@ var KITCHEN_SLIDE_PATTERN = [38, 61, 261.5, 294.5];
 var KITCHEN_FIRST_HOLE_Y = 75;
 var KITCHEN_LAST_DRAWER_OFFSET = 55;
 var DOOR_GAP_BETWEEN_DOUBLE = 3;
-var doorHingeCount = (doorH) => doorH <= 1e3 ? 2 : doorH <= 1500 ? 3 : doorH <= 2e3 ? 4 : doorH <= 2400 ? 5 : 6;
+var doorHingeCount = (doorH) => doorH < 900 ? 2 : doorH < 1800 ? 3 : doorH < 2400 ? 4 : doorH < 3e3 ? 5 : 6;
 var mkColumn = (p) => ({
   id: uid(),
   width: 0,
@@ -2500,7 +2507,7 @@ var kickH = (c, S2) => hasKick(c) ? S2.kickHeight : 0;
 var boxHeight = (c, S2) => c.height - kickH(c, S2);
 var carcassDepth = (c, S2) => Math.max(40, c.depth - (c.hasFronts !== false ? frontThk(c, S2) : 0) - (c.hasBack !== false ? S2.backThk : 0));
 function frontThk(c, S2) {
-  for (const r2 of c.rows) for (const col of r2.columns) if (col.door) {
+  for (const r3 of c.rows) for (const col of r3.columns) if (col.door) {
     const d = col.door;
     if (d.material === "glass") return 10;
     return d.material === "mdf" ? d.mdfThk || S2.mdfThk : S2.bodyThk;
@@ -2512,6 +2519,7 @@ var isNotched = (t) => t === "L" || t === "C";
 var stackOn = (c) => Array.isArray(c.stack) && c.stack.length >= 2 && c.stack.every((h) => h > 0);
 var stackedHeights = (c) => stackOn(c) ? c.stack : [];
 var stackTotal = (c) => stackedHeights(c).reduce((a, h) => a + h, 0);
+var bandStr = (b) => [b.top && "T", b.bottom && "B", b.left && "L", b.right && "R"].filter(Boolean).join(",") || "\u2014";
 var bandLengthMm = (p) => (p.band.top ? p.w : 0) + (p.band.bottom ? p.w : 0) + (p.band.left ? p.h : 0) + (p.band.right ? p.h : 0);
 function partId(p) {
   return `${p.cabId}|${p.name}|${Math.round(p.w * 10)}x${Math.round(p.h * 10)}|${p.material}|${p.thickness}`;
@@ -2631,15 +2639,30 @@ function drawerBank(col, rowH, S2) {
 function doorDims(faceW, rowH, door, S2) {
   const hAuto = door.style === "inset" ? rowH - 2 * (S2.bodyThk + S2.doorGap) : rowH - 2 * S2.doorGap;
   const h = door.hOverride && door.hOverride > 0 ? Math.max(50, door.hOverride) : hAuto;
+  const insetTotal = faceW - 2 * (S2.bodyThk + S2.doorGap);
+  const overlayTotal = faceW - 2 * S2.doorGap;
+  const totalAuto = door.style === "inset" ? insetTotal : overlayTotal;
+  const leafWAutoSingle = totalAuto;
+  const leafWAutoDouble = (totalAuto - DOOR_GAP_BETWEEN_DOUBLE) / 2;
+  const leafWAutoSliding = leafWAutoDouble + 20;
+  const applyWOverride = (autoW) => door.wOverride && door.wOverride > 0 ? Math.max(50, door.wOverride) : autoW;
   if (door.style === "inset") {
-    const total2 = faceW - 2 * (S2.bodyThk + S2.doorGap);
-    if (door.type === "double" || door.type === "sliding") return { w: (total2 - DOOR_GAP_BETWEEN_DOUBLE) / 2, h, count: 2 };
-    return { w: total2, h, count: 1 };
+    if (door.type === "double" || door.type === "sliding") {
+      const autoW = door.type === "sliding" ? leafWAutoSliding : leafWAutoDouble;
+      return { w: applyWOverride(autoW), h, count: 2, wAuto: autoW, hAuto };
+    }
+    return { w: applyWOverride(leafWAutoSingle), h, count: 1, wAuto: leafWAutoSingle, hAuto };
   }
-  const total = faceW - 2 * S2.doorGap;
-  if (door.type === "double") return { w: (total - DOOR_GAP_BETWEEN_DOUBLE) / 2, h, count: 2 };
-  if (door.type === "sliding") return { w: (total - DOOR_GAP_BETWEEN_DOUBLE) / 2 + 20, h, count: 2 };
-  return { w: total, h, count: 1 };
+  if (door.type === "double") return { w: applyWOverride(leafWAutoDouble), h, count: 2, wAuto: leafWAutoDouble, hAuto };
+  if (door.type === "sliding") return { w: applyWOverride(leafWAutoSliding), h, count: 2, wAuto: leafWAutoSliding, hAuto };
+  return { w: applyWOverride(leafWAutoSingle), h, count: 1, wAuto: leafWAutoSingle, hAuto };
+}
+function fullDoorAutoDims(cab, S2) {
+  const kick = kickH(cab, S2);
+  const BH = cab.height - kick;
+  const wAuto = cab.width - 2 * S2.doorGap;
+  const hAuto = BH - 2 * S2.doorGap;
+  return { wAuto, hAuto };
 }
 function doorMaterial(door, S2) {
   if (door.material === "glass") return { mat: "mdf", thk: 10 };
@@ -2709,8 +2732,8 @@ function generateCabinetParts(cab, S2) {
 }
 function fullDoorColumns(cab) {
   const cols = /* @__PURE__ */ new Set();
-  cab.rows.forEach((r2) => {
-    r2.columns.forEach((c, ci) => {
+  cab.rows.forEach((r3) => {
+    r3.columns.forEach((c, ci) => {
       if (c.door && c.door.full) cols.add(ci);
     });
   });
@@ -2719,6 +2742,7 @@ function fullDoorColumns(cab) {
 function buildBody(cab, S2, mk, T) {
   const kick = kickH(cab, S2);
   const BH = cab.height - kick;
+  const cabinetPly = plyMaterialOf(S2, cab);
   const W = cab.width;
   const D = carcassDepth(cab, S2);
   const insideW = W - 2 * T;
@@ -2749,9 +2773,10 @@ function buildBody(cab, S2, mk, T) {
     sideR.outline = mirrorOutline(outline, D);
   }
   const slot = cab.slot ?? "none";
+  const slotFromFront = cab.slotFromFront != null && cab.slotFromFront > 0 ? cab.slotFromFront : S2.slotFromFront;
   if (slot !== "none" && !notch) {
     const sw = Math.max(6, S2.slotWidth);
-    const cx = D - Math.max(sw, S2.slotFromFront);
+    const cx = D - Math.max(sw, slotFromFront);
     const x1 = cx - sw / 2;
     const x2 = cx + sw / 2;
     if (x1 > 8 && x2 < D - 8) {
@@ -2759,7 +2784,7 @@ function buildBody(cab, S2, mk, T) {
       targets.forEach((sp) => {
         const isR = sp === sideR;
         sp.grooves.push({ x1: isR ? D - x2 : x1, y1: 0, x2: isR ? D - x1 : x2, y2: sp.h, width: sw, kind: "slot" });
-        sp.note = `${sp.note} \xB7 slot ${sw}mm @ ${Math.round(S2.slotFromFront)}mm from front${isR ? " (mirrored)" : ""}`;
+        sp.note = `${sp.note} \xB7 slot ${sw}mm @ ${Math.round(slotFromFront)}mm from front${isR ? " (mirrored)" : ""}`;
       });
     }
   }
@@ -2785,8 +2810,9 @@ function buildBody(cab, S2, mk, T) {
       h: BH - 2,
       material: "back",
       thickness: S2.backThk,
+      matId: cabinetPly.id,
       grain: false,
-      note: "full cabinet back"
+      note: `full cabinet back \xB7 follows ${cabinetPly.name} \xB7 ${S2.backThk}mm`
     });
   const fullDoorCols = fullDoorColumns(cab);
   let y0 = 0;
@@ -2835,6 +2861,7 @@ function buildBody(cab, S2, mk, T) {
 }
 function buildStackedBody(cab, S2, mk, T) {
   const kick = kickH(cab, S2);
+  const cabinetPly = plyMaterialOf(S2, cab);
   const W = cab.width;
   const D = carcassDepth(cab, S2);
   const insideW = W - 2 * T;
@@ -2865,9 +2892,10 @@ function buildStackedBody(cab, S2, mk, T) {
       band: { left: true },
       note: `box ${bi + 1} \xB7 mirrored \xB7 banding: front`
     });
+    const slotFromFront2 = cab.slotFromFront != null && cab.slotFromFront > 0 ? cab.slotFromFront : S2.slotFromFront;
     if (slot !== "none") {
       const sw = Math.max(6, S2.slotWidth);
-      const cx = D - Math.max(sw, S2.slotFromFront);
+      const cx = D - Math.max(sw, slotFromFront2);
       const x1 = cx - sw / 2;
       const x2 = cx + sw / 2;
       if (x1 > 8 && x2 < D - 8) {
@@ -2875,7 +2903,7 @@ function buildStackedBody(cab, S2, mk, T) {
         targets.forEach((sp) => {
           const isR = sp === sideR;
           sp.grooves.push({ x1: isR ? D - x2 : x1, y1: 0, x2: isR ? D - x1 : x2, y2: sp.h, width: sw, kind: "slot" });
-          sp.note = `${sp.note} \xB7 slot ${sw}mm @ ${Math.round(S2.slotFromFront)}mm from front${isR ? " (mirrored)" : ""}`;
+          sp.note = `${sp.note} \xB7 slot ${sw}mm @ ${Math.round(slotFromFront2)}mm from front${isR ? " (mirrored)" : ""}`;
         });
       }
     }
@@ -2901,13 +2929,14 @@ function buildStackedBody(cab, S2, mk, T) {
         h: bH - 2,
         material: "back",
         thickness: S2.backThk,
+        matId: cabinetPly.id,
         grain: false,
-        note: `box ${bi + 1} back`
+        note: `box ${bi + 1} back \xB7 follows ${cabinetPly.name}`
       });
-    const rows = cab.rows.map((r2, i) => ({ r: r2, i })).filter(({ r: r2 }) => (r2.box ?? 0) === bi);
+    const rows = cab.rows.map((r3, i) => ({ r: r3, i })).filter(({ r: r3 }) => (r3.box ?? 0) === bi);
     let y0 = 0;
-    rows.forEach(({ r: r2, i }, idx) => {
-      const lays = columnLayout(cab, r2, S2);
+    rows.forEach(({ r: r3, i }, idx) => {
+      const lays = columnLayout(cab, r3, S2);
       if (idx > 0)
         mk({
           name: `Row section R${i + 1}/R${i + 2}`,
@@ -2923,7 +2952,7 @@ function buildStackedBody(cab, S2, mk, T) {
         const dv = mk({
           name: `Vertical divider R${i + 1}C${ci + 1}${bTag}`,
           w: D,
-          h: Math.max(20, r2.h - S2.dividerDeduct),
+          h: Math.max(20, r3.h - S2.dividerDeduct),
           material: "plywood",
           thickness: T,
           band: { right: true },
@@ -2934,7 +2963,7 @@ function buildStackedBody(cab, S2, mk, T) {
       lays.forEach((lay, ci) => {
         const faceW = lays.length === 1 ? W : columnFaceWidth(cab, lay, S2);
         const tag = `${bTag} R${i + 1}${lays.length > 1 ? `C${ci + 1}` : ""}`;
-        buildColumn(cab, S2, mk, lay, faceW, r2.h, y0, tag, {
+        buildColumn(cab, S2, mk, lay, faceW, r3.h, y0, tag, {
           L: sideL,
           R: sideR,
           first: lay.first,
@@ -2947,7 +2976,7 @@ function buildStackedBody(cab, S2, mk, T) {
           suppressAllDoors: cabDoor ? true : void 0
         });
       });
-      y0 += r2.h;
+      y0 += r3.h;
     });
   });
   if (cabDoor) genCabinetFullDoor(S2, mk, cab);
@@ -2960,7 +2989,7 @@ function buildColumn(cab, S2, mk, lay, faceW, rowH, y0, tag, sides) {
   const rowY = sides.rowY ?? 0;
   const nested = col.rows ?? [];
   if (nested.length > 0) {
-    const total = nested.reduce((a, r2) => a + r2.h, 0) || 1;
+    const total = nested.reduce((a, r3) => a + r3.h, 0) || 1;
     let sy = y0;
     nested.forEach((sub, si) => {
       const subH = sub.h / total * rowH;
@@ -3173,10 +3202,11 @@ function buildColumn(cab, S2, mk, lay, faceW, rowH, y0, tag, sides) {
   if (rail !== "off") {
     const rh0 = col.railHeight ?? (rail === "suits" ? S2.railSuitsH : rail === "dresses" ? S2.railDressesH : S2.railDouble1);
     const railHeights = rail === "double" ? [rh0, S2.railDouble2] : [rh0];
+    const railCenterX = D / 2;
     railHeights.forEach((ry) => {
       const yy = clamp(y0 + ry, 8, sides.L.h - 8);
-      drillLeft(S2.shelfHoleCenter, yy, S2.bitDiameter, "shelf");
-      drillRight(S2.shelfHoleCenter, yy, S2.bitDiameter, "shelf");
+      drillLeft(railCenterX, yy, S2.bitDiameter, "shelf");
+      drillRight(railCenterX, yy, S2.bitDiameter, "shelf");
     });
   }
   if (rail !== "off" && col.railShelf) {
@@ -3327,18 +3357,25 @@ function genCabinetFullDoor(S2, mk, cab) {
   if (!fd || fd === "off") return;
   const kick = kickH(cab, S2);
   const BH = cab.height - kick;
+  const raw = fd;
+  const isGlass = raw.startsWith("glass");
+  const suffix = raw.includes("-") ? raw.split("-")[1] : "";
+  const type = suffix === "double" ? "double" : suffix === "left" || suffix === "right" ? "single" : cab.width > 620 ? "double" : "single";
+  const swing = suffix === "right" ? "right" : "left";
   const door = {
-    type: cab.width > 620 ? "double" : "single",
+    type,
     style: "overlay",
-    swing: "left",
-    material: fd === "mdf" ? "mdf" : "glass",
+    swing,
+    material: isGlass ? "glass" : "mdf",
     finish: S2.mdfFinish,
     mdfThk: S2.mdfThk,
     hingeBrand: "Universal 35mm",
     hasHandle: true,
     handlePos: "center",
     full: true,
-    hingeCount: cab.fullDoorHinges
+    hingeCount: cab.fullDoorHinges,
+    hOverride: cab.fullDoorHOverride != null && cab.fullDoorHOverride > 0 ? cab.fullDoorHOverride : void 0,
+    wOverride: cab.fullDoorWOverride != null && cab.fullDoorWOverride > 0 ? cab.fullDoorWOverride : void 0
   };
   genDoor(S2, mk, door, cab.width, BH, " CABINET");
 }
@@ -3355,16 +3392,53 @@ function glassDoorRefs(cabs, S2) {
     const stacked = stackOn(cab);
     const heights = stacked ? stackedHeights(cab) : [cab.height];
     const fullH = heights.reduce((a, h) => a + h, 0) - kick;
+    const fd = cab.fullDoor;
+    if (stacked && fd && fd.startsWith("glass") && fd !== "off") {
+      const suffix = fd.includes("-") ? fd.split("-")[1] : "";
+      const type = suffix === "double" ? "double" : suffix === "left" || suffix === "right" ? "single" : cab.width > 620 ? "double" : "single";
+      const swing = suffix === "right" ? "right" : "left";
+      const dims = doorDims(
+        cab.width,
+        fullH,
+        { type, style: "overlay", swing, material: "glass", mdfThk: S2.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true, hingeCount: cab.fullDoorHinges },
+        S2
+      );
+      const nHinges = Math.min(6, Math.max(1, cab.fullDoorHinges ?? doorHingeCount(dims.h)));
+      const cupYs = hingeCupYs(dims.h, nHinges);
+      const wR = Math.max(5, Math.round(dims.w * 10) / 10);
+      for (let j = 0; j < dims.count; j++) {
+        const hingedLeft = dims.count === 1 ? swing === "left" : j === 0;
+        out.push({
+          cabId: cab.id,
+          cabName: `${cab.name}_${Math.round(cab.width)}x${Math.round(cab.height)}`,
+          name: `Glass full door${dims.count === 2 ? j === 0 ? " L" : " R" : ""} (reference)`,
+          w: wR,
+          h: Math.max(5, Math.round(dims.h * 10) / 10),
+          qty: 1,
+          material: "glass",
+          thickness: 0,
+          band: {},
+          holes: cupYs.map((y) => ({ x: hingedLeft ? S2.hingeCupEdge : wR - S2.hingeCupEdge, y, dia: S2.hingeCupDiameter, depth: S2.hingeCupDepth, kind: "hinge" })),
+          grooves: [],
+          shape: "rect",
+          outline: [],
+          grain: false,
+          note: `REFERENCE \u2014 full-cabinet glass door, NOT drilled here \xB7 ${nHinges} \xD7 \xD8${S2.hingeCupDiameter} cups \xB7 drill the glass at these positions`,
+          reference: true
+        });
+      }
+      return;
+    }
     heights.forEach((_bh, bi) => {
-      const rowsForBox = stacked ? cab.rows.filter((r2) => (r2.box ?? 0) === bi) : cab.rows;
-      rowsForBox.forEach((r2) => {
-        const lays = columnLayout(cab, r2, S2);
+      const rowsForBox = stacked ? cab.rows.filter((r3) => (r3.box ?? 0) === bi) : cab.rows;
+      rowsForBox.forEach((r3) => {
+        const lays = columnLayout(cab, r3, S2);
         lays.forEach((lay, ci) => {
           const col = lay.col;
           const door = col.door;
           if (door && door.material === "glass" && (col.rows ?? []).length === 0 && door.type !== "sliding") {
             const faceW = lays.length === 1 ? cab.width : columnFaceWidth(cab, lay, S2);
-            const leafH = door.full ? fullH : r2.h;
+            const leafH = door.full ? fullH : r3.h;
             const tag = lays.length > 1 ? ` \xB7 ${cab.name} C${ci + 1}` : "";
             const { w: dw, h: dh, count } = doorDims(faceW, leafH, door, S2);
             const nHinges = Math.min(6, Math.max(1, doorHingeCount(dh)));
@@ -3489,6 +3563,23 @@ function buildCorner(cab, S2, mk, T) {
     if (columnHasDrawers(col)) col.drawers.forEach((dr, i) => genStandardDrawer(S2, mk, dr, Ld, ` R${ri + 1}`, i));
   });
 }
+function partKey(p) {
+  const hs = p.holes.map((h) => `${r2(h.x)},${r2(h.y)},${r2(h.dia)},${h.kind}`).join(";");
+  const gs = p.grooves.map((g) => `${r2(g.x1)},${r2(g.y1)},${r2(g.x2)},${r2(g.y2)}`).join(";");
+  const ol = p.outline.map(([x, y]) => `${r2(x)},${r2(y)}`).join(";");
+  return [p.name, p.cabName, r2(p.w), r2(p.h), p.material, p.matId ?? "", p.thickness, p.shape, ol, bandStr(p.band), p.note, hs, gs].join("|");
+}
+var r2 = (n) => Math.round(n * 100) / 100;
+function mergePieces(parts) {
+  const map = /* @__PURE__ */ new Map();
+  parts.forEach((p) => {
+    const k = partKey(p);
+    const ex = map.get(k);
+    if (ex) ex.qty += p.qty;
+    else map.set(k, { ...p });
+  });
+  return [...map.values()];
+}
 function rotatePartOnce(p) {
   const w = p.w;
   const rot = ([x, y]) => [y, w - x];
@@ -3557,6 +3648,9 @@ function allParts(cabs, S2, ov = {}, panels = []) {
   const rotated = cabs.flatMap((c) => generateCabinetParts(c, S2)).map(rotatePartOnce);
   return applyGrain([...panelParts, ...rotated], S2, ov);
 }
+function allPartsMerged(cabs, S2, ov = {}, panels = []) {
+  return mergePieces(allParts(cabs, S2, ov, panels));
+}
 function drillOps(cabs, S2) {
   const ops = [];
   allParts(cabs, S2).forEach((p) => {
@@ -3578,16 +3672,42 @@ function totalBandingM(cabs, S2) {
   });
   return band / 1e3;
 }
+function bandingByMaterial(cabs, S2) {
+  const agg = /* @__PURE__ */ new Map();
+  allParts(cabs, S2).forEach((p) => {
+    const mm = ((p.band.top ? p.w : 0) + (p.band.bottom ? p.w : 0) + (p.band.left ? p.h : 0) + (p.band.right ? p.h : 0)) * p.qty;
+    if (mm <= 0) return;
+    let key;
+    let isPlywood = false;
+    let matId = null;
+    if (p.material === "plywood") {
+      const pm = plyMaterialById(S2, p.matId ?? null);
+      key = pm.name;
+      isPlywood = true;
+      matId = pm.id;
+    } else if (p.material === "mdf") {
+      const banded = p.band.top || p.band.bottom || p.band.left || p.band.right;
+      if (!banded) return;
+      key = "MDF Oak";
+    } else {
+      return;
+    }
+    const cur = agg.get(key) ?? { mm: 0, matId, isPlywood };
+    cur.mm += mm;
+    agg.set(key, cur);
+  });
+  return [...agg.entries()].map(([material, v]) => ({ material, mm: v.mm, meters: v.mm / 1e3, isPlywood: v.isPlywood, matId: v.matId })).sort((a, b) => b.mm - a.mm);
+}
 function validateCabinet(c, S2) {
   const out = [];
   const BH = boxHeight(c, S2);
-  const sum = c.rows.reduce((a, r2) => a + r2.h, 0);
+  const sum = c.rows.reduce((a, r3) => a + r3.h, 0);
   if (stackOn(c)) {
     const heights = stackedHeights(c);
     if (Math.abs(stackTotal(c) - c.height) > 0.5)
       out.push({ level: "err", msg: `Boxes \u03A3 ${Math.round(stackTotal(c))}mm \u2260 cabinet height ${Math.round(c.height)}mm` });
     heights.forEach((bh, bi) => {
-      const bsum = c.rows.filter((r2) => (r2.box ?? 0) === bi).reduce((a, r2) => a + r2.h, 0);
+      const bsum = c.rows.filter((r3) => (r3.box ?? 0) === bi).reduce((a, r3) => a + r3.h, 0);
       const target = bi === 0 ? bh - kickH(c, S2) : bh;
       if (Math.abs(bsum - target) > 0.5)
         out.push({
@@ -3595,7 +3715,7 @@ function validateCabinet(c, S2) {
           msg: `Box ${bi + 1}: rows \u03A3 ${Math.round(bsum)}mm \u2260 box ${Math.round(target)}mm = ${Math.round(Math.abs(target - bsum))}mm ${bsum < target ? "missing" : "over"}`
         });
     });
-    if (c.rows.some((r2) => (r2.box ?? 0) >= heights.length))
+    if (c.rows.some((r3) => (r3.box ?? 0) >= heights.length))
       out.push({ level: "err", msg: "A row is assigned to a box that no longer exists" });
   } else if (Math.abs(sum - BH) > 0.5) {
     const diff = Math.round(Math.abs(BH - sum));
@@ -3611,8 +3731,8 @@ function validateCabinet(c, S2) {
   }
   if ((c.slot ?? "none") !== "none" && (isCorner(c.type) || isNotched(c.type)))
     out.push({ level: "warn", msg: "Linear slot is skipped on corner / notched side panels" });
-  c.rows.forEach((r2, i) => {
-    const lays = columnLayout(c, r2, S2);
+  c.rows.forEach((r3, i) => {
+    const lays = columnLayout(c, r3, S2);
     const used = lays.reduce((a, l) => a + l.w, 0) + Math.max(0, lays.length - 1) * S2.bodyThk;
     if (lays.length > 1 && used > c.width - 2 * S2.bodyThk + 1)
       out.push({ level: "err", msg: `Row ${i + 1}: columns \u03A3 ${Math.round(used)}mm exceed inner width ${Math.round(c.width - 2 * S2.bodyThk)}mm` });
@@ -3622,19 +3742,19 @@ function validateCabinet(c, S2) {
       const faceW = lays.length === 1 ? c.width : columnFaceWidth(c, lay, S2);
       if (columnHasDrawers(col)) {
         const fh = col.drawers.reduce((a, d) => a + d.frontHeight, 0);
-        if (Math.abs(fh - r2.h) > 20) out.push({ level: "warn", msg: `${label}: drawer fronts \u03A3${Math.round(fh)}mm vs row ${Math.round(r2.h)}mm` });
+        if (Math.abs(fh - r3.h) > 20) out.push({ level: "warn", msg: `${label}: drawer fronts \u03A3${Math.round(fh)}mm vs row ${Math.round(r3.h)}mm` });
         col.drawers.forEach((d) => {
           if (!c.isKitchen && d.slideDepthCm * 10 > c.depth) out.push({ level: "warn", msg: `${label}: ${d.slideDepthCm * 10}mm slide deeper than cabinet (${c.depth}mm)` });
         });
         if (findNearestDrawerDepth(c.depth) < 25) out.push({ level: "warn", msg: `${label}: too shallow for any slide` });
       } else if (col.door && !col.fixed) {
-        const { w: dw, h: dh } = doorDims(faceW, r2.h, col.door, S2);
+        const { w: dw, h: dh } = doorDims(faceW, r3.h, col.door, S2);
         if (dw < 130) out.push({ level: "warn", msg: `${label}: door leaf ${Math.round(dw)}mm wide (too narrow)` });
         if (dw > 620) out.push({ level: "warn", msg: `${label}: door leaf ${Math.round(dw)}mm wide (consider double)` });
         if (dh >= 900 && doorHingeCount(dh) < 3) out.push({ level: "warn", msg: `${label}: tall door needs 3 hinges` });
       }
       if (!columnHasDrawers(col) && col.shelves > 0) {
-        const gap = shelfGap(r2.h, col.shelves, S2);
+        const gap = shelfGap(r3.h, col.shelves, S2);
         if (gap < S2.shelfGapMin - 25 || gap > S2.shelfGapMax + 25)
           out.push({ level: "warn", msg: `${label}: shelf gap ${Math.round(gap)}mm outside ${S2.shelfGapMin}\u2013${S2.shelfGapMax}mm` });
       }
@@ -3837,7 +3957,7 @@ function buildDxfFromSheets(sel, S2, labels, extra = "") {
   const GAP_X = 500;
   const GAP_Y = 400;
   let slot = 0;
-  sel.forEach(({ key, sheet }) => {
+  sel.forEach(({ sheet }) => {
     const SW = sheet.sheetW || S2.sheetW;
     const SH = sheet.sheetH || S2.sheetH;
     const UW = SW - 2 * S2.sheetMargin;
@@ -3860,14 +3980,16 @@ function buildDxfFromSheets(sel, S2, labels, extra = "") {
     frame += line("SHEET", SW, 0, SW, SH);
     frame += line("SHEET", SW, SH, 0, SH);
     frame += line("SHEET", 0, SH, 0, 0);
-    if (labels)
+    if (labels) {
+      const title = partMatName(S2, { material: sheet.material, matId: sheet.matId }).replace("\xB7", "-");
       frame += text(
         "LABEL",
         0,
         SH + 40,
         46,
-        `Sheet ${sheet.index + 1} - ${sheet.key || key} - ${SW}x${SH} - util ${(sheet.util * 100).toFixed(1)}% - ${sheet.placed.length} parts`
+        `Sheet ${sheet.index + 1} - ${title} ${sheet.thickness}mm - ${SW}x${SH} - util ${(sheet.util * 100).toFixed(1)}% - ${sheet.placed.length} parts`
       );
+    }
     const clamp3 = S2.clampHoles === false ? "" : buildClampHoles(shifted, S2);
     out += offsetEntities(frame, xOffset, yOffset);
     const body = buildDxfForSheet(shifted, labels, { bandMarkers: S2.bandMarkers !== false });
@@ -3878,10 +4000,11 @@ function buildDxfFromSheets(sel, S2, labels, extra = "") {
   out += "0\nENDSEC\n0\nEOF\n";
   return out;
 }
-var plyGroupMatch = (g, matId) => g.matId === (matId ?? null) || g.matId === null && matId === DEFAULT_PLY_ID;
+var plyGroupMatch = (g, matId, defId) => g.matId === (matId ?? null) || g.matId === null && matId === defId;
 function buildDxf(cabs, S2, material, labels, ov = {}, matId, panels = []) {
   const groups = nestParts(allParts(cabs, S2, ov, panels), S2).filter(
-    (g) => (!material || g.material === material) && (material !== "plywood" || plyGroupMatch(g, matId))
+    (g) => (!material || g.material === material) && // veneer back follows the cabinet plywood — split per material just like plywood
+    (material !== "plywood" && material !== "back" || plyGroupMatch(g, matId, S2.defaultPlyId))
   );
   const sel = [];
   groups.forEach((g) => g.sheets.forEach((sheet) => sel.push({ key: g.key, sheet })));
@@ -3896,10 +4019,10 @@ function buildClampHoles(sheet, S2) {
   const SW = sheet.sheetW || S2.sheetW;
   const SH = sheet.sheetH || S2.sheetH;
   const placed = sheet.placed;
-  const isFree = (cx, cy, r2) => placed.every((p) => {
+  const isFree = (cx, cy, r3) => placed.every((p) => {
     const nx = Math.max(p.x, Math.min(cx, p.x + p.w));
     const ny = Math.max(p.y, Math.min(cy, p.y + p.h));
-    return Math.hypot(cx - nx, cy - ny) > r2 + 5;
+    return Math.hypot(cx - nx, cy - ny) > r3 + 5;
   });
   const R = 5;
   const cands = [];
@@ -3942,8 +4065,9 @@ var import_react2 = __toESM(require_react(), 1);
 var import_jsx_runtime = __toESM(require_jsx_runtime(), 1);
 
 // src/lib/layout2d.ts
+var okLayout = (l) => !!l && Number.isFinite(l.x) && Number.isFinite(l.y);
 function layoutCabs(cabs) {
-  const anyLayout = cabs.some((c) => c.layout);
+  const anyLayout = cabs.some((c) => okLayout(c.layout));
   if (!anyLayout) {
     let x = 0;
     return cabs.map((cab) => {
@@ -3953,10 +4077,10 @@ function layoutCabs(cabs) {
     });
   }
   const out = [];
-  cabs.filter((c) => c.layout).forEach((c) => out.push({ cab: c, x: c.layout.x, y: c.layout.y }));
+  cabs.filter((c) => okLayout(c.layout)).forEach((c) => out.push({ cab: c, x: c.layout.x, y: c.layout.y }));
   const minX = out.length ? Math.min(...out.map((p) => p.x)) : 0;
   let cursor = out.length ? Math.max(...out.map((p) => p.x + p.cab.width)) + 4 : 0;
-  cabs.filter((c) => !c.layout).forEach((cab) => {
+  cabs.filter((c) => !okLayout(c.layout)).forEach((cab) => {
     out.push({ cab, x: Math.max(cursor, minX), y: 0 });
     cursor += cab.width + 4;
   });
@@ -3967,14 +4091,15 @@ function panelPositions(cabs, panels) {
   const right = pos.length ? Math.max(...pos.map((p) => p.x + p.cab.width)) : 0;
   let cursor = right + 40;
   return panels.map((pn) => {
-    if (pn.layout) return { pn, x: pn.layout.x, y: pn.layout.y ?? 0 };
+    if (okLayout(pn.layout)) return { pn, x: pn.layout.x, y: pn.layout.y };
     const out = { pn, x: cursor, y: 0 };
-    cursor += Math.max(60, pn.w) + 30;
+    cursor += Math.max(60, Number.isFinite(pn.w) ? pn.w : 60) + 30;
     return out;
   });
 }
 
 // src/lib/export.ts
+var allParts2 = (c, S2, ov = {}, panels = []) => allPartsMerged(c, S2, ov, panels);
 function elevationItems(cabs, panels) {
   const pos = layoutCabs(cabs);
   const ppos = panelPositions(cabs, panels);
@@ -4071,22 +4196,22 @@ function frontElevationDxf(cabs, panels = []) {
   if (items.length === 0) return "";
   const minX = Math.min(...items.map((i) => i.x));
   const maxX = Math.max(...items.map((i) => i.x + i.w));
-  const r2 = (n) => (Math.round(n * 1e3) / 1e3).toString();
+  const r3 = (n) => (Math.round(n * 1e3) / 1e3).toString();
   const ascii = (s) => s.replace(/[^ -~]/g, "?");
   const line2 = (l, x1, y12, x2, y22) => `0
 LINE
 8
 ${l}
 10
-${r2(x1)}
+${r3(x1)}
 20
-${r2(y12)}
+${r3(y12)}
 30
 0
 11
-${r2(x2)}
+${r3(x2)}
 21
-${r2(y22)}
+${r3(y22)}
 31
 0
 `;
@@ -4095,13 +4220,13 @@ TEXT
 8
 ${l}
 10
-${r2(x)}
+${r3(x)}
 20
-${r2(y)}
+${r3(y)}
 30
 0
 40
-${r2(h)}
+${r3(h)}
 1
 ${ascii(t)}
 `;
@@ -4183,12 +4308,767 @@ EOF
 `;
   return out;
 }
+function escH(s) {
+  return s.replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" })[c]);
+}
+function bomReportHtml(cabinets, settings, panels = [], grain = {}, project, customers, opts = {}) {
+  const now = /* @__PURE__ */ new Date();
+  const nowStr = now.toLocaleString();
+  const dateStr = now.toLocaleDateString();
+  const projName = project?.name?.trim() || "Untitled Project";
+  const projType = project?.type || "-";
+  const projStatus = project?.status || "draft";
+  const projNotes = project?.notes || "";
+  const customer = customers?.find((c) => c.id === project?.customerId) ?? null;
+  const frontSvg = frontElevationSvg(cabinets, panels);
+  const parts = allParts2(cabinets, settings, grain, panels);
+  const merged = allPartsMerged(cabinets, settings, grain, panels);
+  const nesting = nestParts(parts, settings);
+  const totalSheets = nesting.reduce((a, g) => a + g.sheets.length, 0);
+  const totalParts = merged.reduce((a, p) => a + p.qty, 0);
+  const totalArea = merged.reduce((a, p) => a + p.w * p.h * p.qty / 1e6, 0);
+  const totalBend = merged.reduce((a, p) => a + bandLengthMm(p) * p.qty / 1e3, 0);
+  const totalHoles = merged.reduce((a, p) => a + p.holes.length * p.qty, 0);
+  const banding = bandingByMaterial(cabinets, settings);
+  let hinges = 0, hangingRails = 0;
+  const slides = {};
+  const materials = {};
+  const backArea = {};
+  const matKeyOf = (p) => p.material === "plywood" ? p.matId ?? "plywood" : p.material === "back" ? `back:${p.matId ?? "def"}` : p.material;
+  const totalShelves = parts.filter((p) => p.name.startsWith("Shelf")).reduce((a, p) => a + p.qty, 0);
+  const shelfPins = totalShelves * 4;
+  const addArea = (p) => {
+    const m = matKeyOf(p);
+    materials[m] = (materials[m] ?? 0) + p.w / 1e3 * (p.h / 1e3) * p.qty;
+    if (p.material === "back") backArea[m] = (backArea[m] ?? 0) + p.w / 1e3 * (p.h / 1e3) * p.qty;
+  };
+  generatePanelParts(panels, settings).forEach(addArea);
+  cabinets.forEach((cab) => {
+    allParts2([cab], settings).forEach(addArea);
+    drillOps([cab], settings).forEach((op) => {
+      if (op.type === "hinge") hinges++;
+    });
+    const fullSpan = (stackOn(cab) ? stackedHeights(cab).reduce((a, h) => a + h, 0) : cab.height) - kickH(cab, settings);
+    const fullDoorActive = !!cab.fullDoor && cab.fullDoor !== "off";
+    cab.rows.forEach((row2) => {
+      const lays = columnLayout(cab, row2, settings);
+      row2.columns.forEach((col, ci) => {
+        if (col.door && !fullDoorActive && col.door.material === "glass" && col.door.type !== "sliding") {
+          const faceW = lays.length === 1 ? cab.width : columnFaceWidth(cab, lays[ci], settings);
+          const leafH = doorDims(faceW, col.door.full ? fullSpan : row2.h, col.door, settings).h;
+          hinges += Math.min(6, Math.max(1, col.door.hingeCount ?? doorHingeCount(leafH)));
+        }
+        col.drawers.forEach((dr) => {
+          const cm = Math.round(dr.slideDepthCm);
+          slides[cm] = (slides[cm] ?? 0) + 1;
+        });
+        if (col.rail && col.rail !== "off") hangingRails += col.rail === "double" ? 2 : 1;
+      });
+    });
+    if (cab.fullDoor?.startsWith("glass")) {
+      const fdRaw = cab.fullDoor;
+      const fdSuffix = fdRaw.includes("-") ? fdRaw.split("-")[1] : "";
+      const fdType = fdSuffix === "double" ? "double" : fdSuffix === "left" || fdSuffix === "right" ? "single" : cab.width > 620 ? "double" : "single";
+      const leafH = doorDims(
+        cab.width,
+        fullSpan,
+        { type: fdType, style: "overlay", swing: fdSuffix === "right" ? "right" : "left", material: "glass", mdfThk: settings.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true, hingeCount: cab.fullDoorHinges },
+        settings
+      ).h;
+      hinges += Math.min(6, Math.max(1, cab.fullDoorHinges ?? doorHingeCount(leafH)));
+    }
+  });
+  const sheetCount = {};
+  nesting.forEach((g) => {
+    const k = `${g.material}@${g.matId ?? "def"}`;
+    sheetCount[k] = (sheetCount[k] ?? 0) + g.sheets.length;
+  });
+  const bomRows = [];
+  const plyMats = settings.plyMaterials ?? [];
+  if (plyMats.length > 0) {
+    plyMats.forEach((pm) => {
+      const area = materials[pm.id] ?? 0;
+      if (area > 0) bomRows.push({ category: "Materials", item: `${pm.name} (2440x1220)`, qty: sheetCount[`plywood@${pm.id}`] ?? 0, unit: "sheets", note: `${area.toFixed(2)} m2 - ${pm.solid ? "solid" : "grain"} - nesting` });
+    });
+  }
+  if (materials["plywood"] && plyMats.length === 0) {
+    const a = materials["plywood"] ?? 0;
+    if (a > 0) bomRows.push({ category: "Materials", item: "Plywood (2440x1220)", qty: Math.ceil(a / (2.44 * 1.22)), unit: "sheets", note: `${a.toFixed(2)} m2` });
+  }
+  if (materials["mdf"]) bomRows.push({ category: "Materials", item: `MDF (${settings.mdfSheet})`, qty: sheetCount["mdf@def"] ?? Math.ceil(materials["mdf"] / (settings.mdfSheet === "3050x1220" ? 3.05 * 1.22 : 2.44 * 1.22)), unit: "sheets", note: `${materials["mdf"].toFixed(2)} m2 - nesting` });
+  Object.entries(backArea).sort((a, b) => b[1] - a[1]).forEach(([key, area]) => {
+    const mid = key.slice("back:".length);
+    const pm = plyMaterialById(settings, mid === "def" ? null : mid);
+    bomRows.push({
+      category: "Materials",
+      item: `Veneer back \u2014 ${pm.name} (2440x1220)`,
+      qty: sheetCount[`back@${mid}`] ?? Math.ceil(area / (2.44 * 1.22)),
+      unit: "sheets",
+      note: `${area.toFixed(2)} m2 - follows ${pm.name} - nesting`
+    });
+  });
+  banding.forEach((b) => bomRows.push({ category: "Materials", item: `Edge banding - ${b.material}`, qty: Math.round(b.meters * 10) / 10, unit: "m", note: `${b.mm.toFixed(0)} mm` }));
+  if (hinges > 0) bomRows.push({ category: "Hardware", item: "Hinges - Universal 35mm", qty: hinges, unit: "pcs", note: "35 cup bored in the door only - auto: <900->2 900-1799->3 1800-2399->4 2400-2999->5 >=3000->6 - 140mm from ends" });
+  Object.keys(slides).map(Number).sort((a, b) => a - b).forEach((cm) => {
+    if (slides[cm] > 0) bomRows.push({ category: "Hardware", item: `Drawer slides ${cm}0mm`, qty: slides[cm], unit: "pairs", note: "1 pair per drawer, by real drawer depth" });
+  });
+  if (hangingRails > 0) bomRows.push({ category: "Hardware", item: "Hanging rails", qty: hangingRails, unit: "pcs" });
+  if (shelfPins > 0) bomRows.push({ category: "Hardware", item: "Shelf pins (32mm)", qty: shelfPins, unit: "pcs", note: `${totalShelves} shelves x4 - 2 pins per side` });
+  const materialsByKey = /* @__PURE__ */ new Map();
+  merged.forEach((p) => {
+    const key = `${p.material}@${p.matId ?? "def"}@${p.thickness}`;
+    if (!materialsByKey.has(key)) materialsByKey.set(key, []);
+    materialsByKey.get(key).push(p);
+  });
+  const css = `
+    @page{margin:12mm;size:A4}
+    *{box-sizing:border-box}
+    body{margin:0;padding:0;background:#fff;color:#111;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:1.45}
+    .page{page-break-after:always;padding:14mm 12mm 12mm;position:relative;min-height:100vh}
+    .page:last-child{page-break-after:auto}
+    h1{font-size:22px;margin:0 0 6px;letter-spacing:-.02em}
+    h2{font-size:16px;margin:18px 0 8px;border-bottom:2px solid #111;padding-bottom:4px}
+    h3{font-size:13px;margin:14px 0 6px}
+    .muted{color:#555}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .card{border:1px solid #bbb;border-radius:6px;padding:10px 12px;background:#fafafa}
+    .badge{display:inline-block;background:#111;color:#fff;font-size:9px;font-weight:700;padding:2px 8px;border-radius:999px;letter-spacing:.06em;text-transform:uppercase}
+    table{border-collapse:collapse;width:100%;margin-top:8px}
+    th,td{border:1px solid #bbb;padding:5px 7px;text-align:left;font-size:10.5px}
+    th{background:#eee;font-weight:700}
+    td.num{text-align:right;font-family:monospace}
+    .cover{text-align:center;padding-top:28mm}
+    .cover h1{font-size:30px;margin-bottom:6px}
+    .cover .sub{font-size:13px;color:#444;margin-top:8px}
+    .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:18px}
+    .kpi .card{text-align:center}
+    .kpi .v{font-size:22px;font-weight:800}
+    .kpi .l{font-size:10px;color:#555;text-transform:uppercase;letter-spacing:.07em;margin-top:2px}
+    .shot{margin-top:10px;text-align:center}
+    .shot img{max-width:100%;max-height:420px;border:1px solid #bbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.12)}
+    .elevation svg{width:100%;height:auto;border:1px solid #ddd;border-radius:6px;background:#fff}
+    .small{font-size:10px;color:#666}
+    .footer{position:absolute;bottom:8mm;left:12mm;right:12mm;display:flex;justify-content:space-between;font-size:9px;color:#777;border-top:1px solid #ddd;padding-top:4px}
+    .toc a{color:#111;text-decoration:none}
+    .toc li{margin:3px 0}
+    @media print{.no-print{display:none}}
+  `;
+  const customerBlock = customer ? `<div class="card"><b>Customer</b><br/>${escH(customer.name)}<br/><span class="small">${escH(customer.phone || "")} ${customer.email ? " - " + escH(customer.email) : ""}</span><br/><span class="small">${escH(customer.address || "")}</span></div>` : `<div class="card"><b>Customer</b><br/><span class="muted">No customer linked</span></div>`;
+  const projectBlock = `<div class="card"><b>Project</b><br/>${escH(projName)}<br/><span class="small">Type: ${escH(projType)} - Status: ${escH(projStatus)} - ${escH(dateStr)}</span>${projNotes ? `<br/><br/><span class="small">${escH(projNotes).replace(/\n/g, "<br/>")}</span>` : ""}</div>`;
+  const kpis = `
+    <div class="kpi">
+      <div class="card"><div class="v">${cabinets.length}</div><div class="l">Cabinets</div><div class="small">${panels.length} panels - ${cabinets.reduce((a, c) => a + Math.max(1, c.qty), 0)} units</div></div>
+      <div class="card"><div class="v">${totalParts}</div><div class="l">Parts</div><div class="small">${totalArea.toFixed(2)} m2 - ${totalBend.toFixed(1)} m band</div></div>
+      <div class="card"><div class="v">${totalSheets}</div><div class="l">Sheets</div><div class="small">${nesting.length} groups - avg ${(nesting.reduce((a, g) => a + g.avgUtil, 0) / Math.max(1, nesting.length) * 100).toFixed(1)}% util</div></div>
+      <div class="card"><div class="v">${totalHoles}</div><div class="l">Holes</div><div class="small">${hinges} hinges - ${Object.keys(slides).length} slide sizes</div></div>
+    </div>`;
+  const cabRows = cabinets.map((c, i) => {
+    const rows = c.rows.length;
+    const cols = c.rows.reduce((a, r3) => a + r3.columns.length, 0);
+    const doors = c.rows.reduce((a, r3) => a + r3.columns.filter((col) => col.door).length, 0);
+    const drawers = c.rows.reduce((a, r3) => a + r3.columns.reduce((aa, col) => aa + col.drawers.length, 0), 0);
+    return `<tr><td>${i + 1}</td><td>${escH(c.name)}${c.qty > 1 ? ` x${c.qty}` : ""}</td><td>${escH(c.type)}</td><td class="num">${c.width}x${c.height}x${c.depth}</td><td class="num">${c.qty}</td><td class="num">${rows} / ${cols}</td><td class="num">${doors}</td><td class="num">${drawers}</td><td>${c.hasToeKick ? "kick" : ""} ${c.hasFronts === false ? "no-fronts" : ""} ${c.hasBack === false ? "no-back" : ""}</td></tr>`;
+  }).join("");
+  const panelRows = panels.map((p, i) => {
+    const thk = p.thk > 0 ? p.thk : p.material === "plywood" ? settings.bodyThk : p.material === "back" ? settings.backThk : settings.mdfThk;
+    return `<tr><td>${i + 1}</td><td>${escH(p.name)}</td><td>${escH(p.material)}${p.matId ? " / " + escH(p.matId) : ""} ${p.finish ? " - " + escH(p.finish) : ""}</td><td class="num">${p.w}x${p.h}x${thk}</td><td>${p.grain ? "grain locked" : ""}</td></tr>`;
+  }).join("");
+  const bomTable = bomRows.map((r3) => `<tr><td>${escH(r3.category)}</td><td>${escH(r3.item)}</td><td class="num">${r3.qty}</td><td>${escH(r3.unit)}</td><td class="small">${escH(r3.note || "")}</td></tr>`).join("");
+  const cutByMat = [...materialsByKey.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([key, list]) => {
+    const [mat, mid, thk] = key.split("@");
+    const matName = list.length ? partMatName(settings, { material: mat, matId: mid === "def" ? null : mid }) : mat;
+    const area = list.reduce((a, p) => a + p.w * p.h * p.qty / 1e6, 0);
+    const rows = list.map((p, i) => `<tr><td>${i + 1}</td><td>${escH(p.cabName)}</td><td>${escH(p.name)}</td><td class="num">${p.w}x${p.h}x${p.thickness}</td><td class="num">${p.qty}</td><td>${bandStr(p.band)}</td><td class="num">${(bandLengthMm(p) * p.qty / 1e3).toFixed(2)}</td><td class="num">${p.holes.length * p.qty}</td></tr>`).join("");
+    return `<h3>${escH(matName)} - ${thk}mm - ${list.length} types - ${area.toFixed(2)} m2</h3><table><thead><tr><th>#</th><th>Cabinet</th><th>Part</th><th>Size</th><th>Qty</th><th>Banding</th><th>Bend m</th><th>Holes</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }).join("");
+  const nestingTable = nesting.map((g) => {
+    const sheets = g.sheets.length;
+    const util = (g.avgUtil * 100).toFixed(1);
+    const offcuts = g.sheets.flatMap((s) => s.offcuts).length;
+    return `<tr><td>${escH(g.key)}</td><td class="num">${sheets}</td><td class="num">${g.partCount}</td><td class="num">${(g.totalArea / 1e6).toFixed(2)} m2</td><td class="num">${util}%</td><td>${escH(g.strategy || "")} - ${offcuts} offcuts</td><td class="num">${g.unplaced}</td></tr>`;
+  }).join("");
+  const screenshotHtml = opts.screenshotDataUrl ? `<div class="shot"><img src="${opts.screenshotDataUrl}" alt="3D view"/><div class="small">3D view - ${escH(nowStr)} - ${cabinets.length} cabinets + ${panels.length} panels</div></div>` : `<div class="card" style="text-align:center;padding:18px"><b>3D screenshot not included</b><br/><span class="small">Go to <b>3D View</b> - click <b>PNG</b> (top bar). The app saves the last screenshot automatically (localStorage <code>cnc-last-3d-png</code>). Then return to <b>BOM / Hardware</b> - <b>Full Report</b> - the image will appear here.</span></div>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>BOM Report - ${escH(projName)}</title><style>${css}</style></head><body>
+  <div class="page cover">
+    <div class="badge">CNC Cabinet Designer Pro v11 - BOM Report</div>
+    <h1>${escH(projName)}</h1>
+    <div class="sub">${escH(projType)} - ${escH(projStatus)} - ${escH(nowStr)}<br/>${cabinets.length} cabinets - ${panels.length} panels - ${totalParts} parts - ${totalSheets} sheets</div>
+    ${kpis}
+    <div class="grid2" style="margin-top:18px;text-align:left">
+      ${projectBlock}
+      ${customerBlock}
+    </div>
+    <div class="card" style="margin-top:14px;text-align:left"><b>Contents</b><ol class="toc" style="margin:6px 0 0 18px">
+      <li><a href="#p2">3D view + Front elevation (customer approval)</a></li>
+      <li><a href="#p3">Cabinets and Panels list</a></li>
+      <li><a href="#p4">BOM - Materials and Hardware</a></li>
+      <li><a href="#p5">Cut list by material (bend length)</a></li>
+      <li><a href="#p6">Nesting summary (sheets, util, strategy)</a></li>
+      <li><a href="#p7">Edge banding and Drilling notes</a></li>
+    </ol></div>
+    <div class="footer"><span>${escH(projName)} - ${escH(dateStr)}</span><span>Page 1 / 7 - BOM Report</span></div>
+  </div>
+
+  <div class="page" id="p2">
+    <h2>Customer Approval - 3D View and Front Elevation</h2>
+    <div class="grid2">
+      <div><h3>3D View (E1 screenshot)</h3>${screenshotHtml}</div>
+      <div><h3>Project summary</h3><div class="card">
+        <b>${escH(projName)}</b><br/>
+        <span class="small">Cabinets: ${cabinets.map((c) => escH(c.name)).join(", ") || "-"}</span><br/>
+        <span class="small">Panels: ${panels.map((p) => escH(p.name)).join(", ") || "-"}</span><br/><br/>
+        <span class="small">Settings: body ${settings.bodyThk}mm - MDF ${settings.mdfThk}mm - back ${settings.backThk}mm - bit ${settings.bitDiameter}mm - shelf ${settings.holeDiameter}mm<br/>
+        Hinge auto &lt;900-&gt;2 900-1799-&gt;3 1800-2399-&gt;4 2400-2999-&gt;5 &gt;=3000-&gt;6 - cups 140mm from ends<br/>
+        Rail pilots 2x ${settings.bitDiameter}mm per rail - min gap above rail ${settings.railShelfMinGap}mm</span>
+      </div></div>
+    </div>
+    <h3 style="margin-top:14px">Front Elevation - Dimensioned (D2)</h3>
+    <div class="elevation">${frontSvg || '<div class="card">No elevation - add cabinets</div>'}</div>
+    <div class="footer"><span>${escH(projName)} - Front elevation - mm</span><span>Page 2 / 7</span></div>
+  </div>
+
+  <div class="page" id="p3">
+    <h2>Cabinets and Panels</h2>
+    <h3>Cabinets (${cabinets.length})</h3>
+    <table><thead><tr><th>#</th><th>Name</th><th>Type</th><th>WxHxD</th><th>Qty</th><th>Rows/Cols</th><th>Doors</th><th>Drawers</th><th>Flags</th></tr></thead><tbody>${cabRows || '<tr><td colspan="9" class="muted">No cabinets</td></tr>'}</tbody></table>
+    <h3 style="margin-top:12px">Raw Panels (${panels.length})</h3>
+    <table><thead><tr><th>#</th><th>Name</th><th>Material</th><th>Size</th><th>Grain</th></tr></thead><tbody>${panelRows || '<tr><td colspan="5" class="muted">No panels</td></tr>'}</tbody></table>
+    ${projNotes ? `<h3>Project notes</h3><div class="card">${escH(projNotes).replace(/\n/g, "<br/>")}</div>` : ""}
+    <div class="footer"><span>${escH(projName)} - Cabinets and Panels</span><span>Page 3 / 7</span></div>
+  </div>
+
+  <div class="page" id="p4">
+    <h2>Bill of Materials - Materials and Hardware (M + U + L)</h2>
+    <p class="small">Sheet counts from actual nesting output. Slides counted per drawer at real slide depth (pairs/drawer). Hinges from new rule incl. glass and full doors. Handles removed everywhere.</p>
+    <table><thead><tr><th>Category</th><th>Item</th><th>Qty</th><th>Unit</th><th>Note</th></tr></thead><tbody>${bomTable}</tbody></table>
+    <div class="footer"><span>${escH(projName)} - BOM</span><span>Page 4 / 7</span></div>
+  </div>
+
+  <div class="page" id="p5">
+    <h2>Cut List by Material - Bend length (I) + Grain lock (R)</h2>
+    <p class="small">Every part rotated once (L-W) then grain lock applies. Bend = total banded-edge length per row (incl. qty) - edge-banding tape to buy.</p>
+    ${cutByMat || '<div class="card">No parts</div>'}
+    <div class="footer"><span>${escH(projName)} - Cut list - ${totalParts} parts - ${totalArea.toFixed(2)} m2</span><span>Page 5 / 7</span></div>
+  </div>
+
+  <div class="page" id="p6">
+    <h2>Nesting Summary - One-material-at-a-time (N) + Strategies</h2>
+    <table><thead><tr><th>Group</th><th>Sheets</th><th>Parts</th><th>Area</th><th>Avg util</th><th>Strategy / Offcuts</th><th>Unplaced</th></tr></thead><tbody>${nestingTable || '<tr><td colspan="7">No nesting</td></tr>'}</tbody></table>
+    <h3>Sheet size rules</h3>
+    <div class="card small">Plywood / Veneer back: 2440x1220 locked. MDF: ${escH(settings.mdfSheet)} (auto = tall >2420 on 3050x1220 else 2440x1220). Margin ${settings.sheetMargin}mm - clearance ${settings.partClearance}mm - min offcut ${settings.minOffcut}mm - max sheets ${settings.maxSheets} - grainLock ${settings.grainLock ? "ON" : "OFF"} - nestFrom ${escH(settings.nestFrom)} - direction ${escH(settings.nestDirection)}</div>
+    <div class="footer"><span>${escH(projName)} - Nesting - ${totalSheets} sheets</span><span>Page 6 / 7</span></div>
+  </div>
+
+  <div class="page" id="p7">
+    <h2>Edge Banding and Drilling Notes</h2>
+    <h3>Edge banding per material</h3>
+    <table><thead><tr><th>Material</th><th>Meters</th><th>Width mm</th><th>Note</th></tr></thead><tbody>${banding.map((b) => `<tr><td>${escH(b.material)}</td><td class="num">${b.meters.toFixed(2)}</td><td class="num">${b.mm.toFixed(0)}</td><td class="small">${b.meters.toFixed(2)} m - ${b.mm}mm tape</td></tr>`).join("") || '<tr><td colspan="4">No banding</td></tr>'}</tbody></table>
+    <h3>Drilling</h3>
+    <div class="card small">
+      Shelf pins ${settings.holeDiameter}mm (${settings.shelfHolesPerSide}/side at ${settings.shelfHoleCenter}mm) - rail pilots ${settings.bitDiameter}mm (2 per rail)<br/>
+      Drawer slides ${settings.slideHoleDiameter}mm patterns - grooves ${settings.grooveWidth}mm x (slider - ${settings.grooveShorter}mm) at ${settings.grooveFromBottom}mm<br/>
+      Hinge cups ${settings.hingeCupDiameter}mm x ${settings.hingeCupDepth}mm deep at ${settings.hingeCupEdge}mm from edge - auto &lt;900-&gt;2 900-1799-&gt;3 1800-2399-&gt;4 2400-2999-&gt;5 &gt;=3000-&gt;6 - cups 140mm from top/bottom<br/>
+      Glass doors: REFERENCE only (dashed, NOT DRILLED) - drill glass at those positions - 35 cups excluded from DXF
+    </div>
+    <h3>DXF layers</h3>
+    <div class="card small">CUT - CLAMP_HOLES - SHELF_HOLES - SLIDE_HOLES - DRAWER_GROOVE - SHEET - LABEL - plus GLASS DOOR REF label (not drilled). Units mm, R12 compatible.</div>
+    <h3>Customer approval</h3>
+    <div class="grid2">
+      <div class="card" style="height:70px">Signature / Date<br/><br/><br/></div>
+      <div class="card" style="height:70px">Approved / Notes<br/><br/><br/></div>
+    </div>
+    <div class="footer"><span>${escH(projName)} - ${escH(nowStr)} - CNC-PRO v11</span><span>Page 7 / 7 - End</span></div>
+  </div>
+  </body></html>`;
+}
 
 // src/lib/useDebounced.ts
 var import_react = __toESM(require_react(), 1);
 
 // src/tabs/View2DTab.tsx
 var import_jsx_runtime2 = __toESM(require_jsx_runtime(), 1);
+
+// src/lib/explodedReport.ts
+var escH2 = (s) => s.replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" })[c]);
+var f2 = (n) => (Math.round(n * 100) / 100).toString();
+var matLabel = (S2, p) => partMatName(S2, p);
+function explodedCabinetSvg(cab, S2, grain) {
+  const raw = allPartsMerged([cab], S2, grain, []);
+  const parts = raw.map(rotatePartOnce);
+  const totalQty = parts.reduce((a, p) => a + p.qty, 0);
+  const totalArea = parts.reduce((a, p) => a + p.w * p.h * p.qty / 1e6, 0);
+  const VW = 960;
+  const leftPad = 46, rightPad = 30, topPad = 58, cellPad = 16, bottomLegend = 40;
+  const rowW = VW - leftPad - rightPad;
+  const style = (p) => {
+    if (p.material === "glass" || p.reference) return { fill: "rgba(140,190,230,0.28)", stroke: "#4a6a94", dash: "5 4" };
+    if (p.material === "back") return { fill: "#ecdfc0", stroke: "#8a7a5a", dash: "6 4" };
+    if (p.material === "mdf") return { fill: "#efe9dd", stroke: "#8a7a5a" };
+    return { fill: "#e6d8ba", stroke: "#7a6a4a" };
+  };
+  const packAt = (sc2) => {
+    let x2 = leftPad, y2 = topPad, rowH2 = 0;
+    for (const p of parts) {
+      const cw = p.w * sc2 + cellPad;
+      const ch = p.h * sc2 + cellPad + 14;
+      if (x2 + cw > VW - rightPad) {
+        if (x2 === leftPad && cw > rowW) return -1;
+        x2 = leftPad;
+        y2 += rowH2 + 10;
+        rowH2 = 0;
+      }
+      rowH2 = Math.max(rowH2, ch);
+      x2 += cw;
+    }
+    return y2 + rowH2;
+  };
+  let sc = 1;
+  while (sc > 0.02) {
+    const h = packAt(sc);
+    if (h > 0 && h <= 1300) break;
+    sc -= 0.05;
+  }
+  const H = Math.min(1340, Math.max(360, packAt(sc) + bottomLegend + 20));
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${VW}" height="${H}" viewBox="0 0 ${VW} ${H}" font-family="Arial, Helvetica, sans-serif">`;
+  out += `<rect width="${VW}" height="${H}" fill="#ffffff"/>`;
+  out += `<text x="${VW / 2}" y="26" font-size="15" font-weight="700" text-anchor="middle" fill="#111">${escH2(cab.name)} \u2013 Exploded Parts Layout \u2013 ${cab.width}\xD7${cab.height}\xD7${cab.depth}</text>`;
+  out += `<text x="${VW / 2}" y="42" font-size="10" text-anchor="middle" fill="#666">${parts.length} part types \xB7 ${totalQty} pieces \xB7 ${totalArea.toFixed(2)} m\xB2 \u2013 drawn at 1:${f2(1 / sc)} from the real cut list (same rotation rule as DXF)</text>`;
+  let x = leftPad, y = topPad, rowH = 0;
+  parts.forEach((p, pi) => {
+    const cw = p.w * sc + cellPad;
+    const ch = p.h * sc + cellPad + 14;
+    if (x + cw > VW - rightPad) {
+      x = leftPad;
+      y += rowH + 10;
+      rowH = 0;
+    }
+    rowH = Math.max(rowH, ch);
+    x += cw;
+    const st = style(p);
+    const rx = x - cellPad;
+    const ry = y + 14;
+    if (p.shape === "poly" && p.outline.length > 2) {
+      const xs = p.outline.map((pt) => pt[0]);
+      const ys = p.outline.map((pt) => pt[1]);
+      const minx = Math.min(...xs), maxx = Math.max(...xs);
+      const miny = Math.min(...ys), maxy = Math.max(...ys);
+      const bw = Math.max(1, maxx - minx), bh = Math.max(1, maxy - miny);
+      const fit = Math.min(p.w * sc / bw, p.h * sc / bh);
+      const pts = p.outline.map((pt) => `${f2(rx + 2 + (pt[0] - minx) * fit)} ${f2(ry + 2 + (pt[1] - miny) * fit)}`).join(" ");
+      out += `<polygon points="${pts}" fill="${st.fill}" stroke="${st.stroke}" stroke-width="1.1"${st.dash ? ` stroke-dasharray="${st.dash}"` : ""}/>`;
+    } else {
+      out += `<rect x="${f2(rx + 2)}" y="${f2(ry + 2)}" width="${f2(Math.max(1, p.w * sc - 4))}" height="${f2(Math.max(1, p.h * sc - 4))}" fill="${st.fill}" stroke="${st.stroke}" stroke-width="1.1"${st.dash ? ` stroke-dasharray="${st.dash}"` : ""}/>`;
+    }
+    if (p.band.left) out += `<rect x="${f2(rx)}" y="${f2(ry)}" width="3" height="${f2(p.h * sc)}" fill="#d0654a"/>`;
+    if (p.band.right) out += `<rect x="${f2(rx + p.w * sc - 3)}" y="${f2(ry)}" width="3" height="${f2(p.h * sc)}" fill="#d0654a"/>`;
+    if (p.band.top) out += `<rect x="${f2(rx)}" y="${f2(ry)}" width="${f2(p.w * sc)}" height="3" fill="#d0654a"/>`;
+    if (p.band.bottom) out += `<rect x="${f2(rx)}" y="${f2(ry + p.h * sc - 3)}" width="${f2(p.w * sc)}" height="3" fill="#d0654a"/>`;
+    const cxr = rx + p.w * sc / 2;
+    const name = p.name.length > 26 ? p.name.slice(0, 25) + "\u2026" : p.name;
+    const inside = p.h * sc > 46;
+    out += `<text x="${f2(cxr)}" y="${f2(inside ? ry + 13 : ry + 10)}" font-size="8.5" font-weight="700" fill="#222" text-anchor="middle">${pi + 1}. ${escH2(name)}${p.qty > 1 ? ` \xD7${p.qty}` : ""}</text>`;
+    const dimLine = `${p.w}\xD7${p.h}\xD7${p.thickness}${p.holes.length ? ` \xB7 ${p.holes.length}\u2300` : ""}${p.grain ? " \xB7 G" : ""}${p.reference ? " \xB7 REF" : ""}`;
+    out += `<text x="${f2(cxr)}" y="${f2(inside ? ry + 24 : ry + (p.h * sc > 20 ? p.h * sc - 5 : 11))}" font-size="7.5" fill="#555" text-anchor="middle">${escH2(dimLine)}</text>`;
+  });
+  const ly = H - 18;
+  const legend = [
+    ["Plywood", style({ material: "plywood" })],
+    ["MDF", style({ material: "mdf" })],
+    ["Veneer back (dashed)", style({ material: "back" })],
+    ["Glass / reference (dashed)", style({ material: "glass", reference: true })]
+  ];
+  let lx = leftPad;
+  legend.forEach(([t, s]) => {
+    out += `<rect x="${f2(lx)}" y="${f2(ly - 8)}" width="12" height="10" fill="${s.fill}" stroke="${s.stroke}" stroke-width="0.9"${s.dash ? ` stroke-dasharray="${s.dash}"` : ""}/>`;
+    out += `<text x="${f2(lx + 16)}" y="${f2(ly)}" font-size="8" fill="#555">${t}</text>`;
+    lx += 16 + t.length * 4.6 + 18;
+  });
+  out += `<text x="${f2(VW - rightPad)}" y="${f2(ly)}" font-size="8" fill="#555" text-anchor="end">orange tick = edge banding \xB7 \u2300 = hole count \xB7 G = grain locked</text>`;
+  out += `</svg>`;
+  return out;
+}
+function openDoorViewSvg(cab, S2) {
+  const W = cab.width, H = cab.height, D = cab.depth;
+  const kick = kickH(cab, S2);
+  const BH = H - kick;
+  const VW = 900, VH = 620;
+  const sc = Math.min((VW - 260) / Math.max(W, 1), (VH - 120) / Math.max(H, 1)) * 0.9;
+  const ox = 130, base = VH - 80;
+  const f = (n) => f2(n);
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${VW}" height="${VH}" viewBox="0 0 ${VW} ${VH}" font-family="Arial, Helvetica, sans-serif">`;
+  out += `<rect width="${VW}" height="${VH}" fill="#ffffff"/>`;
+  out += `<text x="${VW / 2}" y="24" font-size="14" font-weight="700" text-anchor="middle" fill="#111">${escH2(cab.name)} \u2013 Open Door View \u2013 ${W}\xD7${H}\xD7${D} \u2013 doors open 90\xB0, drawers pulled 60%</text>`;
+  const cabX = ox, cabTop = base - H * sc;
+  out += `<rect x="${f(cabX)}" y="${f(cabTop)}" width="${f(W * sc)}" height="${f(H * sc)}" fill="#f5f0e0" stroke="#111" stroke-width="1.4"/>`;
+  if (kick > 0) {
+    out += `<rect x="${f(cabX)}" y="${f(base - kick * sc)}" width="${f(W * sc)}" height="${f(kick * sc)}" fill="#1a2740" opacity="0.8"/>`;
+    out += `<text x="${f(cabX + W * sc / 2)}" y="${f(base - kick * sc / 2 + 3)}" font-size="8" fill="#8aa0c4" text-anchor="middle">KICK ${kick}mm</text>`;
+  }
+  let y0 = kick;
+  cab.rows.forEach((row2) => {
+    const rowTop = base - (y0 + row2.h) * sc;
+    const lays = columnLayout(cab, row2, S2);
+    lays.forEach((lay) => {
+      const col = lay.col;
+      const colX = cabX + (S2.bodyThk + lay.x) * sc;
+      const colW = lay.w * sc;
+      if (!lay.last) out += `<line x1="${f(colX + colW)}" y1="${f(rowTop)}" x2="${f(colX + colW)}" y2="${f(rowTop + row2.h * sc)}" stroke="#888" stroke-width="0.8"/>`;
+      if (columnHasDrawers(col)) {
+        const bankH = col.drawers.reduce((a, d) => a + d.frontHeight, 0);
+        const above = col.shelves;
+        if (above > 0) {
+          const shelfZoneH = row2.h - bankH;
+          for (let k = 0; k < above; k++) {
+            const sy = base - (y0 + bankH + shelfZoneH * (k + 1) / (above + 1)) * sc;
+            out += `<line x1="${f(colX + 2)}" y1="${f(sy)}" x2="${f(colX + colW - 2)}" y2="${f(sy)}" stroke="#3a5a8a" stroke-width="0.9" stroke-dasharray="3 3"/>`;
+          }
+        }
+        let dy = 0;
+        col.drawers.forEach((dr) => {
+          const dh = dr.frontHeight * sc;
+          const yy = base - (y0 + dy + dr.frontHeight) * sc;
+          const pull = D * 0.6 * sc * 0.35;
+          out += `<rect x="${f(colX + pull)}" y="${f(yy)}" width="${f(colW - pull * 0.2)}" height="${f(dh)}" fill="#d0c0a0" stroke="#5a4a36" stroke-width="0.9"/>`;
+          out += `<text x="${f(colX + colW / 2)}" y="${f(yy + dh / 2 + 2)}" font-size="7" fill="#333" text-anchor="middle">Drawer ${dr.frontHeight}mm</text>`;
+          dy += dr.frontHeight;
+        });
+      } else if (col.fixed) {
+        out += `<rect x="${f(colX)}" y="${f(rowTop)}" width="${f(colW)}" height="${f(row2.h * sc)}" fill="#e0d0b0" stroke="#888" stroke-dasharray="5 3"/>`;
+      } else {
+        for (let k = 0; k < col.shelves; k++) {
+          const sy = base - (y0 + row2.h * (k + 1) / (col.shelves + 1)) * sc;
+          out += `<line x1="${f(colX + 2)}" y1="${f(sy)}" x2="${f(colX + colW - 2)}" y2="${f(sy)}" stroke="#3a5a8a" stroke-width="1"/>`;
+        }
+        if (col.rail && col.rail !== "off") {
+          const rh = col.railHeight ?? (col.rail === "suits" ? S2.railSuitsH : col.rail === "dresses" ? S2.railDressesH : S2.railDouble1);
+          const ry = base - (y0 + rh) * sc;
+          out += `<line x1="${f(colX + 4)}" y1="${f(ry)}" x2="${f(colX + colW - 4)}" y2="${f(ry)}" stroke="#d4af37" stroke-width="2"/>`;
+          out += `<text x="${f(colX + colW / 2)}" y="${f(ry - 3)}" font-size="7" fill="#8a6a20" text-anchor="middle">${col.rail.toUpperCase()} ${rh}mm</text>`;
+          if (col.railShelf) {
+            railShelfYs(col, S2, row2.h).forEach((syMm) => {
+              const sy = base - (y0 + syMm) * sc;
+              out += `<line x1="${f(colX + 2)}" y1="${f(sy)}" x2="${f(colX + colW - 2)}" y2="${f(sy)}" stroke="#3a5a8a" stroke-dasharray="2 3"/>`;
+            });
+          }
+        }
+      }
+    });
+    y0 += row2.h;
+  });
+  let doorIndex = 0;
+  const openDoors = [];
+  if (cab.fullDoor && cab.fullDoor !== "off") {
+    const fullH = stackOn(cab) ? stackedHeights(cab).reduce((a, h) => a + h, 0) - kick : BH;
+    const isDouble = cab.fullDoor.includes("double") || W > 620 && (cab.fullDoor === "mdf" || cab.fullDoor === "glass");
+    if (isDouble) {
+      openDoors.push({ x: cabX - W / 2 * sc - 20, y: cabTop, w: W / 2 * sc, h: fullH * sc, label: `Door L ${Math.round(W / 2)}\xD7${fullH}` });
+      openDoors.push({ x: cabX + W * sc + 20, y: cabTop, w: W / 2 * sc, h: fullH * sc, label: `Door R ${Math.round(W / 2)}\xD7${fullH}` });
+    } else {
+      const side = cab.fullDoor.includes("right") ? "R" : "L";
+      const ox2 = side === "L" ? cabX - W * sc * 0.55 - 20 : cabX + W * sc + 20;
+      openDoors.push({ x: ox2, y: cabTop, w: W * sc * 0.5, h: fullH * sc, label: `Full Door ${W}\xD7${fullH}` });
+    }
+  } else {
+    cab.rows.forEach((row2) => {
+      const lays = columnLayout(cab, row2, S2);
+      lays.forEach((lay) => {
+        const col = lay.col;
+        if (!col.door || col.fixed) return;
+        const fullSpan = col.door.full ? BH : row2.h;
+        const d = doorDims(lay.w, fullSpan, col.door, S2);
+        const y = col.door.full ? base - (kick + fullSpan) * sc : base - y0 * sc - row2.h * sc + (row2.h - fullSpan) * sc;
+        if (col.door.type === "double") {
+          openDoors.push({ x: cabX - d.w * sc * 0.5 - 15, y, w: d.w * sc * 0.5, h: d.h * sc, label: `Door ${doorIndex + 1}L ${d.w}\xD7${d.h}` });
+          openDoors.push({ x: cabX + W * sc + 15, y, w: d.w * sc * 0.5, h: d.h * sc, label: `Door ${doorIndex + 1}R ${d.w}\xD7${d.h}` });
+          doorIndex += 2;
+        } else {
+          const side = col.door.swing;
+          const ox2 = side === "left" ? cabX - d.w * sc * 0.5 - 15 : cabX + W * sc + 15;
+          openDoors.push({ x: ox2, y, w: d.w * sc * 0.5, h: d.h * sc, label: `Door ${doorIndex + 1} ${d.w}\xD7${d.h} ${side}` });
+          doorIndex++;
+        }
+      });
+    });
+  }
+  openDoors.forEach((od) => {
+    out += `<rect x="${f(od.x)}" y="${f(od.y)}" width="${f(od.w)}" height="${f(od.h)}" fill="#c2d6e8" stroke="#2a4a6a" stroke-width="1"/>`;
+    out += `<circle cx="${f(od.x + 5)}" cy="${f(od.y + od.h * 0.15)}" r="2.5" fill="#c9ccd4" stroke="#222"/>`;
+    out += `<circle cx="${f(od.x + 5)}" cy="${f(od.y + od.h * 0.85)}" r="2.5" fill="#c9ccd4" stroke="#222"/>`;
+    out += `<text x="${f(od.x + od.w / 2)}" y="${f(od.y - 4)}" font-size="7" fill="#2a4a6a" text-anchor="middle">${escH2(od.label)}</text>`;
+    const cx1 = od.x + od.w / 2 < cabX ? od.x + od.w : od.x;
+    out += `<line x1="${f(cx1)}" y1="${f(od.y + od.h / 2)}" x2="${f(od.x + od.w / 2 < cabX ? cabX : cabX + W * sc)}" y2="${f(od.y + od.h / 2)}" stroke="#999" stroke-dasharray="2 2" stroke-width="0.6"/>`;
+  });
+  out += `<line x1="${f(cabX)}" y1="${f(base + 18)}" x2="${f(cabX + W * sc)}" y2="${f(base + 18)}" stroke="#111" stroke-width="0.8"/>`;
+  out += `<text x="${f(cabX + W * sc / 2)}" y="${f(base + 32)}" font-size="10" text-anchor="middle" fill="#111">${W}mm</text>`;
+  out += `<line x1="${f(cabX - 18)}" y1="${f(cabTop)}" x2="${f(cabX - 18)}" y2="${f(base)}" stroke="#111" stroke-width="0.8"/>`;
+  out += `<text x="${f(cabX - 28)}" y="${f(cabTop + H * sc / 2)}" font-size="10" text-anchor="middle" fill="#111" transform="rotate(-90 ${f(cabX - 28)} ${f(cabTop + H * sc / 2)})">${H}mm</text>`;
+  out += `</svg>`;
+  return out;
+}
+function drillingMapSvg(cab, S2, side) {
+  const ops = drillOps([cab], S2).filter((o) => o.part.toLowerCase().includes(`side panel ${side.toLowerCase()}`));
+  const BH = cab.height - kickH(cab, S2);
+  const D = cab.depth;
+  const VW = 420, VH = 520;
+  const sc = Math.min((VW - 80) / D, (VH - 80) / BH) * 0.9;
+  const ox = 40, oy = 40;
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${VW}" height="${VH}" viewBox="0 0 ${VW} ${VH}" font-family="Arial, Helvetica, sans-serif">`;
+  out += `<rect width="${VW}" height="${VH}" fill="#fff"/>`;
+  out += `<rect x="${f2(ox)}" y="${f2(oy)}" width="${f2(D * sc)}" height="${f2(BH * sc)}" fill="#f9f5e8" stroke="#111" stroke-width="1"/>`;
+  out += `<text x="${f2(ox + D * sc / 2)}" y="${f2(oy - 8)}" font-size="11" font-weight="700" text-anchor="middle" fill="#111">Side ${side} \u2013 ${D}\xD7${BH} \u2013 ${ops.length} holes</text>`;
+  ops.forEach((op) => {
+    const cx = ox + op.x * sc;
+    const cy = oy + BH * sc - op.y * sc;
+    const color = op.type === "shelf" ? "#f5b33c" : op.type === "slide" ? "#38bdf8" : "#f87171";
+    const r3 = op.type === "hinge" ? 4 : op.dia >= 5 ? 3 : 2;
+    out += `<circle cx="${f2(cx)}" cy="${f2(cy)}" r="${r3}" fill="${color}" stroke="#111" stroke-width="0.4"/>`;
+  });
+  {
+    const slot = cab.slot ?? "none";
+    if (slot !== "none" && (slot === "both" || slot === side.toLowerCase())) {
+      const slotFromFront = cab.slotFromFront != null && cab.slotFromFront > 0 ? cab.slotFromFront : S2.slotFromFront;
+      const sw = Math.max(6, S2.slotWidth);
+      const cx = D - Math.max(sw, slotFromFront);
+      const x1 = cx - sw / 2, x2 = cx + sw / 2;
+      if (x1 > 8 && x2 < D - 8) {
+        const mapCx = side === "R" ? D - cx : cx;
+        out += `<rect x="${f2(ox + (mapCx - sw / 2) * sc)}" y="${f2(oy)}" width="${f2(sw * sc)}" height="${f2(BH * sc)}" fill="none" stroke="#a855f7" stroke-width="1.2" stroke-dasharray="4 3"/>`;
+        out += `<text x="${f2(ox + mapCx * sc)}" y="${f2(oy + BH * sc + 14)}" font-size="7" fill="#a855f7" text-anchor="middle">SLOT ${sw}mm @ ${Math.round(slotFromFront)}mm from front</text>`;
+      }
+    }
+  }
+  out += `<text x="${f2(ox)}" y="${f2(oy + BH * sc + 28)}" font-size="8" fill="#555">Shelf \u2300${S2.holeDiameter} \xB7 Slide \u2300${S2.slideHoleDiameter} \xB7 Hinge \u2300${S2.hingeCupDiameter} \xB7 32mm system</text>`;
+  out += `</svg>`;
+  return out;
+}
+function perCabinetCutTable(cab, S2, grain) {
+  const parts = allPartsMerged([cab], S2, grain, []);
+  const merged = mergePieces(parts.map(rotatePartOnce));
+  const rows = merged.map((p, i) => {
+    const bendM = (bandLengthMm(p) * p.qty / 1e3).toFixed(2);
+    const area = (p.w * p.h * p.qty / 1e6).toFixed(3);
+    const holes = p.holes.length * p.qty;
+    return `<tr><td>${i + 1}</td><td>${escH2(p.name)}</td><td>${escH2(matLabel(S2, p))}</td><td class="num">${p.thickness}</td><td class="num">${p.w}</td><td class="num">${p.h}</td><td class="num">${p.qty}</td><td>${bandStr(p.band) || "-"}</td><td class="num">${bendM}m</td><td class="num">${area}m\xB2</td><td class="num">${holes}</td><td>${p.grain ? "locked" : ""}</td><td class="small">${escH2(p.note || "")}</td></tr>`;
+  }).join("");
+  return `<table><thead><tr><th>#</th><th>Part</th><th>Material</th><th>Thk</th><th>L mm</th><th>W mm</th><th>Qty</th><th>Banding</th><th>Bend</th><th>Area</th><th>Holes</th><th>Grain</th><th>Note</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+function perCabinetHardware(cab, S2) {
+  let hinges = 0, rails = 0;
+  const slides = {};
+  const fullSpan = (stackOn(cab) ? stackedHeights(cab).reduce((a, h) => a + h, 0) : cab.height) - kickH(cab, S2);
+  cab.rows.forEach((row2) => {
+    const lays = columnLayout(cab, row2, S2);
+    row2.columns.forEach((col, ci) => {
+      if (col.door && col.door.material === "glass" && col.door.type !== "sliding") {
+        const faceW = lays.length === 1 ? cab.width : columnFaceWidth(cab, lays[ci], S2);
+        const leafH = doorDims(faceW, col.door.full ? fullSpan : row2.h, col.door, S2).h;
+        hinges += Math.min(6, Math.max(1, col.door.hingeCount ?? doorHingeCount(leafH)));
+      }
+      col.drawers.forEach((dr) => {
+        const cm = Math.round(dr.slideDepthCm);
+        slides[cm] = (slides[cm] ?? 0) + 1;
+      });
+      if (col.rail && col.rail !== "off") rails += col.rail === "double" ? 2 : 1;
+    });
+  });
+  if (cab.fullDoor?.startsWith("glass")) {
+    const leafH = doorDims(cab.width, fullSpan, { type: cab.width > 620 ? "double" : "single", style: "overlay", swing: "left", material: "glass", mdfThk: S2.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true, hingeCount: cab.fullDoorHinges }, S2).h;
+    hinges += Math.min(6, Math.max(1, cab.fullDoorHinges ?? doorHingeCount(leafH)));
+  }
+  cab.rows.forEach((row2) => {
+    row2.columns.forEach((col) => {
+      if (col.door && col.door.material !== "glass") {
+        const lay = columnLayout(cab, row2, S2).find((l) => l.col.id === col.id);
+        if (!lay) return;
+        const leafH = doorDims(lay.w, col.door.full ? fullSpan : row2.h, col.door, S2).h;
+        const cnt = col.door.hingeCount ?? doorHingeCount(leafH);
+        hinges += col.door.type === "double" ? cnt * 2 : cnt;
+      }
+    });
+  });
+  if (cab.fullDoor && cab.fullDoor.startsWith("mdf")) {
+    const leafH = doorDims(cab.width, fullSpan, { type: cab.width > 620 ? "double" : "single", style: "overlay", swing: "left", material: "mdf", mdfThk: S2.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true, hingeCount: cab.fullDoorHinges }, S2).h;
+    const cnt = cab.fullDoorHinges ?? doorHingeCount(leafH);
+    const isDouble = cab.fullDoor.includes("double") || cab.width > 620 && cab.fullDoor === "mdf";
+    hinges += isDouble ? cnt * 2 : cnt;
+  }
+  const totalShelves = cab.rows.reduce((a, r3) => a + r3.columns.reduce((aa, c) => aa + (columnHasDrawers(c) ? 0 : c.shelves) + (c.railShelf ? railShelfYs(c, S2, r3.h).length : 0), 0), 0);
+  const shelfPins = totalShelves * 4;
+  const rows = [];
+  if (hinges > 0) rows.push(`<tr><td>Hinges Universal 35mm</td><td class="num">${hinges}</td><td>pcs</td><td class="small">auto &lt;900\u21922 900-1799\u21923 1800-2399\u21924 2400-2999\u21925 \u22653000\u21926 \xB7 140mm from ends</td></tr>`);
+  Object.keys(slides).map(Number).sort((a, b) => a - b).forEach((cm) => {
+    rows.push(`<tr><td>Drawer slides ${cm}0mm</td><td class="num">${slides[cm]}</td><td>pairs</td><td class="small">per drawer depth</td></tr>`);
+  });
+  if (rails > 0) rows.push(`<tr><td>Hanging rails</td><td class="num">${rails}</td><td>pcs</td><td class="small">suits/dresses</td></tr>`);
+  if (shelfPins > 0) rows.push(`<tr><td>Shelf pins 32mm</td><td class="num">${shelfPins}</td><td>pcs</td><td class="small">${totalShelves} shelves \xD74</td></tr>`);
+  return `<table><thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Note</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="4" class="muted">No hardware</td></tr>'}</tbody></table>`;
+}
+function explodedReportHtml(cabinets, settings, panels = [], grain = {}, project, customers, opts = {}) {
+  const now = /* @__PURE__ */ new Date();
+  const nowStr = now.toLocaleString();
+  const dateStr = now.toLocaleDateString();
+  const projName = project?.name?.trim() || "Untitled Project";
+  const projType = project?.type || "-";
+  const projStatus = project?.status || "draft";
+  const projNotes = project?.notes || "";
+  const customer = customers?.find((c) => c.id === project?.customerId) ?? null;
+  const allMerged = allPartsMerged(cabinets, settings, grain, panels);
+  const totalParts = allMerged.reduce((a, p) => a + p.qty, 0);
+  const totalArea = allMerged.reduce((a, p) => a + p.w * p.h * p.qty / 1e6, 0);
+  const totalBend = allMerged.reduce((a, p) => a + bandLengthMm(p) * p.qty / 1e3, 0);
+  const nesting = nestParts(allMerged, settings);
+  const totalSheets = nesting.reduce((a, g) => a + g.sheets.length, 0);
+  const banding = bandingByMaterial(cabinets, settings);
+  const css = `
+    @page{margin:10mm;size:A4}
+    *{box-sizing:border-box}
+    body{margin:0;padding:0;background:#fff;color:#111;font-family:Arial,Helvetica,sans-serif;font-size:10.5px;line-height:1.4}
+    .page{page-break-after:always;padding:10mm 10mm 10mm;position:relative;min-height:100vh}
+    .page:last-child{page-break-after:auto}
+    h1{font-size:22px;margin:0 0 6px}
+    h2{font-size:16px;margin:14px 0 8px;border-bottom:2px solid #111;padding-bottom:4px}
+    h3{font-size:12.5px;margin:12px 0 6px}
+    .muted{color:#666}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .card{border:1px solid #bbb;border-radius:6px;padding:8px 10px;background:#fafafa}
+    .badge{display:inline-block;background:#111;color:#fff;font-size:9px;font-weight:700;padding:2px 8px;border-radius:999px;letter-spacing:.06em;text-transform:uppercase}
+    table{border-collapse:collapse;width:100%;margin-top:6px}
+    th,td{border:1px solid #bbb;padding:4px 6px;text-align:left;font-size:10px}
+    th{background:#eee;font-weight:700}
+    td.num{text-align:right;font-family:monospace}
+    .cover{text-align:center;padding-top:22mm}
+    .cover h1{font-size:28px}
+    .cover .sub{font-size:12px;color:#444;margin-top:8px}
+    .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px}
+    .kpi .card{text-align:center}
+    .kpi .v{font-size:20px;font-weight:800}
+    .kpi .l{font-size:9px;color:#555;text-transform:uppercase;letter-spacing:.07em;margin-top:2px}
+    .shot{margin-top:8px;text-align:center}
+    .shot img{max-width:100%;max-height:380px;border:1px solid #bbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.12)}
+    .elevation svg{width:100%;height:auto;border:1px solid #ddd;border-radius:6px;background:#fff}
+    .small{font-size:9px;color:#666}
+    .footer{position:absolute;bottom:6mm;left:10mm;right:10mm;display:flex;justify-content:space-between;font-size:8.5px;color:#777;border-top:1px solid #ddd;padding-top:3px}
+    .toc a{color:#111;text-decoration:none}
+    .toc li{margin:2px 0}
+    .exploded-grid{display:grid;grid-template-columns:1fr;gap:8px}
+    .drill-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    @media print{.no-print{display:none}}
+  `;
+  const customerBlock = customer ? `<div class="card"><b>Customer</b><br/>${escH2(customer.name)}<br/><span class="small">${escH2(customer.phone || "")} ${customer.email ? " - " + escH2(customer.email) : ""}</span><br/><span class="small">${escH2(customer.address || "")}</span></div>` : `<div class="card"><b>Customer</b><br/><span class="muted">No customer linked</span></div>`;
+  const projectBlock = `<div class="card"><b>Project</b><br/>${escH2(projName)}<br/><span class="small">Type: ${escH2(projType)} \u2013 Status: ${escH2(projStatus)} \u2013 ${escH2(dateStr)}</span>${projNotes ? `<br/><br/><span class="small">${escH2(projNotes).replace(/\n/g, "<br/>")}</span>` : ""}</div>`;
+  const kpis = `<div class="kpi">
+    <div class="card"><div class="v">${cabinets.length}</div><div class="l">Cabinets</div><div class="small">${panels.length} panels \u2013 ${cabinets.reduce((a, c) => a + Math.max(1, c.qty), 0)} units</div></div>
+    <div class="card"><div class="v">${totalParts}</div><div class="l">Parts</div><div class="small">${totalArea.toFixed(2)} m\xB2 \u2013 ${totalBend.toFixed(1)} m band</div></div>
+    <div class="card"><div class="v">${totalSheets}</div><div class="l">Sheets</div><div class="small">${nesting.length} groups \u2013 avg ${(nesting.reduce((a, g) => a + g.avgUtil, 0) / Math.max(1, nesting.length) * 100).toFixed(1)}% util</div></div>
+    <div class="card"><div class="v">${allMerged.reduce((a, p) => a + p.holes.length * p.qty, 0)}</div><div class="l">Holes</div><div class="small">${banding.length} banding mats</div></div>
+  </div>`;
+  const overallFront = frontElevationSvg(cabinets, panels);
+  const screenshotHtml = opts.screenshotDataUrl ? `<div class="shot"><img src="${opts.screenshotDataUrl}" alt="3D view"/><div class="small">3D iso view \u2013 ${escH2(nowStr)}</div></div>` : `<div class="card" style="text-align:center;padding:14px"><b>3D screenshot not included</b><br/><span class="small">Go to 3D View \u2192 PNG (top bar). The app saves last screenshot in localStorage <code>cnc-last-3d-png</code>. Then re-open Exploded Report.</span></div>`;
+  const perCabSections = cabinets.map((cab, idx) => {
+    const cabFront = frontElevationSvg([cab], []);
+    const explodedSvg = explodedCabinetSvg(cab, settings, grain);
+    const openSvg = openDoorViewSvg(cab, settings);
+    const drillL = drillingMapSvg(cab, settings, "L");
+    const drillR = drillingMapSvg(cab, settings, "R");
+    const cutTable = perCabinetCutTable(cab, settings, grain);
+    const hwTable = perCabinetHardware(cab, settings);
+    const isoShot = opts.perCabinetScreenshots?.[cab.id] ? `<div class="shot"><img src="${opts.perCabinetScreenshots[cab.id]}" alt="${escH2(cab.name)} iso"/><div class="small">Iso view \u2013 ${escH2(cab.name)}</div></div>` : "";
+    const explodedShot = opts.explodedScreenshots?.[cab.id] ? `<div class="shot"><img src="${opts.explodedScreenshots[cab.id]}" alt="${escH2(cab.name)} exploded"/><div class="small">Exploded 3D \u2013 per-part: side L \u2212150 X \xB7 side R +150 X \xB7 top +120 Y \xB7 bottom \u221240 Y \xB7 back \u2212120 Z \xB7 door +250 Z (45\xB0 open) \xB7 drawer +300 Z</div></div>` : "";
+    const parts = allPartsMerged([cab], settings, grain, []);
+    const totalCabParts = parts.reduce((a, p) => a + p.qty, 0);
+    const totalCabArea = parts.reduce((a, p) => a + p.w * p.h * p.qty / 1e6, 0);
+    return `
+    <div class="page" id="cab-${cab.id}">
+      <h2>Cabinet ${idx + 1}/${cabinets.length} \u2013 ${escH2(cab.name)} \u2013 ${cab.width}\xD7${cab.height}\xD7${cab.depth} \u2013 ${escH2(cab.type)} \u2013 Qty ${cab.qty}</h2>
+      <div class="card small">Plywood: ${escH2(matLabel(settings, { material: "plywood", matId: cab.matId ?? void 0 }))} \xB7 ${cab.hasToeKick ? "kick" : "no-kick"} \xB7 ${cab.hasBack === false ? "no-back" : "back"} \xB7 ${cab.hasFronts === false ? "no-fronts" : "fronts"} \xB7 ${stackOn(cab) ? "stacked " + stackedHeights(cab).join("+") + "mm" : "single box"} \xB7 ${cab.slot && cab.slot !== "none" ? "slot " + cab.slot + " " + (cab.slotFromFront ?? settings.slotFromFront) + "mm" : ""}</div>
+      ${kpis}
+      <div style="margin-top:10px" class="grid2">
+        <div><h3>Front Elevation (single)</h3><div class="elevation">${cabFront}</div></div>
+        <div><h3>3D Iso + Exploded 3D</h3>${isoShot || '<div class="card small">No per-cab iso \u2013 use View3D snapshot per cabinet (future)</div>'}${explodedShot}</div>
+      </div>
+      <div class="footer"><span>${escH2(projName)} \u2013 ${escH2(cab.name)} \u2013 Front + Iso</span><span>Page Cab ${idx + 1} \u2013 Front</span></div>
+    </div>
+
+    <div class="page">
+      <h2>${escH2(cab.name)} \u2013 Exploded View (2D schematic)</h2>
+      <p class="small">Every real cut part of this cabinet, drawn at scale from the same part generator as the cut list / nesting / DXF (same L-W rotation rule). Each part shows its true name, W\xD7H\xD7thk, qty, hole count, edge-banding ticks (orange) and grain-lock flag; polygon parts keep their exact cut outline (notched sides, kick-cut top/bottom, drawer boxes). Dashed = veneer back / glass reference (not drilled).</p>
+      <div class="elevation">${explodedSvg}</div>
+      <div class="footer"><span>${escH2(projName)} \u2013 ${escH2(cab.name)} \u2013 Exploded 2D</span><span>Cab ${idx + 1} \u2013 Exploded</span></div>
+    </div>
+
+    <div class="page">
+      <h2>${escH2(cab.name)} \u2013 Open Door View \u2013 Doors open 90\xB0, Drawers pulled 60%</h2>
+      <p class="small">Open door view shows shelves, hanging rails (gold), drawer banks pulled 60% (brown), doors open 90\xB0 outside cabinet with hinge side marked (dots). Dimensions W\xD7H in mm. Shelf positions, rail heights, drawer heights labeled.</p>
+      <div class="elevation">${openSvg}</div>
+      <div class="footer"><span>${escH2(projName)} \u2013 ${escH2(cab.name)} \u2013 Open Door</span><span>Cab ${idx + 1} \u2013 Open Door</span></div>
+    </div>
+
+    <div class="page">
+      <h2>${escH2(cab.name)} \u2013 Drilling Map \u2013 Side L / Side R \u2013 32mm system</h2>
+      <p class="small">Side panels with shelf pin holes (amber), slide holes (cyan), hinge cups excluded (doors only). Linear slot (purple dashed) at the model's real width and position when it is milled. All holes at real X/Y from bottom-left. D=depth, BH=body height.</p>
+      <div class="drill-grid">
+        <div><div class="elevation">${drillL}</div></div>
+        <div><div class="elevation">${drillR}</div></div>
+      </div>
+      <div class="footer"><span>${escH2(projName)} \u2013 ${escH2(cab.name)} \u2013 Drilling</span><span>Cab ${idx + 1} \u2013 Drilling</span></div>
+    </div>
+
+    <div class="page">
+      <h2>${escH2(cab.name)} \u2013 Panel Size Table \u2013 ${totalCabParts} parts \u2013 ${totalCabArea.toFixed(3)} m\xB2</h2>
+      <p class="small">Per-cabinet cut list \u2013 every part rotated once (L-W) then grain lock. Banding: T/B/L/R. Bend = banded edge length \xD7 qty. Area = W\xD7H\xD7qty. Holes = holes per part \xD7 qty. Material column shows plywood name (follows material).</p>
+      ${cutTable}
+      <h3 style="margin-top:10px">Hardware per Cabinet</h3>
+      ${hwTable}
+      <div class="footer"><span>${escH2(projName)} \u2013 ${escH2(cab.name)} \u2013 Cut List + Hardware \u2013 ${totalCabParts} parts</span><span>Cab ${idx + 1} \u2013 Cut + HW</span></div>
+    </div>
+    `;
+  }).join("\n");
+  const bomRows = allMerged.slice(0, 200).map((p, i) => `<tr><td>${i + 1}</td><td>${escH2(p.cabName)}</td><td>${escH2(p.name)}</td><td>${escH2(matLabel(settings, p))}</td><td class="num">${p.w}\xD7${p.h}\xD7${p.thickness}</td><td class="num">${p.qty}</td><td>${bandStr(p.band)}</td></tr>`).join("");
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Exploded Report \u2013 ${escH2(projName)}</title><style>${css}</style></head><body>
+  <div class="page cover">
+    <div class="badge">CNC Cabinet Designer Pro v11 \u2013 Exploded Per-Cabinet Report</div>
+    <h1>${escH2(projName)}</h1>
+    <div class="sub">${escH2(projType)} \u2013 ${escH2(projStatus)} \u2013 ${escH2(nowStr)}<br/>${cabinets.length} cabinets \u2013 ${panels.length} panels \u2013 ${totalParts} parts \u2013 ${totalSheets} sheets</div>
+    ${kpis}
+    <div class="grid2" style="margin-top:14px;text-align:left">
+      ${projectBlock}
+      ${customerBlock}
+    </div>
+    <div class="card" style="margin-top:12px;text-align:left"><b>Contents \u2013 Per Cabinet Pages</b><ol class="toc" style="margin:6px 0 0 18px">
+      <li><a href="#overall">Overall 3D + Front Elevation</a></li>
+      ${cabinets.map((c, i) => `<li><a href="#cab-${c.id}">${i + 1}. ${escH2(c.name)} \u2013 ${c.width}\xD7${c.height}\xD7${c.depth} \u2013 Exploded / Open Door / Drilling / Cut List / Hardware</a></li>`).join("")}
+      <li><a href="#overall-bom">Overall BOM + Cut List (first 200 rows) + Nesting</a></li>
+    </ol></div>
+    <div class="footer"><span>${escH2(projName)} \u2013 ${escH2(dateStr)}</span><span>Cover \u2013 Exploded Report</span></div>
+  </div>
+
+  <div class="page" id="overall">
+    <h2>Overall \u2013 3D View + Front Elevation (Customer Approval)</h2>
+    <div class="grid2">
+      <div><h3>3D View (E1 screenshot)</h3>${screenshotHtml}</div>
+      <div><h3>Project summary</h3><div class="card"><b>${escH2(projName)}</b><br/><span class="small">Cabinets: ${cabinets.map((c) => escH2(c.name)).join(", ") || "-"}</span><br/><span class="small">Panels: ${panels.map((p) => escH2(p.name)).join(", ") || "-"}</span><br/><br/><span class="small">Settings: body ${settings.bodyThk}mm \u2013 MDF ${settings.mdfThk}mm \u2013 back ${settings.backThk}mm \u2013 bit ${settings.bitDiameter}mm \u2013 shelf ${settings.holeDiameter}mm<br/>Hinge auto &lt;900\u21922 900-1799\u21923 1800-2399\u21924 2400-2999\u21925 \u22653000\u21926 \u2013 cups 140mm from ends<br/>Rail pilots 2\xD7${settings.bitDiameter}mm per rail \u2013 min gap above rail ${settings.railShelfMinGap}mm</span></div></div>
+    </div>
+    <h3 style="margin-top:10px">Front Elevation \u2013 Dimensioned (all cabinets + panels)</h3>
+    <div class="elevation">${overallFront || '<div class="card">No elevation</div>'}</div>
+    <div class="footer"><span>${escH2(projName)} \u2013 Overall</span><span>Overall \u2013 3D + Front</span></div>
+  </div>
+
+  ${perCabSections}
+
+  <div class="page" id="overall-bom">
+    <h2>Overall \u2013 BOM + Cut List (first 200) + Nesting Summary</h2>
+    <h3>Cut List (first 200 rows)</h3>
+    <table><thead><tr><th>#</th><th>Cabinet</th><th>Part</th><th>Material</th><th>Size</th><th>Qty</th><th>Banding</th></tr></thead><tbody>${bomRows}</tbody></table>
+    <h3>Nesting Summary</h3>
+    <table><thead><tr><th>Group</th><th>Sheets</th><th>Parts</th><th>Area m\xB2</th><th>Avg util</th><th>Strategy</th><th>Unplaced</th></tr></thead><tbody>${nesting.map((g) => `<tr><td>${escH2(g.key)}</td><td class="num">${g.sheets.length}</td><td class="num">${g.partCount}</td><td class="num">${(g.totalArea / 1e6).toFixed(2)}</td><td class="num">${(g.avgUtil * 100).toFixed(1)}%</td><td>${escH2(g.strategy || "")}</td><td class="num">${g.unplaced}</td></tr>`).join("") || '<tr><td colspan="7">No nesting</td></tr>'}</tbody></table>
+    <h3>Banding by Material</h3>
+    <table><thead><tr><th>Material</th><th>Meters</th><th>Width mm</th></tr></thead><tbody>${banding.map((b) => `<tr><td>${escH2(b.material)}</td><td class="num">${b.meters.toFixed(2)}</td><td class="num">${b.mm.toFixed(0)}</td></tr>`).join("") || '<tr><td colspan="3">No banding</td></tr>'}</tbody></table>
+    <h3>Customer approval</h3>
+    <div class="grid2"><div class="card" style="height:70px">Signature / Date<br/><br/><br/></div><div class="card" style="height:70px">Approved / Notes<br/><br/><br/></div></div>
+    <div class="footer"><span>${escH2(projName)} \u2013 ${escH2(nowStr)} \u2013 CNC-PRO v11</span><span>End \u2013 Exploded Report</span></div>
+  </div>
+  </body></html>`;
+}
 
 // node_modules/three/build/three.core.js
 var REVISION = "185";
@@ -5361,25 +6241,25 @@ var Quaternion = class {
    * @return {Quaternion} A reference to this quaternion.
    */
   setFromUnitVectors(vFrom, vTo) {
-    let r2 = vFrom.dot(vTo) + 1;
-    if (r2 < 1e-8) {
-      r2 = 0;
+    let r3 = vFrom.dot(vTo) + 1;
+    if (r3 < 1e-8) {
+      r3 = 0;
       if (Math.abs(vFrom.x) > Math.abs(vFrom.z)) {
         this._x = -vFrom.y;
         this._y = vFrom.x;
         this._z = 0;
-        this._w = r2;
+        this._w = r3;
       } else {
         this._x = 0;
         this._y = -vFrom.z;
         this._z = vFrom.y;
-        this._w = r2;
+        this._w = r3;
       }
     } else {
       this._x = vFrom.y * vTo.z - vFrom.z * vTo.y;
       this._y = vFrom.z * vTo.x - vFrom.x * vTo.z;
       this._z = vFrom.x * vTo.y - vFrom.y * vTo.x;
-      this._w = r2;
+      this._w = r3;
     }
     return this.normalize();
   }
@@ -5585,12 +6465,12 @@ var Quaternion = class {
     const theta2 = 2 * Math.PI * Math.random();
     const x0 = Math.random();
     const r1 = Math.sqrt(1 - x0);
-    const r2 = Math.sqrt(x0);
+    const r22 = Math.sqrt(x0);
     return this.set(
       r1 * Math.sin(theta1),
       r1 * Math.cos(theta1),
-      r2 * Math.sin(theta2),
-      r2 * Math.cos(theta2)
+      r22 * Math.sin(theta2),
+      r22 * Math.cos(theta2)
     );
   }
   /**
@@ -6847,17 +7727,17 @@ var Matrix3 = class _Matrix3 {
    * @param {Array<number>} r - An array to store the transposed matrix elements.
    * @return {Matrix3} A reference to this matrix.
    */
-  transposeIntoArray(r2) {
+  transposeIntoArray(r3) {
     const m = this.elements;
-    r2[0] = m[0];
-    r2[1] = m[3];
-    r2[2] = m[6];
-    r2[3] = m[1];
-    r2[4] = m[4];
-    r2[5] = m[7];
-    r2[6] = m[2];
-    r2[7] = m[5];
-    r2[8] = m[8];
+    r3[0] = m[0];
+    r3[1] = m[3];
+    r3[2] = m[6];
+    r3[3] = m[1];
+    r3[4] = m[4];
+    r3[5] = m[7];
+    r3[6] = m[2];
+    r3[7] = m[5];
+    r3[8] = m[8];
     return this;
   }
   /**
@@ -11046,12 +11926,12 @@ var Color = class {
    * @param {number} [g] - The green component.
    * @param {number} [b] - The blue component.
    */
-  constructor(r2, g, b) {
+  constructor(r3, g, b) {
     this.isColor = true;
     this.r = 1;
     this.g = 1;
     this.b = 1;
-    return this.set(r2, g, b);
+    return this.set(r3, g, b);
   }
   /**
    * Sets the colors's components from the given values.
@@ -11062,9 +11942,9 @@ var Color = class {
    * @param {number} [b] - The blue component.
    * @return {Color} A reference to this color.
    */
-  set(r2, g, b) {
+  set(r3, g, b) {
     if (g === void 0 && b === void 0) {
-      const value = r2;
+      const value = r3;
       if (value && value.isColor) {
         this.copy(value);
       } else if (typeof value === "number") {
@@ -11073,7 +11953,7 @@ var Color = class {
         this.setStyle(value);
       }
     } else {
-      this.setRGB(r2, g, b);
+      this.setRGB(r3, g, b);
     }
     return this;
   }
@@ -11113,8 +11993,8 @@ var Color = class {
    * @param {string} [colorSpace=ColorManagement.workingColorSpace] - The color space.
    * @return {Color} A reference to this color.
    */
-  setRGB(r2, g, b, colorSpace = ColorManagement.workingColorSpace) {
-    this.r = r2;
+  setRGB(r3, g, b, colorSpace = ColorManagement.workingColorSpace) {
+    this.r = r3;
     this.g = g;
     this.b = b;
     ColorManagement.colorSpaceToWorking(this, colorSpace);
@@ -11339,9 +12219,9 @@ var Color = class {
    */
   getHSL(target, colorSpace = ColorManagement.workingColorSpace) {
     ColorManagement.workingToColorSpace(_color.copy(this), colorSpace);
-    const r2 = _color.r, g = _color.g, b = _color.b;
-    const max = Math.max(r2, g, b);
-    const min = Math.min(r2, g, b);
+    const r3 = _color.r, g = _color.g, b = _color.b;
+    const max = Math.max(r3, g, b);
+    const min = Math.min(r3, g, b);
     let hue, saturation;
     const lightness = (min + max) / 2;
     if (min === max) {
@@ -11351,14 +12231,14 @@ var Color = class {
       const delta = max - min;
       saturation = lightness <= 0.5 ? delta / (max + min) : delta / (2 - max - min);
       switch (max) {
-        case r2:
+        case r3:
           hue = (g - b) / delta + (g < b ? 6 : 0);
           break;
         case g:
-          hue = (b - r2) / delta + 2;
+          hue = (b - r3) / delta + 2;
           break;
         case b:
-          hue = (r2 - g) / delta + 4;
+          hue = (r3 - g) / delta + 4;
           break;
       }
       hue /= 6;
@@ -11390,11 +12270,11 @@ var Color = class {
    */
   getStyle(colorSpace = SRGBColorSpace) {
     ColorManagement.workingToColorSpace(_color.copy(this), colorSpace);
-    const r2 = _color.r, g = _color.g, b = _color.b;
+    const r3 = _color.r, g = _color.g, b = _color.b;
     if (colorSpace !== SRGBColorSpace) {
-      return `color(${colorSpace} ${r2.toFixed(3)} ${g.toFixed(3)} ${b.toFixed(3)})`;
+      return `color(${colorSpace} ${r3.toFixed(3)} ${g.toFixed(3)} ${b.toFixed(3)})`;
     }
-    return `rgb(${Math.round(r2 * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
+    return `rgb(${Math.round(r3 * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
   }
   /**
    * Adds the given HSL values to this color's values.
@@ -11553,11 +12433,11 @@ var Color = class {
    * @return {Color} A reference to this color.
    */
   applyMatrix3(m) {
-    const r2 = this.r, g = this.g, b = this.b;
+    const r3 = this.r, g = this.g, b = this.b;
     const e = m.elements;
-    this.r = e[0] * r2 + e[3] * g + e[6] * b;
-    this.g = e[1] * r2 + e[4] * g + e[7] * b;
-    this.b = e[2] * r2 + e[5] * g + e[8] * b;
+    this.r = e[0] * r3 + e[3] * g + e[6] * b;
+    this.g = e[1] * r3 + e[4] * g + e[7] * b;
+    this.b = e[2] * r3 + e[5] * g + e[8] * b;
     return this;
   }
   /**
@@ -12535,11 +13415,11 @@ var _testAxis = /* @__PURE__ */ new Vector3();
 function satForAxes(axes, v0, v1, v2, extents) {
   for (let i = 0, j = axes.length - 3; i <= j; i += 3) {
     _testAxis.fromArray(axes, i);
-    const r2 = extents.x * Math.abs(_testAxis.x) + extents.y * Math.abs(_testAxis.y) + extents.z * Math.abs(_testAxis.z);
+    const r3 = extents.x * Math.abs(_testAxis.x) + extents.y * Math.abs(_testAxis.y) + extents.z * Math.abs(_testAxis.z);
     const p0 = v0.dot(_testAxis);
     const p1 = v1.dot(_testAxis);
     const p2 = v2.dot(_testAxis);
-    if (Math.max(-Math.max(p0, p1, p2), Math.min(p0, p1, p2)) > r2) {
+    if (Math.max(-Math.max(p0, p1, p2), Math.min(p0, p1, p2)) > r3) {
       return false;
     }
   }
@@ -13725,10 +14605,10 @@ var BufferGeometry = class _BufferGeometry extends EventDispatcher {
       vC.sub(vA);
       uvB.sub(uvA);
       uvC.sub(uvA);
-      const r2 = 1 / (uvB.x * uvC.y - uvC.x * uvB.y);
-      if (!isFinite(r2)) return;
-      sdir.copy(vB).multiplyScalar(uvC.y).addScaledVector(vC, -uvB.y).multiplyScalar(r2);
-      tdir.copy(vC).multiplyScalar(uvB.x).addScaledVector(vB, -uvC.x).multiplyScalar(r2);
+      const r3 = 1 / (uvB.x * uvC.y - uvC.x * uvB.y);
+      if (!isFinite(r3)) return;
+      sdir.copy(vB).multiplyScalar(uvC.y).addScaledVector(vC, -uvB.y).multiplyScalar(r3);
+      tdir.copy(vC).multiplyScalar(uvB.x).addScaledVector(vB, -uvC.x).multiplyScalar(r3);
       tan1[a].add(sdir);
       tan1[b].add(sdir);
       tan1[c].add(sdir);
@@ -18522,12 +19402,18 @@ var S = { ...DEFAULT_SETTINGS };
   check("panel: allParts has no panels by default", allParts([c], S).every((p) => p.cabName !== "Panel"));
 }
 {
-  check("hinges: 900mm \u2192 2", doorHingeCount(900) === 2, `${doorHingeCount(900)}`);
-  check("hinges: 1000mm \u2192 2", doorHingeCount(1e3) === 2, `${doorHingeCount(1e3)}`);
+  check("hinges: 899mm \u2192 2", doorHingeCount(899) === 2, `${doorHingeCount(899)}`);
+  check("hinges: 900mm \u2192 3 (was 2)", doorHingeCount(900) === 3, `${doorHingeCount(900)}`);
+  check("hinges: 1000mm \u2192 3 (was 2)", doorHingeCount(1e3) === 3, `${doorHingeCount(1e3)}`);
   check("hinges: 1200mm \u2192 3", doorHingeCount(1200) === 3, `${doorHingeCount(1200)}`);
+  check("hinges: 1799mm \u2192 3", doorHingeCount(1799) === 3, `${doorHingeCount(1799)}`);
+  check("hinges: 1800mm \u2192 4", doorHingeCount(1800) === 4, `${doorHingeCount(1800)}`);
   check("hinges: 2000mm \u2192 4", doorHingeCount(2e3) === 4, `${doorHingeCount(2e3)}`);
+  check("hinges: 2399mm \u2192 4", doorHingeCount(2399) === 4, `${doorHingeCount(2399)}`);
   check("hinges: 2400mm \u2192 5", doorHingeCount(2400) === 5, `${doorHingeCount(2400)}`);
-  check("hinges: 2600mm \u2192 6", doorHingeCount(2600) === 6, `${doorHingeCount(2600)}`);
+  check("hinges: 2600mm \u2192 5 (was 6)", doorHingeCount(2600) === 5, `${doorHingeCount(2600)}`);
+  check("hinges: 2999mm \u2192 5", doorHingeCount(2999) === 5, `${doorHingeCount(2999)}`);
+  check("hinges: 3000mm \u2192 6", doorHingeCount(3e3) === 6, `${doorHingeCount(3e3)}`);
   const c = makeCabinet("tall", 600, 2100, 560, "Hng");
   c.rows = [
     {
@@ -18696,6 +19582,101 @@ ${l}
   check("obj: 24 vertices (8 corners x 3 faces, no dedup)", vs.length === 24, `${vs.length}`);
   check("obj: 1m cube exports as 1000mm", Math.max(...xs) === 1e3 && Math.max(...ys) === 1e3, `x${Math.max(...xs)} y${Math.max(...ys)}`);
   check("obj: floor corner at origin", xs.includes(0) && ys.includes(0));
+}
+{
+  const S2 = {
+    ...S,
+    plyMaterials: [...S.plyMaterials ?? [], { id: "ply-baltic", name: "Baltic Birch", color: "#c9a06a", opacity: 1, solid: false }]
+  };
+  const c = makeCabinet("base", 600, 720, 560, "BackMat");
+  c.matId = "ply-baltic";
+  const back = allParts([c], S2).find((p) => p.name === "Back");
+  check("back: carries the cabinet matId", back?.matId === "ply-baltic", `${back?.matId}`);
+  check("back: material stays 'back' (banding/grain rules untouched)", back?.material === "back", `${back?.material}`);
+  const group = nestParts(allParts([c], S2), S2).find((g) => g.material === "back");
+  check("back: nesting groups per plywood, not back@def", group?.matId === "ply-baltic", `${group?.matId}`);
+  const st = makeCabinet("base", 600, 1440, 560, "BackMatStack");
+  st.matId = "ply-baltic";
+  st.stack = [720, 720];
+  const backs = allParts([st], S2).filter((p) => p.name.startsWith("Back"));
+  check("back stacked: one back per box", backs.length === 2, `${backs.length}`);
+  check("back stacked: every box back follows the plywood", backs.every((p) => p.matId === "ply-baltic"), backs.map((p) => String(p.matId)).join(","));
+  const dflt = allParts([makeCabinet("base", 600, 720, 560, "BackDef")], S2).find((p) => p.name === "Back");
+  check("back: no matId \u2192 project default plywood", dflt?.matId === DEFAULT_PLY_ID, `${dflt?.matId}`);
+}
+{
+  const mk = (over) => ({ type: "single", style: "overlay", swing: "left", material: "mdf", mdfThk: S.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", ...over });
+  const auto = doorDims(600, 720, mk({}), S);
+  check("doorDims: auto h = row \u2212 2\xD7gap", auto.h === 720 - 2 * S.doorGap, `${auto.h}`);
+  check("doorDims: auto w = face \u2212 2\xD7gap", auto.w === 600 - 2 * S.doorGap, `${auto.w}`);
+  check("doorDims: wAuto/hAuto reported", auto.wAuto === auto.w && auto.hAuto === auto.h, `${auto.wAuto}/${auto.hAuto}`);
+  const ovr = doorDims(600, 720, mk({ hOverride: 700, wOverride: 640 }), S);
+  check("doorDims: height override wins", ovr.h === 700 && ovr.hAuto === 720 - 2 * S.doorGap, `${ovr.h}`);
+  check("doorDims: width override wins", ovr.w === 640 && ovr.wAuto === 600 - 2 * S.doorGap, `${ovr.w}`);
+  const dbl = doorDims(600, 720, mk({ type: "double" }), S);
+  check("doorDims: double leaf splits the opening", dbl.count === 2 && Math.abs(dbl.wAuto * 2 + S.doorGap - (600 - 2 * S.doorGap)) < 0.51, `${dbl.wAuto}`);
+  const fd = fullDoorAutoDims(makeCabinet("base", 600, 1440, 560, "FD"), S);
+  check("fullDoor auto dims span the carcass, not the cabinet", fd.hAuto < 1440 && fd.hAuto > 1440 - S.bodyThk * 2 - 2 * S.doorGap - S.kickHeight - 1, `${fd.wAuto}\xD7${fd.hAuto}`);
+}
+{
+  const global80 = makeCabinet("base", 600, 720, 560, "SlotG");
+  global80.slot = "left";
+  const g = allParts([global80], S).find((p2) => p2.name.startsWith("Side panel L"));
+  check("slot: global slotFromFront used by default", !!g && g.note.includes(`${S.slotFromFront}mm from front`), g?.note.slice(-60));
+  const c = makeCabinet("base", 600, 720, 560, "SlotC");
+  c.slot = "left";
+  c.slotFromFront = 120;
+  const p = allParts([c], S).find((x) => x.name.startsWith("Side panel L"));
+  check("slot: per-cabinet override wins over global", !!p && p.note.includes("120mm from front") && !p.note.includes("80mm from front"), p?.note.slice(-60));
+  const gr = p?.grooves.find((x) => x.kind === "slot");
+  const D = carcassDepth(c, S);
+  const along = gr ? [Math.abs(gr.x1 + gr.x2) / 2, Math.abs(gr.y1 + gr.y2) / 2] : [-1];
+  const distFromEnd = Math.min(...[along[0], along[1], D - along[0], D - along[1]].map(Math.abs));
+  check("slot: groove sits 120mm from the front end of the depth axis", !!gr && Math.abs(distFromEnd - 120) < 0.6, `${Math.round(distFromEnd * 10) / 10} (D=${D})`);
+  check("slot: groove width = settings.slotWidth", !!gr && Math.abs(gr.y2 - gr.y1 - S.slotWidth) < 0.01, `${gr ? gr.y2 - gr.y1 : "-"}`);
+}
+{
+  const c = makeCabinet("base", 900, 1440, 560, "FullDoor");
+  c.stack = [720, 720];
+  for (const v of ["mdf-left", "mdf-right", "mdf-double"]) {
+    c.fullDoor = v;
+    const doors = generateCabinetParts(c, S).filter((p) => p.name.startsWith("Door"));
+    check(`fullDoor ${v}: one full-height MDF door part per leaf on a stacked box`, doors.length >= 1, `${doors.length}`);
+    if (v === "mdf-double") check("fullDoor mdf-double: two leaves", doors.length === 2, `${doors.length}`);
+    if (v === "mdf-left") check("fullDoor mdf-left: single leaf", doors.length === 1, `${doors.length}`);
+    if (v === "mdf-left") {
+      const full = 720 + 720 - kickH(c, S) - 2 * S.doorGap;
+      check("fullDoor leaf covers the stacked boxes", Math.abs(Math.max(doors[0].w, doors[0].h) - full) < 1.5, `${Math.max(doors[0].w, doors[0].h)} vs ${full}`);
+    }
+  }
+  c.fullDoor = "glass-double";
+  check("fullDoor glass-*: no plywood/MDF cut part (reference only)", generateCabinetParts(c, S).filter((p) => p.name.startsWith("Door")).length === 0);
+  c.fullDoor = "off";
+  check("fullDoor off: no cabinet-level door parts", generateCabinetParts(c, S).filter((p) => p.name.startsWith("Door")).length === 0);
+}
+{
+  const c = makeCabinet("base", 600, 720, 560, "BomReport");
+  c.rows = [{ id: "r1", h: 720, columns: [{ id: "c1", width: 0, shelves: 2, fixed: false, drawers: [], door: null }] }];
+  const parts = allParts([c], S);
+  const shelves = parts.filter((p) => p.name.startsWith("Shelf")).reduce((a, p) => a + p.qty, 0);
+  check("shelf parts exist for the pin math", shelves === 2, `${shelves}`);
+  const html = bomReportHtml([c], S);
+  check("report: no 'Drawer boxes' hardware row", !/Drawer boxes/i.test(html));
+  check("report: shelf pins use the \xD74 rule", html.includes(`${shelves * 4}`) && html.includes("shelves x4"), "");
+  check("report: hinge note carries the NEW bands", html.includes("<900-&gt;2") || html.includes("900-1799-&gt;3") || html.includes("900-1799->3"), "");
+}
+{
+  const a = makeCabinet("base", 600, 720, 560, "EXP-A");
+  a.rows = [{ id: "r1", h: 720, columns: [{ id: "c1", width: 0, shelves: 1, fixed: false, drawers: [], door: { type: "single", style: "overlay", swing: "left", material: "mdf", mdfThk: S.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center" } }] }];
+  const b = makeCabinet("wall", 800, 600, 320, "EXP-B");
+  const html = explodedReportHtml([a, b], S, [], {}, { name: "Smoke Project" }, null, {});
+  check("exploded report: non-trivial html", html.length > 2e4, `${Math.round(html.length / 1024)} KB`);
+  check("exploded report: one section per cabinet", html.includes("Cabinet 1/2") && html.includes("Cabinet 2/2"), "");
+  check("exploded report: exploded + open-door pages", html.includes("Exploded View") && html.includes("Open Door View"), "");
+  check("exploded report: per-cabinet panel size table", html.includes("Panel Size Table"), "");
+  check("exploded report: drilling map page", html.includes("Drilling Map"), "");
+  check("exploded report: vectors only, no external assets", html.includes("<svg") && !/<(script|link)\s+[^>]*src=["']?(https?:)?\/\//i.test(html));
+  check("exploded report: table names the plywood, not 'plywood'", html.includes("Plywood"), "");
 }
 if (failures) {
   console.log(`

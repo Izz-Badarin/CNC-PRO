@@ -3,10 +3,10 @@ import { CircleStop, FileSpreadsheet, Package, PackageOpen, Play, TriangleAlert 
 import type { Cabinet, PanelItem, Settings } from "../types";
 import { MATERIAL_LABEL } from "../types";
 import { allPartsMerged, type GrainOverrides } from "../lib/model";
-import { DEFAULT_PLY_ID, plyMaterialById } from "../lib/defaults";
+import { partMatName, plyMaterialById } from "../lib/defaults";
 import { runNesting, partColor, placedOutline, rotPoint, type NestGroup, type NestRunProgress, type PlacedPart, type Sheet } from "../lib/nesting";
 import NestWorker from "../lib/nesting.worker?worker&inline";
-import { buildDxf, buildDxfFromSheets, dxfFileDefs } from "../lib/dxf";
+import { buildDxf, buildDxfFromSheets, dxfFileDefs, plyGroupMatch } from "../lib/dxf";
 import { download, downloadRaw, nestingCsv } from "../lib/export";
 import { Btn, Chip, Empty, Stat } from "../components/ui";
 
@@ -52,22 +52,27 @@ export function NestingTab({
       const m = plyMaterialById(settings, mid === "def" ? null : mid);
       return m ? m.name : "Plywood";
     }
+    if (mat === "back") {
+      // veneer back follows the cabinet plywood — show its board name
+      return partMatName(settings, { material: "back", matId: mid === "def" ? null : mid });
+    }
     return MATERIAL_LABEL[mat as keyof typeof MATERIAL_LABEL];
   };
 
   const exportDxf = (labels: boolean) => {
     let n = 0;
     const defs = dxfFileDefs(settings);
-    // one-material mode → export ONLY that material's file (the "def" group
-    // belongs to the default plywood file — same rule as buildDxf)
+    // one-material mode → export ONLY that material's file. Plywood AND
+    // veneer-back map through the shared rule-J match (the "def" group
+    // belongs to the project-default file — same rule as buildDxf).
     const defsToExport =
       matSelEff === "all"
         ? defs
         : defs.filter((d) => {
             const [mat, mid] = matSelEff.split("@");
             if (d.material !== mat) return false;
-            if (mat !== "plywood") return true;
-            return d.matId === (mid === "def" ? DEFAULT_PLY_ID : mid);
+            if (mat === "plywood" || mat === "back") return plyGroupMatch({ matId: mid === "def" ? null : mid }, d.matId, settings.defaultPlyId);
+            return true;
           });
     defsToExport.forEach((d) => {
       const dxf = buildDxf(cabinets, settings, d.material, labels, grain, d.matId, panels);
@@ -357,11 +362,11 @@ export function NestingTab({
                 </tr>
               </thead>
               <tbody className="bg-ink-850/60">
-                {groups.flatMap((g) => g.unplacedParts).map((u, i) => (
+                {groups.flatMap((g) => g.unplacedParts.map((u) => ({ ...u, matId: g.matId }))).map((u, i) => (
                   <tr key={i}>
                     <td className="text-ink-300">{u.cabName}</td>
                     <td>{u.name}</td>
-                    <td className="text-ink-300">{MATERIAL_LABEL[u.material]} {u.thickness}</td>
+                    <td className="text-ink-300">{u.material === "back" ? partMatName(settings, { material: "back", matId: u.matId }) : MATERIAL_LABEL[u.material]} {u.thickness}</td>
                     <td className="!text-right font-mono">{u.w}×{u.h}</td>
                     <td className="text-[12px] text-red-200/90">{u.reason}</td>
                   </tr>
@@ -396,8 +401,14 @@ function GroupView({
     <div className="mt-7">
       <div className="flex items-center gap-2 mb-2.5 flex-wrap">
         {g.material === "plywood" && <span className="inline-block h-3 w-3 rounded-full" style={{ background: plyMaterialById(S, g.matId).color }} />}
+        {g.material === "back" && <span className="inline-block h-3 w-3 rounded-full opacity-70" style={{ background: plyMaterialById(S, g.matId).color }} />}
         <span className="font-display text-sm font-semibold">
-          {g.material === "plywood" ? plyMaterialById(S, g.matId).name : MATERIAL_LABEL[g.material]} — {g.thickness}mm
+          {g.material === "plywood"
+            ? plyMaterialById(S, g.matId).name
+            : g.material === "back"
+              ? partMatName(S, { material: "back", matId: g.matId })
+              : MATERIAL_LABEL[g.material]}{" "}
+          — {g.thickness}mm
         </span>
         <Chip tone="amber">{g.sheets.length} sheet{g.sheets.length > 1 ? "s" : ""}</Chip>
         <Chip>{g.partCount} parts</Chip>

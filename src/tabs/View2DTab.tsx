@@ -25,10 +25,16 @@ interface ViewMetrics {
 
 function viewMetrics(pos: CabPos[], extra?: { maxX?: number; maxH?: number }): ViewMetrics {
   const padL = 110, padB = 110, padT = 70, W = 1400, H = 720;
-  const minX = Math.min(...pos.map((p) => p.x), 0);
-  const maxX = Math.max(...pos.map((p) => p.x + p.cab.width), extra?.maxX ?? 0, 1);
-  const totalW = maxX - minX;
-  const maxH = Math.max(...pos.map((p) => p.cab.height), extra?.maxH ?? 0, 1);
+  // any NaN here (corrupt panel/cab layout) would NaN the whole viewBox —
+  // non-finite extras are ignored, and the result is clamped to finite
+  const fx = (v: number | undefined) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const minXRaw = Math.min(...pos.map((p) => p.x), 0);
+  const maxXRaw = Math.max(...pos.map((p) => p.x + p.cab.width), fx(extra?.maxX), 1);
+  const maxHRaw = Math.max(...pos.map((p) => p.cab.height), fx(extra?.maxH), 1);
+  const minX = Number.isFinite(minXRaw) ? minXRaw : 0;
+  const maxX = Number.isFinite(maxXRaw) ? maxXRaw : 1000;
+  const maxH = Number.isFinite(maxHRaw) ? maxHRaw : 1000;
+  const totalW = Math.max(1, maxX - minX);
   const sc = Math.min((W - padL - 60) / Math.max(totalW, 1), (H - padT - padB) / maxH);
   const base = H - padB;
   const left = padL + (W - padL - 60 - totalW * sc) / 2;
@@ -93,17 +99,29 @@ export function View2DTab({
     () => (preview ? pos.map((p) => (p.cab.id === preview.id ? { ...p, x: preview.x, y: preview.y } : p)) : pos),
     [pos, preview],
   );
-  const overlaps = useMemo(() => overlapPairs(curPos), [curPos]);
+  // overlap detection over cabinets AND raw panels (Phase 8) — the dragged
+  // preview position is included so the banner updates live while moving
+  const allBoxes = useMemo(
+    () => [
+      ...curPos.map((p) => ({ id: p.cab.id, name: p.cab.name, x: p.x, y: p.y, w: p.cab.width, h: p.cab.height })),
+      ...pposMemo.map((pp) => ({ id: pp.pn.id, name: pp.pn.name, x: pp.x, y: pp.y ?? 0, w: pp.pn.w, h: pp.pn.h })),
+    ].filter((b) => Number.isFinite(b.x) && Number.isFinite(b.y) && Number.isFinite(b.w) && Number.isFinite(b.h)),
+    [curPos, pposMemo],
+  );
+  const overlaps = useMemo(() => overlapBoxes(allBoxes), [allBoxes]);
   const warn = useMemo(() => overlaps.flatMap((o) => [o.a, o.b]), [overlaps]);
   const svg = useMemo(
     () => buildFrontSvg(cabinets, dSettings, { override: preview, sel, guides, warn }, panels),
     [cabinets, dSettings, preview, sel, guides, warn, tick],
   );
 
-  const moveCab = (id: string, x: number, y: number) =>
+  const moveCab = (id: string, x: number, y: number) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return; // a NaN commit blanks 3D
     setCabinets((prev) => prev.map((c) => (c.id === id ? { ...c, layout: { x: Math.round(x), y: Math.max(0, Math.round(y)) } } : c)));
+  };
   const movePanel = (id: string, x: number, y: number) => {
     if (!setPanels) return;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return; // a NaN commit blanks 3D
     setPanels((prev) => prev.map((p) => (p.id === id ? { ...p, layout: { x: Math.round(x), y: Math.round(y) } } : p)));
   };
 
@@ -415,7 +433,7 @@ return (
         </div>
       )}
 
-      {anyLayout && (
+      {(anyLayout || pposMemo.length > 0) && (
         <div className="mt-3 flex flex-wrap gap-2 items-center rounded-lg border border-cyan-400/20 bg-cyan-400/[0.05] px-3 py-2">
           <span className="text-[11.5px] text-cyan-200 font-semibold">Positions (mm):</span>
           {pos.map((p) => (
@@ -423,6 +441,13 @@ return (
               <span className="text-amber-300">{p.cab.name}</span>
               <PosInput label="X" value={p.x} onCommit={(n) => moveCab(p.cab.id, n, p.y)} />
               <PosInput label="Y" value={p.y} onCommit={(n) => moveCab(p.cab.id, p.x, n)} />
+            </span>
+          ))}
+          {pposMemo.map((pp) => (
+            <span key={pp.pn.id} className="font-mono text-[10.5px] px-2 py-0.5 rounded bg-ink-900/60 border border-cyan-400/25 inline-flex items-center gap-1">
+              <span className="text-cyan-300">{pp.pn.name}</span>
+              <PosInput label="X" value={pp.x} onCommit={(n) => movePanel(pp.pn.id, n, pp.y ?? 0)} />
+              <PosInput label="Y" value={pp.y ?? 0} onCommit={(n) => movePanel(pp.pn.id, pp.x, n)} />
             </span>
           ))}
           <span className="text-[10.5px] text-ink-400">drag = move · snap 5 mm · arrows nudge (Shift = 50) · Esc clears</span>
@@ -479,18 +504,33 @@ export interface SvgOpts {
   warn?: string[];
 }
 
-/** pairwise rectangle intersections (>1mm in BOTH axes) — exactly touching edges are NOT overlap */
-export function overlapPairs(pos: CabPos[]) {
+export interface WarnBox {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** pairwise rectangle intersections (>1mm in BOTH axes) — exactly touching edges are NOT overlap.
+ *  Generic boxes so cabinets AND raw panels are covered (Phase 8). */
+export function overlapBoxes(boxes: WarnBox[]) {
   const out: { a: string; b: string; wa: string; wb: string; ow: number; oh: number }[] = [];
-  for (let i = 0; i < pos.length; i++)
-    for (let j = i + 1; j < pos.length; j++) {
-      const A = pos[i], B = pos[j];
-      const ow = Math.min(A.x + A.cab.width, B.x + B.cab.width) - Math.max(A.x, B.x);
-      const oh = Math.min(A.y + A.cab.height, B.y + B.cab.height) - Math.max(A.y, B.y);
+  for (let i = 0; i < boxes.length; i++)
+    for (let j = i + 1; j < boxes.length; j++) {
+      const A = boxes[i], B = boxes[j];
+      const ow = Math.min(A.x + A.w, B.x + B.w) - Math.max(A.x, B.x);
+      const oh = Math.min(A.y + A.h, B.y + B.h) - Math.max(A.y, B.y);
       if (ow > 1 && oh > 1)
-        out.push({ a: A.cab.id, b: B.cab.id, wa: A.cab.name, wb: B.cab.name, ow: Math.round(ow), oh: Math.round(oh) });
+        out.push({ a: A.id, b: B.id, wa: A.name, wb: B.name, ow: Math.round(ow), oh: Math.round(oh) });
     }
   return out;
+}
+
+/** cabinets-only wrapper (legacy signature — tests / other importers) */
+export function overlapPairs(pos: CabPos[]) {
+  return overlapBoxes(pos.map((p) => ({ id: p.cab.id, name: p.cab.name, x: p.x, y: p.y, w: p.cab.width, h: p.cab.height })));
 }
 
 export function buildFrontSvg(cabs: Cabinet[], S: Settings, opts?: SvgOpts, panels: PanelItem[] = []): string {
@@ -794,8 +834,11 @@ const aboveBank = col.drawerAlign !== "top";
     const thk = pn.thk > 0 ? pn.thk : pn.material === "plywood" ? S.bodyThk : pn.material === "back" ? S.backThk : S.mdfThk;
     const fill =
       pn.material === "mdf" ? (pn.finish === "oak" ? "#4a3620" : "#2c3f58") : pn.material === "back" ? "#33402f" : "#5a4a36";
-    out += `<rect x="${f(px)}" y="${f(py)}" width="${f(pw)}" height="${f(ph)}" rx="2" fill="${fill}" stroke="#22d3ee" stroke-width="1.5" stroke-dasharray="7 4"/>`;
-    out += `<text x="${f(px + pw / 2)}" y="${f(py - 8)}" fill="#22d3ee" font-size="11" font-weight="700" text-anchor="middle">${esc(pn.name)}</text>`;
+    const warnPn = !!opts?.warn?.includes(pn.id);
+    out += `<rect x="${f(px)}" y="${f(py)}" width="${f(pw)}" height="${f(ph)}" rx="2" fill="${fill}" stroke="${warnPn ? "#fb923c" : "#22d3ee"}" stroke-width="${warnPn ? 2.5 : 1.5}" stroke-dasharray="7 4"/>`;
+    if (warnPn)
+      out += `<text x="${f(px + pw / 2)}" y="${f(py - 22)}" fill="#fb923c" font-size="10" text-anchor="middle" font-weight="700">⚠ overlap</text>`;
+    out += `<text x="${f(px + pw / 2)}" y="${f(py - 8)}" fill="${warnPn ? "#fb923c" : "#22d3ee"}" font-size="11" font-weight="700" text-anchor="middle">${esc(pn.name)}</text>`;
     out += `<text x="${f(px + pw / 2)}" y="${f(py + ph / 2 + 4)}" fill="#bfe8f7" font-size="10" text-anchor="middle">${Math.round(pn.w)}×${Math.round(pn.h)}×${thk}</text>`;
   });
   out += "</svg>";

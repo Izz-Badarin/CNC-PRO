@@ -18,16 +18,12 @@ import {
 } from "./model";
 import { nestParts } from "./nesting";
 import { layoutCabs, panelPositions } from "./layout2d";
-import { MATERIAL_LABEL } from "../types";
-import { plyMaterialById } from "./defaults";
+import { plyMaterialById, partMatName } from "./defaults";
 
 const allParts = (c: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = []) => allPartsMerged(c, S, ov, panels);
 
-/** human material label honoring per-cabinet plywood materials */
-const matLabel = (S: Settings, p: { material: string; matId?: string }) =>
-  p.material === "plywood"
-    ? plyMaterialById(S, p.matId ?? null).name
-    : MATERIAL_LABEL[p.material as "plywood" | "mdf" | "back"];
+/** human material label honoring per-cabinet plywood materials (ply name / veneer back follows ply) */
+const matLabel = (S: Settings, p: { material: string; matId?: string }) => partMatName(S, p);
 
 /** Reliable download that works offline, file://, and in PWA standalone */
 function triggerDownload(blob: Blob, filename: string) {
@@ -442,27 +438,34 @@ export function bomReportHtml(
     hangingRails = 0;
   const slides: Record<number, number> = {};
   const materials: Record<string, number> = {};
+  // veneer back area tracked PER PLYWOOD MATERIAL — the back follows the
+  // cabinet's plywood (matId), so the BOM gets one line per back material
+  const backArea: Record<string, number> = {};
+  const matKeyOf = (p: { material: string; matId?: string | null }): string =>
+    p.material === "plywood" ? (p.matId ?? "plywood") : p.material === "back" ? `back:${p.matId ?? "def"}` : p.material;
   // shelf PINS are hardware: 4 per shelf (2 per side) — the hole count drilled
   // per panel stays in the Drilling tab, the BOM only cares about pins bought
   const totalShelves = parts.filter((p) => p.name.startsWith("Shelf")).reduce((a, p) => a + p.qty, 0);
   const shelfPins = totalShelves * 4;
-  modelPanelParts(panels, settings).forEach((p) => {
-    const m = p.material === "plywood" ? (p.matId ?? "plywood") : p.material;
+  const addArea = (p: { material: string; matId?: string | null; w: number; h: number; qty: number }) => {
+    const m = matKeyOf(p);
     materials[m] = (materials[m] ?? 0) + (p.w / 1000) * (p.h / 1000) * p.qty;
-  });
+    if (p.material === "back") backArea[m] = (backArea[m] ?? 0) + (p.w / 1000) * (p.h / 1000) * p.qty;
+  };
+  modelPanelParts(panels, settings).forEach(addArea);
   cabinets.forEach((cab) => {
-    allParts([cab], settings).forEach((p) => {
-      const m = p.material === "plywood" ? (p.matId ?? "plywood") : p.material;
-      materials[m] = (materials[m] ?? 0) + (p.w / 1000) * (p.h / 1000) * p.qty;
-    });
+    allParts([cab], settings).forEach(addArea);
     modelDrillOps([cab], settings).forEach((op) => {
       if (op.type === "hinge") hinges++;
     });
     const fullSpan = (modelStackOn(cab) ? modelStackedHeights(cab).reduce((a, h) => a + h, 0) : cab.height) - modelKickH(cab, settings);
+    // a cabinet-level full door suppresses every per-section door in the model
+    // — don't double-count the suppressed per-column glass door hinges
+    const fullDoorActive = !!cab.fullDoor && cab.fullDoor !== "off";
     cab.rows.forEach((row) => {
       const lays = columnLayout(cab, row, settings);
       row.columns.forEach((col, ci) => {
-        if (col.door && col.door.material === "glass" && col.door.type !== "sliding") {
+        if (col.door && !fullDoorActive && col.door.material === "glass" && col.door.type !== "sliding") {
           const faceW = lays.length === 1 ? cab.width : columnFaceWidth(cab, lays[ci], settings);
           const leafH = doorDims(faceW, col.door.full ? fullSpan : row.h, col.door, settings).h;
           hinges += Math.min(6, Math.max(1, col.door.hingeCount ?? doorHingeCount(leafH)));
@@ -508,7 +511,21 @@ export function bomReportHtml(
     if (a > 0) bomRows.push({ category: "Materials", item: "Plywood (2440x1220)", qty: Math.ceil(a / (2.44 * 1.22)), unit: "sheets", note: `${a.toFixed(2)} m2` });
   }
   if (materials["mdf"]) bomRows.push({ category: "Materials", item: `MDF (${settings.mdfSheet})`, qty: sheetCount["mdf@def"] ?? Math.ceil(materials["mdf"] / (settings.mdfSheet === "3050x1220" ? 3.05 * 1.22 : 2.44 * 1.22)), unit: "sheets", note: `${materials["mdf"].toFixed(2)} m2 - nesting` });
-  if (materials["back"]) bomRows.push({ category: "Materials", item: "Veneer back (2440x1220)", qty: sheetCount["back@def"] ?? Math.ceil(materials["back"] / (2.44 * 1.22)), unit: "sheets", note: `${materials["back"].toFixed(2)} m2 - nesting` });
+  // every veneer back material gets its own BOM line, named after the plywood
+  // it follows — sheet count from the actual nesting output (back@<plyId>)
+  Object.entries(backArea)
+    .sort((a, b) => b[1] - a[1])
+    .forEach(([key, area]) => {
+      const mid = key.slice("back:".length);
+      const pm = plyMaterialById(settings, mid === "def" ? null : mid);
+      bomRows.push({
+        category: "Materials",
+        item: `Veneer back — ${pm.name} (2440x1220)`,
+        qty: sheetCount[`back@${mid}`] ?? Math.ceil(area / (2.44 * 1.22)),
+        unit: "sheets",
+        note: `${area.toFixed(2)} m2 - follows ${pm.name} - nesting`,
+      });
+    });
   banding.forEach((b) => bomRows.push({ category: "Materials", item: `Edge banding - ${b.material}`, qty: Math.round(b.meters * 10) / 10, unit: "m", note: `${b.mm.toFixed(0)} mm` }));
   if (hinges > 0) bomRows.push({ category: "Hardware", item: "Hinges - Universal 35mm", qty: hinges, unit: "pcs", note: "35 cup bored in the door only - auto: <900->2 900-1799->3 1800-2399->4 2400-2999->5 >=3000->6 - 140mm from ends" });
   Object.keys(slides)
@@ -600,8 +617,9 @@ export function bomReportHtml(
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([key, list]) => {
       const [mat, mid, thk] = key.split("@");
-      const ply = mat === "plywood" ? plyMaterialById(settings, mid === "def" ? null : mid) : null;
-      const matName = ply ? ply.name : mat === "plywood" ? "Plywood" : mat === "mdf" ? "MDF" : "Veneer back";
+      // one representative part supplies the human material name (plywood →
+      // library name · back → "Veneer back · <ply name>" · MDF → "MDF")
+      const matName = list.length ? partMatName(settings, { material: mat, matId: mid === "def" ? null : mid }) : mat;
       const area = list.reduce((a, p) => a + (p.w * p.h * p.qty) / 1e6, 0);
       const rows = list
         .map((p, i) => `<tr><td>${i + 1}</td><td>${escH(p.cabName)}</td><td>${escH(p.name)}</td><td class="num">${p.w}x${p.h}x${p.thickness}</td><td class="num">${p.qty}</td><td>${bandStr(p.band)}</td><td class="num">${((bandLengthMm(p) * p.qty) / 1000).toFixed(2)}</td><td class="num">${p.holes.length * p.qty}</td></tr>`)

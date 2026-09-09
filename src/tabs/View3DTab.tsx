@@ -176,7 +176,7 @@ export function View3DTab({
             <Btn size="sm" title="Model as OBJ, millimetres" onClick={shotObj}><Box size={13} /> OBJ</Btn>
           </div>
           <div className="grid grid-cols-2 gap-1.5 mt-2">
-            <Btn size="sm" variant="ok" title="Exploded 3D view – sides ±150 X top/bottom ±120 Y back -100 Z doors +200 Z 45° – saved as cnc-exploded overall and used in Exploded Report" onClick={()=>{
+            <Btn size="sm" variant="ok" title="Exploded 3D view (per-part) – side L −150 X · side R +150 X · top +120 Y · bottom −40 Y · back −120 Z · door +250 Z (45° open) · drawer +300 Z – saved as cnc-exploded overall and used in Exploded Report" onClick={()=>{
               const url = (viewer.current as any)?.snapshotExploded?.();
               if (!url) return;
               try{
@@ -215,6 +215,13 @@ export function View3DTab({
                       try{ localStorage.setItem(`cnc-exploded-${c.id}`, url);}catch{}
                       const a=document.createElement('a'); a.href=url; a.download=`${c.name}-exploded.png`; a.click();
                     }}>Expl</button>
+                    <button className="px-1.5 py-0.5 rounded bg-ink-800 hover:bg-emerald-900/50 text-emerald-300" title="Export this cabinet alone as a GLB (millimetres)" onClick={async()=>{
+                      const blob = await (viewer.current as any)?.exportGlbCabinet?.(c.id, c.name);
+                      if(!blob) return;
+                      const url=URL.createObjectURL(blob);
+                      const a=document.createElement('a'); a.href=url; a.download=`${c.name.replace(/[^a-z0-9_\-]+/gi,"_")}.glb`; a.click();
+                      setTimeout(()=>URL.revokeObjectURL(url), 2000);
+                    }}>GLB</button>
                   </span>
                 </div>
               ))}

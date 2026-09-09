@@ -1,4 +1,4 @@
-import type { Cabinet, CabinetType, ColumnSpec, DrawerSpec, DoorSpec, PlywoodMaterial, RowSpec, Settings } from "../types";
+import type { Cabinet, CabinetType, ColumnSpec, DrawerSpec, DoorSpec, PanelItem, PlywoodMaterial, RowSpec, Settings } from "../types";
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -40,6 +40,22 @@ export function plyMaterialById(S: Settings, id?: string | null): PlywoodMateria
 
 /** the material a cabinet is actually cut from (cabinet override → default → first) */
 export const plyMaterialOf = (S: Settings, cab: Pick<Cabinet, "matId">): PlywoodMaterial => plyMaterialById(S, cab.matId);
+
+/**
+ * Human material name for a part — the single source of truth used by the cut
+ * list, BOM, labels, nesting, DXF sheet names and reports:
+ *  · plywood → the user plywood library NAME (never generic "Plywood")
+ *  · back    → "Veneer back · <ply name>" — the veneer back follows the
+ *              cabinet's plywood material (back carries the same matId)
+ *  · mdf     → "MDF" · glass → "Glass (ref)"
+ */
+export const partMatName = (S: Settings, p: { material: string; matId?: string | null }): string => {
+  if (p.material === "plywood") return plyMaterialById(S, p.matId ?? null).name;
+  if (p.material === "back") return `Veneer back · ${plyMaterialById(S, p.matId ?? null).name}`;
+  if (p.material === "mdf") return "MDF";
+  if (p.material === "glass") return "Glass (ref)";
+  return p.material;
+};
 
 /**
  * Drawer slide-hole X pattern by slide depth (cm), measured mm from the FRONT
@@ -552,29 +568,69 @@ export function builtinLibrary(): LibraryItem[] {
   });
 }
 
+/* ---- numeric sanitation (3D-blank defense) ----
+ * A single NaN anywhere (drag commit, cleared input, hand-edited JSON) can
+ * poison the 3D camera framing (Box3 → NaN center → NOTHING renders) or the
+ * 2D viewBox. Every loaded cabinet/panel is therefore forced to finite
+ * numbers at the storage boundary — and the 3D/2D layers re-guard below.
+ */
+const finite = (v: unknown, fb: number): number => (typeof v === "number" && Number.isFinite(v) ? v : fb);
+const finiteLayout = (l: unknown): { x: number; y: number } | null =>
+  l && typeof l === "object" && Number.isFinite((l as { x?: number }).x) && Number.isFinite((l as { y?: number }).y)
+    ? { x: (l as { x: number }).x, y: (l as { y: number }).y }
+    : null;
+
 /* ---- migrate legacy (pre-column) saved cabinets ---- */
 export function migrateCabinet(c: Cabinet): Cabinet {
   const legacy = c as unknown as {
     rows?: (RowSpec & { shelves?: number; door?: DoorSpec | null; drawers?: DrawerSpec[]; fixed?: boolean })[];
   };
-  const rows = (legacy.rows ?? []).map((r) =>
-    r.columns
+  const cleanCol = (c: ColumnSpec): ColumnSpec => ({
+    ...c,
+    width: Number.isFinite(c.width) ? c.width : 0, // 0 = flex
+    shelves: Math.max(0, Math.round(finite(c.shelves, 0))),
+    drawers: (c.drawers ?? []).map((d) => ({ ...d, frontHeight: finite(d.frontHeight, 120) })),
+  });
+  const rows = (legacy.rows ?? []).map((r) => {
+    const base: RowSpec = r.columns
       ? r
       : ({
           id: r.id ?? uid(),
           h: r.h ?? 300,
           columns: [mkColumn({ shelves: r.shelves ?? 0, door: r.door ?? null, drawers: r.drawers ?? [], fixed: r.fixed })],
-        } as RowSpec),
-  );
-  return {
+        } as RowSpec);
+    return { ...base, h: finite(base.h, 300), columns: (base.columns ?? []).map(cleanCol) };
+  });
+  const out: Cabinet = {
     ...DEFAULT_CUTS,
     ...c,
-    qty: c.qty ?? 1,
+    // non-finite core dimensions → safe defaults (a NaN cabinet blanks 3D)
+    width: finite(c.width, 600),
+    height: finite(c.height, 720),
+    depth: finite(c.depth, 560),
+    qty: Math.max(1, Math.round(finite(c.qty, 1))),
     isKitchen: c.isKitchen ?? false,
     // kept inline-true only if the user explicitly enabled it — legacy cabinets
     // without the field must behave as "toe kick OFF" so nothing shows by default.
     hasToeKick: c.hasToeKick === true,
     rows,
+    // drop corrupt placements — a NaN layout/plan would poison 3D camera framing
+    layout: finiteLayout(c.layout),
+    plan: c.plan && Number.isFinite(c.plan.x) && Number.isFinite(c.plan.z) ? { x: c.plan.x, z: c.plan.z } : null,
+  };
+  if (!Number.isFinite(out.slotFromFront)) delete out.slotFromFront;
+  if (out.stack) out.stack = out.stack.map((h) => finite(h, 400));
+  return out;
+}
+
+/** sanitize a raw project panel (localStorage / JSON / share link) */
+export function migratePanel(pn: PanelItem): PanelItem {
+  return {
+    ...pn,
+    w: finite(pn.w, 600),
+    h: finite(pn.h, 400),
+    thk: finite(pn.thk, 0),
+    layout: finiteLayout(pn.layout),
   };
 }
 

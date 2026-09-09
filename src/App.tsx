@@ -26,6 +26,7 @@ import {
   duplicateCabinet,
   makeCabinet,
   migrateCabinet,
+  migratePanel,
   migrateSettings,
   nextCopyName,
   type LibraryItem,
@@ -84,6 +85,12 @@ const defaultProject = (): ProjectInfo => ({
   panels: [],
 });
 
+/** force every loaded panel to finite numbers (3D-blank defense, see migratePanel) */
+const sanitizeProject = (p: ProjectInfo): ProjectInfo => ({
+  ...p,
+  panels: (p.panels ?? []).map(migratePanel),
+});
+
 function demoCabinets(): Cabinet[] {
   return [
     makeCabinet("base", 600, 720, 560, "Base-01"),
@@ -107,7 +114,7 @@ function loadPersisted(): PersistState {
         return {
           settings: migrateSettings(data.settings),
           cabinets: (Array.isArray(data.cabinets) ? data.cabinets : []).map(migrateCabinet),
-          project: { ...defaultProject(), ...(data.project ?? {}) },
+          project: sanitizeProject({ ...defaultProject(), ...(data.project ?? {}) }),
           customers: Array.isArray(data.customers) ? data.customers : [],
           library: [...builtinLibrary(), ...saved],
           grain: data.grain && typeof data.grain === "object" ? data.grain : {},
@@ -162,7 +169,7 @@ export default function App() {
       if (!data) return;
       if (data.settings) setSettingsState(migrateSettings(data.settings as Partial<Settings>));
       if (Array.isArray(data.cabinets)) setCabinetsState((data.cabinets as Cabinet[]).map(migrateCabinet));
-      if (data.project) setProjectState({ ...defaultProject(), ...(data.project as object) });
+      if (data.project) setProjectState(sanitizeProject({ ...defaultProject(), ...(data.project as object) }));
       if (Array.isArray(data.customers)) setCustomersState(data.customers as Customer[]);
       if (Array.isArray(data.library))
         setLibraryState([...builtinLibrary(), ...(data.library as LibraryItem[]).filter((l) => !l.builtin)]);
@@ -295,7 +302,7 @@ export default function App() {
       const data = (await readProjectFile(f)) as { cabinets: Cabinet[]; settings?: Settings; project?: ProjectInfo; customers?: Customer[]; grain?: GrainOverrides; library?: LibraryItem[] };
       setCabinetsState((data.cabinets ?? []).map(migrateCabinet));
       if (data.settings) setSettingsState(migrateSettings(data.settings));
-      if (data.project) setProjectState({ ...defaultProject(), ...data.project });
+      if (data.project) setProjectState(sanitizeProject({ ...defaultProject(), ...data.project }));
       if (data.customers) setCustomersState(data.customers);
       if (data.grain) setGrainState(data.grain as GrainOverrides);
       if (data.library) setLibraryState([...builtinLibrary(), ...(data.library as LibraryItem[]).filter((l) => !l.builtin)]);

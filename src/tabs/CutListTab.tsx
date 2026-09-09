@@ -3,7 +3,7 @@ import { Download, FileSpreadsheet, FileText, LayoutList, Printer, Tags, Lock } 
 import type { Cabinet, PanelItem, Settings } from "../types";
 import { MATERIAL_LABEL } from "../types";
 import { allPartsMerged, bandLengthMm, bandStr, partId, type GrainOverrides } from "../lib/model";
-import { plyMaterialById } from "../lib/defaults";
+import { partMatName, plyMaterialById } from "../lib/defaults";
 import { cutListCsv, cutListHtml, download, labelsHtml, openPrintWindow } from "../lib/export";
 import { partColor } from "../lib/nesting";
 import { Btn, Chip, Empty, Stat } from "../components/ui";
@@ -135,8 +135,11 @@ export function CutListTab({
 
       {byMat.map(([key, list]) => {
         const [mat, thk, mid] = key.split("@");
-        const ply = mat === "plywood" ? plyMaterialById(settings, mid === "def" ? null : mid) : null;
-        const matLabel = ply ? ply.name : MATERIAL_LABEL[mat as keyof typeof MATERIAL_LABEL];
+        const matId = mid === "def" ? null : mid;
+        // veneer back follows the cabinet plywood — group by its board name
+        const ply = mat === "plywood" || mat === "back" ? plyMaterialById(settings, matId) : null;
+        const matLabel =
+          mat === "back" ? partMatName(settings, { material: "back", matId }) : ply ? ply.name : MATERIAL_LABEL[mat as keyof typeof MATERIAL_LABEL];
         const area = list.reduce((a, p) => a + (p.w * p.h * p.qty) / 1e6, 0);
         // rule R — one checkbox locks/unlocks the grain of the WHOLE group
         const groupLocked = list.every((p) => p.grain);

@@ -71,10 +71,13 @@ export function PlanTab({
     });
   }, [planPos, panels, settings]);
 
-  const commit = (id: string, x: number, z: number) =>
+  const commit = (id: string, x: number, z: number) => {
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return; // a NaN commit blanks 3D
     setCabinets((cs) => cs.map((c) => (c.id === id ? { ...c, plan: { x: Math.round(x), z: Math.round(z) } } : c)));
+  };
   const commitPanel = (id: string, x: number, _z: number) => {
     if (!setPanels) return;
+    if (!Number.isFinite(x)) return; // a NaN commit blanks 3D
     setPanels((ps) => ps.map((p) => (p.id === id ? { ...p, layout: { x: Math.round(x), y: 0 } } : p)));
   };
 

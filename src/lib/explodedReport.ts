@@ -20,14 +20,14 @@ import {
 } from "./model";
 import { nestParts } from "./nesting";
 import { frontElevationSvg } from "./export";
-import { MATERIAL_LABEL } from "../types";
-import { plyMaterialById } from "./defaults";
+import { partMatName } from "./defaults";
 
 const escH = (s: string) =>
   s.replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c]!));
 const f2 = (n: number) => (Math.round(n * 100) / 100).toString();
-const matLabel = (S: Settings, p: { material: string; matId?: string }) =>
-  p.material === "plywood" ? plyMaterialById(S, p.matId ?? null).name : MATERIAL_LABEL[p.material as "plywood" | "mdf" | "back" | "glass"] || p.material;
+// single source of truth for human material names (plywood name /
+// "Veneer back · <ply name>" / MDF / Glass)
+const matLabel = (S: Settings, p: { material: string; matId?: string }) => partMatName(S, p);
 
 export interface ExplodedReportOpts {
   screenshotDataUrl?: string | null;
@@ -35,148 +35,124 @@ export interface ExplodedReportOpts {
   explodedScreenshots?: Record<string, string>; // cabId -> dataUrl (exploded 3D)
 }
 
-/** 2D exploded schematic for a single cabinet – sides pulled ±150, top/bottom ±100, back dashed, doors in front */
-function explodedCabinetSvg(cab: Cabinet, S: Settings): string {
-  const W = cab.width;
-  const H = cab.height;
-  const D = cab.depth;
-  const kick = modelKickH(cab, S);
-  const BH = H - kick;
-  const bodyThk = S.bodyThk;
-  const insideW = Math.max(10, W - bodyThk * 2);
-  // canvas
-  const VW = 960, VH = 640;
-  const sc = Math.min((VW - 320) / Math.max(W + D * 2 + 300, 1), (VH - 200) / Math.max(BH + D * 2 + 180, 1)) * 0.95;
-  const cx = VW / 2, cy = VH / 2 + 10;
-  // offsets
-  const sideOff = 140;
-  const tbOff = 90;
-  const doorOff = 200;
+/**
+ * 2D exploded parts layout for a single cabinet — drawn DIRECTLY from the real
+ * cut-part list (same generator as cut list / nesting / DXF): every rectangle
+ * is an actual part with its true name, W×H×thk, qty, holes, edge banding and
+ * grain-lock flag; polygon parts (notched sides, kick-cut top/bottom, drawer
+ * boxes) keep their real cut outline. Parts are packed left→right, top→down in
+ * their natural build order (carcass → shelves → doors → drawers → covers).
+ */
+function explodedCabinetSvg(cab: Cabinet, S: Settings, grain: GrainOverrides): string {
+  const raw = allPartsMerged([cab], S, grain, []);
+  // same L-W rotation rule as the cut list / DXF
+  const parts = raw.map(rotatePartOnce);
+  const totalQty = parts.reduce((a, p) => a + p.qty, 0);
+  const totalArea = parts.reduce((a, p) => a + (p.w * p.h * p.qty) / 1e6, 0);
 
-  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${VW}" height="${VH}" viewBox="0 0 ${VW} ${VH}" font-family="Arial, Helvetica, sans-serif">`;
-  out += `<rect width="${VW}" height="${VH}" fill="#ffffff"/>`;
-  out += `<text x="${VW/2}" y="28" font-size="15" font-weight="700" text-anchor="middle" fill="#111">${escH(cab.name)} – Exploded View – ${W}×${H}×${D}</text>`;
-  out += `<text x="${VW/2}" y="44" font-size="10" text-anchor="middle" fill="#666">Sides ±${sideOff}mm X · Top/Bottom ±${tbOff}mm Y · Back -100mm Z · Doors +${doorOff}mm Z · 45° open – all dimensions mm</text>`;
+  const VW = 960;
+  const leftPad = 46, rightPad = 30, topPad = 58, cellPad = 16, bottomLegend = 40;
+  const rowW = VW - leftPad - rightPad;
 
-  // helpers
-  const rect = (x:number,y:number,w:number,h:number,fill:string,stroke:string,dash?:string,op?:number) =>
-    `<rect x="${f2(x)}" y="${f2(y)}" width="${f2(w)}" height="${f2(h)}" fill="${fill}" stroke="${stroke}" stroke-width="1.2"${dash?` stroke-dasharray="${dash}"`:""}${op!==undefined?` opacity="${op}"`:""}/>`;
-  const label = (x:number,y:number,t:string,fill="#111",sz=9) => `<text x="${f2(x)}" y="${f2(y)}" font-size="${sz}" fill="${fill}" text-anchor="middle">${escH(t)}</text>`;
+  // material styling
+  const style = (p: { material: string; reference?: boolean }): { fill: string; stroke: string; dash?: string } => {
+    if (p.material === "glass" || p.reference) return { fill: "rgba(140,190,230,0.28)", stroke: "#4a6a94", dash: "5 4" };
+    if (p.material === "back") return { fill: "#ecdfc0", stroke: "#8a7a5a", dash: "6 4" };
+    if (p.material === "mdf") return { fill: "#efe9dd", stroke: "#8a7a5a" };
+    return { fill: "#e6d8ba", stroke: "#7a6a4a" }; // plywood
+  };
 
-  // back – dashed behind center
-  const backX = cx - (W*sc)/2;
-  const backY = cy - (BH*sc)/2;
-  out += rect(backX, backY, W*sc, BH*sc, "#e8dcc8", "#8a7a5a", "8 5", 0.9);
-  out += label(backX+W*sc/2, backY+14, `Back ${W-2}×${BH-2}×${S.backThk}`, "#6b4a2c", 8);
-
-  // side L – left of back
-  const sideLx = backX - sideOff - D*sc;
-  const sideLy = backY;
-  out += rect(sideLx, sideLy, D*sc, BH*sc, "#d8c9a8", "#7a6a4a");
-  out += label(sideLx+D*sc/2, sideLy+12, `Side L`, "#5a4a36", 9);
-  out += label(sideLx+D*sc/2, sideLy+BH*sc/2, `${D}×${BH}×${bodyThk}`, "#5a4a36", 8);
-  // side R – right of back
-  const sideRx = backX + W*sc + sideOff;
-  const sideRy = backY;
-  out += rect(sideRx, sideRy, D*sc, BH*sc, "#d8c9a8", "#7a6a4a");
-  out += label(sideRx+D*sc/2, sideRy+12, `Side R`, "#5a4a36", 9);
-  out += label(sideRx+D*sc/2, sideRy+BH*sc/2, `${D}×${BH}×${bodyThk}`, "#5a4a36", 8);
-
-  // bottom – below
-  const botX = backX + bodyThk*sc;
-  const botY = backY + BH*sc + tbOff;
-  out += rect(botX, botY, insideW*sc, D*sc, "#c9b896", "#7a6a4a");
-  out += label(botX+insideW*sc/2, botY+D*sc/2+3, `Bottom ${insideW}×${D}×${bodyThk}`, "#5a4a36", 8);
-
-  // top – above
-  const topX = botX;
-  const topY = backY - tbOff - D*sc;
-  out += rect(topX, topY, insideW*sc, D*sc, "#c9b896", "#7a6a4a");
-  out += label(topX+insideW*sc/2, topY+D*sc/2+3, `Top ${insideW}×${D}×${bodyThk}`, "#5a4a36", 8);
-
-  // shelves – between sides, distributed
-  // collect shelf counts from cabinet
-  let shelfCount = 0;
-  cab.rows.forEach(r=> r.columns.forEach(c=>{
-    if (!columnHasDrawers(c) && !c.fixed) shelfCount += c.shelves;
-    if (c.railShelf) shelfCount += railShelfYs(c, S, r.h).length;
-  }));
-  if (shelfCount>0) {
-    const gap = (BH*sc) / (shelfCount+1);
-    for (let i=0;i<shelfCount;i++){
-      const sy = backY + gap*(i+1) - 4;
-      const sx = backX + bodyThk*sc + 6;
-      const sw = insideW*sc -12;
-      out += `<rect x="${f2(sx)}" y="${f2(sy)}" width="${f2(sw)}" height="8" fill="#e0c9a0" stroke="#7a6a4a" stroke-width="0.9"/>`;
-      out += `<text x="${f2(sx+sw/2)}" y="${f2(sy-2)}" font-size="7" fill="#6b5a3a" text-anchor="middle">Shelf ${insideW}×${D-20}×${bodyThk}</text>`;
+  // greedy shelf-pack at a given scale — returns total height, or -1 if a
+  // single part is wider than the row
+  const packAt = (sc: number): number => {
+    let x = leftPad, y = topPad, rowH = 0;
+    for (const p of parts) {
+      const cw = p.w * sc + cellPad;
+      const ch = p.h * sc + cellPad + 14; // + label space
+      if (x + cw > VW - rightPad) {
+        if (x === leftPad && cw > rowW) return -1; // single part too wide
+        x = leftPad;
+        y += rowH + 10;
+        rowH = 0;
+      }
+      rowH = Math.max(rowH, ch);
+      x += cw;
     }
-  }
+    return y + rowH;
+  };
 
-  // doors – in front of back, offset Z represented as to right side
-  const doors: {w:number;h:number;type:string}[] = [];
-  if (cab.fullDoor && cab.fullDoor!=='off'){
-    const fd = cab.fullDoor as string;
-    const fullH = modelStackOn(cab) ? modelStackedHeights(cab).reduce((a,h)=>a+h,0)-kick : BH;
-    const isDouble = fd.includes('double') || (fd==='mdf' || fd==='glass') && W>620;
-    if (isDouble){
-      doors.push({w:Math.round(W/2- S.doorGap), h:fullH, type:fd});
-      doors.push({w:Math.round(W/2- S.doorGap), h:fullH, type:fd});
+  let sc = 1.0;
+  while (sc > 0.02) {
+    const h = packAt(sc);
+    if (h > 0 && h <= 1300) break;
+    sc -= 0.05;
+  }
+  const H = Math.min(1340, Math.max(360, packAt(sc) + bottomLegend + 20));
+
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${VW}" height="${H}" viewBox="0 0 ${VW} ${H}" font-family="Arial, Helvetica, sans-serif">`;
+  out += `<rect width="${VW}" height="${H}" fill="#ffffff"/>`;
+  out += `<text x="${VW / 2}" y="26" font-size="15" font-weight="700" text-anchor="middle" fill="#111">${escH(cab.name)} – Exploded Parts Layout – ${cab.width}×${cab.height}×${cab.depth}</text>`;
+  out += `<text x="${VW / 2}" y="42" font-size="10" text-anchor="middle" fill="#666">${parts.length} part types · ${totalQty} pieces · ${totalArea.toFixed(2)} m² – drawn at 1:${f2(1 / sc)} from the real cut list (same rotation rule as DXF)</text>`;
+
+  let x = leftPad, y = topPad, rowH = 0;
+  parts.forEach((p, pi) => {
+    const cw = p.w * sc + cellPad;
+    const ch = p.h * sc + cellPad + 14;
+    if (x + cw > VW - rightPad) {
+      x = leftPad;
+      y += rowH + 10;
+      rowH = 0;
+    }
+    rowH = Math.max(rowH, ch);
+    x += cw;
+
+    const st = style(p);
+    const rx = x - cellPad;
+    const ry = y + 14;
+    // real cut outline for polygon parts, plain rect otherwise
+    if (p.shape === "poly" && p.outline.length > 2) {
+      const xs = p.outline.map((pt) => pt[0]);
+      const ys = p.outline.map((pt) => pt[1]);
+      const minx = Math.min(...xs), maxx = Math.max(...xs);
+      const miny = Math.min(...ys), maxy = Math.max(...ys);
+      const bw = Math.max(1, maxx - minx), bh = Math.max(1, maxy - miny);
+      const fit = Math.min((p.w * sc) / bw, (p.h * sc) / bh);
+      const pts = p.outline
+        .map((pt) => `${f2(rx + 2 + (pt[0] - minx) * fit)} ${f2(ry + 2 + (pt[1] - miny) * fit)}`)
+        .join(" ");
+      out += `<polygon points="${pts}" fill="${st.fill}" stroke="${st.stroke}" stroke-width="1.1"${st.dash ? ` stroke-dasharray="${st.dash}"` : ""}/>`;
     } else {
-      doors.push({w:W- S.doorGap*2, h:fullH, type:fd});
+      out += `<rect x="${f2(rx + 2)}" y="${f2(ry + 2)}" width="${f2(Math.max(1, p.w * sc - 4))}" height="${f2(Math.max(1, p.h * sc - 4))}" fill="${st.fill}" stroke="${st.stroke}" stroke-width="1.1"${st.dash ? ` stroke-dasharray="${st.dash}"` : ""}/>`;
     }
-  } else {
-    cab.rows.forEach(row=>{
-      const lays = columnLayout(cab, row, S);
-      lays.forEach(lay=>{
-        const col = lay.col;
-        if (!col.door || col.fixed) return;
-        if (columnHasDrawers(col) && !col.drawers.every(d=>d.hidden)) return;
-        const faceW = lay.w;
-        const d = doorDims(faceW, col.door.full ? BH : row.h, col.door, S);
-        const n = col.door.type==='double' || col.door.type==='sliding' ? 2 : 1;
-        for(let j=0;j<n;j++) doors.push({w: d.w, h: d.h, type: col.door.type+'-'+col.door.material});
-      });
-    });
-  }
-  if (doors.length>0){
-    const doorBaseX = sideRx + D*sc + 70;
-    let dy = backY;
-    doors.forEach((dr)=>{
-      const dw = Math.min(90, dr.w*sc*0.35);
-      const dh = Math.min(200, dr.h*sc*0.55);
-      out += `<rect x="${f2(doorBaseX)}" y="${f2(dy)}" width="${f2(dw)}" height="${f2(dh)}" fill="${dr.type.includes('glass')?'rgba(140,190,230,0.25)':'#c2d6e8'}" stroke="${dr.type.includes('glass')?'#6a9ac4':'#4a6a94'}" stroke-width="1.2"/>`;
-      // hinge side marker
-      out += `<circle cx="${f2(doorBaseX+6)}" cy="${f2(dy+dh*0.2)}" r="3" fill="#c9ccd4" stroke="#333" stroke-width="0.6"/>`;
-      out += `<circle cx="${f2(doorBaseX+6)}" cy="${f2(dy+dh*0.8)}" r="3" fill="#c9ccd4" stroke="#333" stroke-width="0.6"/>`;
-      out += `<text x="${f2(doorBaseX+dw/2)}" y="${f2(dy-4)}" font-size="7" fill="#2a4a6a" text-anchor="middle">${escH(dr.type)} ${dr.w}×${dr.h}</text>`;
-      dy += dh + 14;
-    });
-    // arrow showing open 45°
-    out += `<path d="M ${f2(doorBaseX-10)} ${f2(backY+BH*sc/2)} Q ${f2(doorBaseX+20)} ${f2(backY+BH*sc/2-30)} ${f2(doorBaseX+30)} ${f2(backY+BH*sc/2-10)}" fill="none" stroke="#f59e0b" stroke-width="1.2" marker-end="url(#arr)"/>`;
-    out += `<defs><marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f59e0b"/></marker></defs>`;
-  }
-
-  // kick – below bottom
-  if (kick>0){
-    const kx = backX;
-    const ky = botY + D*sc + 20;
-    out += rect(kx, ky, W*sc, kick*sc*0.5, "#1a2740", "#3a4a6a", "4 3", 0.6);
-    out += label(kx+W*sc/2, ky+8, `Toe kick ${W}×${S.kickDepth}×${S.kickHeight}`, "#8aa0c4", 7);
-  }
-
-  // leader lines – exploded
-  const centerDotX = backX + W*sc/2;
-  const centerDotY = backY + BH*sc/2;
-  const lines = [
-    [sideLx+D*sc, sideLy+BH*sc/2, backX, backY+BH*sc/2],
-    [sideRx, sideRy+BH*sc/2, backX+W*sc, backY+BH*sc/2],
-    [topX+insideW*sc/2, topY+D*sc, backX+W*sc/2, backY],
-    [botX+insideW*sc/2, botY, backX+W*sc/2, backY+BH*sc],
-  ];
-  lines.forEach(([x1,y1,x2,y2])=>{
-    out += `<line x1="${f2(x1)}" y1="${f2(y1)}" x2="${f2(x2)}" y2="${f2(y2)}" stroke="#999" stroke-width="0.6" stroke-dasharray="3 3"/>`;
+    // banding ticks
+    if (p.band.left) out += `<rect x="${f2(rx)}" y="${f2(ry)}" width="3" height="${f2(p.h * sc)}" fill="#d0654a"/>`;
+    if (p.band.right) out += `<rect x="${f2(rx + p.w * sc - 3)}" y="${f2(ry)}" width="3" height="${f2(p.h * sc)}" fill="#d0654a"/>`;
+    if (p.band.top) out += `<rect x="${f2(rx)}" y="${f2(ry)}" width="${f2(p.w * sc)}" height="3" fill="#d0654a"/>`;
+    if (p.band.bottom) out += `<rect x="${f2(rx)}" y="${f2(ry + p.h * sc - 3)}" width="${f2(p.w * sc)}" height="3" fill="#d0654a"/>`;
+    // labels (index + name / size line)
+    const cxr = rx + (p.w * sc) / 2;
+    const name = p.name.length > 26 ? p.name.slice(0, 25) + "…" : p.name;
+    const inside = p.h * sc > 46;
+    out += `<text x="${f2(cxr)}" y="${f2(inside ? ry + 13 : ry + 10)}" font-size="8.5" font-weight="700" fill="#222" text-anchor="middle">${pi + 1}. ${escH(name)}${p.qty > 1 ? ` ×${p.qty}` : ""}</text>`;
+    const dimLine = `${p.w}×${p.h}×${p.thickness}${p.holes.length ? ` · ${p.holes.length}⌀` : ""}${p.grain ? " · G" : ""}${p.reference ? " · REF" : ""}`;
+    out += `<text x="${f2(cxr)}" y="${f2(inside ? ry + 24 : ry + (p.h * sc > 20 ? p.h * sc - 5 : 11))}" font-size="7.5" fill="#555" text-anchor="middle">${escH(dimLine)}</text>`;
   });
-  out += `<circle cx="${f2(centerDotX)}" cy="${f2(centerDotY)}" r="2" fill="#111"/>`;
+
+  // legend
+  const ly = H - 18;
+  const legend: [string, { fill: string; stroke: string; dash?: string }][] = [
+    ["Plywood", style({ material: "plywood" })],
+    ["MDF", style({ material: "mdf" })],
+    ["Veneer back (dashed)", style({ material: "back" })],
+    ["Glass / reference (dashed)", style({ material: "glass", reference: true })],
+  ];
+  let lx = leftPad;
+  legend.forEach(([t, s]) => {
+    out += `<rect x="${f2(lx)}" y="${f2(ly - 8)}" width="12" height="10" fill="${s.fill}" stroke="${s.stroke}" stroke-width="0.9"${s.dash ? ` stroke-dasharray="${s.dash}"` : ""}/>`;
+    out += `<text x="${f2(lx + 16)}" y="${f2(ly)}" font-size="8" fill="#555">${t}</text>`;
+    lx += 16 + t.length * 4.6 + 18;
+  });
+  out += `<text x="${f2(VW - rightPad)}" y="${f2(ly)}" font-size="8" fill="#555" text-anchor="end">orange tick = edge banding · ⌀ = hole count · G = grain locked</text>`;
 
   out += `</svg>`;
   return out;
@@ -337,11 +313,24 @@ function drillingMapSvg(cab: Cabinet, S: Settings, side: 'L'|'R'): string {
     const r = op.type==='hinge' ? 4 : op.dia>=5 ? 3 : 2;
     out += `<circle cx="${f2(cx)}" cy="${f2(cy)}" r="${r}" fill="${color}" stroke="#111" stroke-width="0.4"/>`;
   });
-  // slot if any
-  if (cab.slot && cab.slot!=='none' && (cab.slot=== 'both' || cab.slot.toLowerCase().includes(side.toLowerCase()))){
-    const slotX = S.slotFromFront ?? 40;
-    out += `<rect x="${f2(ox+slotX*sc-9)}" y="${f2(oy)}" width="${f2(18)}" height="${f2(BH*sc)}" fill="none" stroke="#a855f7" stroke-width="1.2" stroke-dasharray="4 3"/>`;
-    out += `<text x="${f2(ox+slotX*sc)}" y="${f2(oy+BH*sc+14)}" font-size="7" fill="#a855f7" text-anchor="middle">SLOT 18mm</text>`;
+  // slot if any — SAME geometry as the part generator (model.ts buildBody):
+  //   slotFromFront: per-cabinet override wins over Settings.slotFromFront
+  //   width: Settings.slotWidth (min 6) · center at D − max(sw, fromFront)
+  //   RIGHT panel is stored MIRRORED (x=0 = front edge)
+  //   drawn only when it actually fits (x1 > 8 && x2 < D − 8)
+  {
+    const slot = cab.slot ?? "none";
+    if (slot !== "none" && (slot === "both" || slot === side.toLowerCase())) {
+      const slotFromFront = cab.slotFromFront != null && cab.slotFromFront > 0 ? cab.slotFromFront : S.slotFromFront;
+      const sw = Math.max(6, S.slotWidth);
+      const cx = D - Math.max(sw, slotFromFront); // model space: x=0 = BACK edge
+      const x1 = cx - sw / 2, x2 = cx + sw / 2;
+      if (x1 > 8 && x2 < D - 8) {
+        const mapCx = side === "R" ? D - cx : cx; // right panel is mirrored in storage
+        out += `<rect x="${f2(ox + (mapCx - sw / 2) * sc)}" y="${f2(oy)}" width="${f2(sw * sc)}" height="${f2(BH * sc)}" fill="none" stroke="#a855f7" stroke-width="1.2" stroke-dasharray="4 3"/>`;
+        out += `<text x="${f2(ox + mapCx * sc)}" y="${f2(oy + BH * sc + 14)}" font-size="7" fill="#a855f7" text-anchor="middle">SLOT ${sw}mm @ ${Math.round(slotFromFront)}mm from front</text>`;
+      }
+    }
   }
   out += `<text x="${f2(ox)}" y="${f2(oy+BH*sc+28)}" font-size="8" fill="#555">Shelf ⌀${S.holeDiameter} · Slide ⌀${S.slideHoleDiameter} · Hinge ⌀${S.hingeCupDiameter} · 32mm system</text>`;
   out += `</svg>`;
@@ -495,14 +484,14 @@ export function explodedReportHtml(
   // per-cabinet sections
   const perCabSections = cabinets.map((cab, idx)=>{
     const cabFront = frontElevationSvg([cab], []);
-    const explodedSvg = explodedCabinetSvg(cab, settings);
+    const explodedSvg = explodedCabinetSvg(cab, settings, grain);
     const openSvg = openDoorViewSvg(cab, settings);
     const drillL = drillingMapSvg(cab, settings, 'L');
     const drillR = drillingMapSvg(cab, settings, 'R');
     const cutTable = perCabinetCutTable(cab, settings, grain);
     const hwTable = perCabinetHardware(cab, settings);
     const isoShot = opts.perCabinetScreenshots?.[cab.id] ? `<div class="shot"><img src="${opts.perCabinetScreenshots[cab.id]}" alt="${escH(cab.name)} iso"/><div class="small">Iso view – ${escH(cab.name)}</div></div>` : '';
-    const explodedShot = opts.explodedScreenshots?.[cab.id] ? `<div class="shot"><img src="${opts.explodedScreenshots[cab.id]}" alt="${escH(cab.name)} exploded"/><div class="small">Exploded 3D – sides ±150 X, top/bottom ±120 Y, back -100 Z, doors +200 Z 45°</div></div>` : '';
+    const explodedShot = opts.explodedScreenshots?.[cab.id] ? `<div class="shot"><img src="${opts.explodedScreenshots[cab.id]}" alt="${escH(cab.name)} exploded"/><div class="small">Exploded 3D – per-part: side L −150 X · side R +150 X · top +120 Y · bottom −40 Y · back −120 Z · door +250 Z (45° open) · drawer +300 Z</div></div>` : '';
 
     // panel size summary for this cab
     const parts = allPartsMerged([cab], settings, grain, []);
@@ -523,7 +512,7 @@ export function explodedReportHtml(
 
     <div class="page">
       <h2>${escH(cab.name)} – Exploded View (2D schematic)</h2>
-      <p class="small">Detailed exploded view showing all components separated but aligned – side panels L/R pulled ±150mm X, top/bottom ±120mm Y, back -100mm Z (dashed), doors +200mm Z 45° open, shelves floating, toe kick below. Leader dashed lines show assembly. All parts labeled with W×H×Thk.</p>
+      <p class="small">Every real cut part of this cabinet, drawn at scale from the same part generator as the cut list / nesting / DXF (same L-W rotation rule). Each part shows its true name, W×H×thk, qty, hole count, edge-banding ticks (orange) and grain-lock flag; polygon parts keep their exact cut outline (notched sides, kick-cut top/bottom, drawer boxes). Dashed = veneer back / glass reference (not drilled).</p>
       <div class="elevation">${explodedSvg}</div>
       <div class="footer"><span>${escH(projName)} – ${escH(cab.name)} – Exploded 2D</span><span>Cab ${idx+1} – Exploded</span></div>
     </div>
@@ -537,7 +526,7 @@ export function explodedReportHtml(
 
     <div class="page">
       <h2>${escH(cab.name)} – Drilling Map – Side L / Side R – 32mm system</h2>
-      <p class="small">Side panels with shelf pin holes (amber), slide holes (cyan), hinge cups excluded (doors only). Slot 18mm if present (purple dashed). All holes at real X/Y from bottom-left. D=depth, BH=body height.</p>
+      <p class="small">Side panels with shelf pin holes (amber), slide holes (cyan), hinge cups excluded (doors only). Linear slot (purple dashed) at the model's real width and position when it is milled. All holes at real X/Y from bottom-left. D=depth, BH=body height.</p>
       <div class="drill-grid">
         <div><div class="elevation">${drillL}</div></div>
         <div><div class="elevation">${drillR}</div></div>
