@@ -443,8 +443,10 @@ function buildBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
   }
 
   // ---- carcass ----
-  mk({ name: "Top", w: insideW, h: D, material: "plywood", thickness: T, band: { top: true }, note: "banding: front" });
-  mk({ name: "Bottom", w: insideW, h: D, material: "plywood", thickness: T, band: { top: true }, note: "banding: front" });
+  // tops / bottoms keep grain along the span (no auto-rotation — rotating them
+  // would lock their grain 90° off and waste sheets in nesting)
+  mk({ name: "Top", w: insideW, h: D, material: "plywood", thickness: T, band: { top: true }, note: "banding: front", noRotate: true });
+  mk({ name: "Bottom", w: insideW, h: D, material: "plywood", thickness: T, band: { top: true }, note: "banding: front", noRotate: true });
   // toe kick — plywood, NO edge banding; can be excluded from nesting / cut list.
   // Front board = inner width × kick height. The 2 side boards run FULL depth
   // (from the back to the recess line = carcass depth − kickDepth) × kick height.
@@ -469,13 +471,19 @@ function buildBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
   if (cab.hasBack !== false)
     mk({
       name: "Back",
-      w: W - 2,
-      h: BH - 2,
+      // oriented LONG side along the grain (Length): tall backs span the sheet
+      // length, wide backs stay wide — either way the locked grain runs along
+      // the length and the part fits the 2440×1220 board whenever possible
+      w: Math.max(W - 2, BH - 2),
+      h: Math.min(W - 2, BH - 2),
       material: "back",
       thickness: S.backThk,
       matId: cabinetPly.id,
-      grain: false,
-      note: `full cabinet back · follows ${cabinetPly.name} · ${S.backThk}mm`,
+      // oak rule: a back cut from a grain-visible plywood locks its grain like
+      // every other grain part (white/solid boards stay free to rotate)
+      grain: cabinetPly.solid !== true,
+      noRotate: true,
+      note: `full cabinet back · follows ${cabinetPly.name} · ${S.backThk}mm${cabinetPly.solid !== true ? " · grain locked" : ""}`,
     });
 
   // ---- rows & columns ----
@@ -494,6 +502,7 @@ function buildBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
         thickness: T,
         band: { top: true },
         note: "row divider · banding: front",
+        noRotate: true,
       });
 
     // vertical dividers between columns (side-panel depth, height − deduction)
@@ -593,8 +602,8 @@ function buildStackedBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
       }
     }
 
-    mk({ name: `Top${bTag}`, w: insideW, h: D, material: "plywood", thickness: T, band: { top: true }, note: `box ${bi + 1} · banding: front` });
-    mk({ name: `Bottom${bTag}`, w: insideW, h: D, material: "plywood", thickness: T, band: { top: true }, note: `box ${bi + 1} · banding: front` });
+    mk({ name: `Top${bTag}`, w: insideW, h: D, material: "plywood", thickness: T, band: { top: true }, note: `box ${bi + 1} · banding: front`, noRotate: true });
+    mk({ name: `Bottom${bTag}`, w: insideW, h: D, material: "plywood", thickness: T, band: { top: true }, note: `box ${bi + 1} · banding: front`, noRotate: true });
 
     // toe kick only under the bottom box — always the DEFAULT plywood
     if (bi === 0 && bKick > 0 && S.kickInNesting !== false) {
@@ -614,13 +623,14 @@ function buildStackedBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
     if (cab.hasBack !== false)
       mk({
         name: `Back${bTag}`,
-        w: W - 2,
-        h: bH - 2,
+        w: Math.max(W - 2, bH - 2),
+        h: Math.min(W - 2, bH - 2),
         material: "back",
         thickness: S.backThk,
         matId: cabinetPly.id,
-        grain: false,
-        note: `box ${bi + 1} back · follows ${cabinetPly.name}`,
+        grain: cabinetPly.solid !== true,
+        noRotate: true,
+        note: `box ${bi + 1} back · follows ${cabinetPly.name}${cabinetPly.solid !== true ? " · grain locked" : ""}`,
       });
 
     // rows belonging to this box
@@ -637,6 +647,7 @@ function buildStackedBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
           thickness: T,
           band: { top: true },
           note: `box ${bi + 1} row divider · banding: front`,
+          noRotate: true,
         });
       lays.forEach((lay, ci) => {
         if (lay.last) return;
@@ -713,6 +724,7 @@ function buildColumn(
           band: { top: true },
           note: "column → row divider · banding: front",
           grain: true,
+          noRotate: true,
         });
 
       // lay out the columns inside this sub-row across the parent column's width
@@ -781,6 +793,7 @@ function buildColumn(
         ? `manual Y: ${positions.map((y) => Math.round(y)).join(", ")}mm${hasDr ? (aboveBank ? " · above drawers" : " · below drawers") : ""} · banding: front`
         : `gap ~${Math.round(gap)}mm${hasDr ? (aboveBank ? " · above drawers" : " · below drawers") : ""} · banding: front`,
       grain: true,
+      noRotate: true,
     });
     const n = Math.max(1, Math.round(S.shelfHolesPerSide));
     for (let k = 0; k < col.shelves; k++) {
@@ -809,6 +822,7 @@ function buildColumn(
       band: { top: true },
       note: `${aboveBank ? "separates the drawers from the space above" : "separates the drawers from the space below"} · banding: front`,
       grain: true,
+      noRotate: true,
     });
 
   /* ---- shelves that live above an explicit splitter ---- */
@@ -830,6 +844,7 @@ function buildColumn(
         ? `above drawer splitter · manual Y: ${positions.map((y) => Math.round(y)).join(", ")}mm · banding: front`
         : `above the drawer splitter · gap ~${Math.round(shelfGap(shelfZoneH, n, S))}mm · banding: front`,
       grain: true,
+      noRotate: true,
     });
     const per = Math.max(1, Math.round(S.shelfHolesPerSide));
     for (let k = 0; k < n; k++) {
@@ -900,6 +915,7 @@ function buildColumn(
           thickness: T,
           band: { top: true },
           grain: true,
+          noRotate: true,
           note: "sub-section shelf · banding: front",
         });
       }
@@ -913,6 +929,7 @@ function buildColumn(
           thickness: T,
           band: { top: true },
           note: "sub-section divider · banding: front",
+          noRotate: true,
         });
     });
   }
@@ -1008,6 +1025,7 @@ function buildColumn(
             ? `above ${rail} rail · manual Y: ${ys.map((y) => Math.round(y)).join(", ")}mm · banding: front`
             : `above ${rail} rail · auto ${ys.length} shelf${ys.length > 1 ? "s" : ""} (gap ≥ ${Math.max(50, S.railShelfMinGap || 250)}mm) · banding: front`,
         grain: true,
+        noRotate: true,
       });
       const n = Math.max(1, Math.round(S.shelfHolesPerSide));
       for (const y of ys) {
@@ -1469,18 +1487,25 @@ export type GrainOverrides = Record<string, boolean>;
  * swapped (with holes, grooves and outlines transformed to match). This happens
  * regardless of the grain-lock state; grain lock is then applied on top and governs
  * whether the nesting optimizer may rotate the piece any further.
+ * Span panels (tops / bottoms / shelves / sections / splitters) and backs carry
+ * `noRotate` — they are generated grain-along-Length already, so rotating them
+ * would turn their locked grain 90° off (and waste sheets in nesting).
  */
 export function rotatePartOnce(p: Part): Part {
+  if (p.noRotate) return p;
   const w = p.w;
   const rot = ([x, y]: [number, number]): [number, number] => [y, w - x];
   return {
     ...p,
     w: p.h,
     h: p.w,
-    // band edges are physical — remap them through the 90° rotation so the cut
-    // list labels (and the DXF banding markers) stay on the true edges:
-    // Top→Right, Right→Bottom, Bottom→Left, Left→Top
-    band: { top: p.band.right, right: p.band.bottom, bottom: p.band.left, left: p.band.top },
+    // band edges are physical — remap them through the SAME 90° rotation the
+    // geometry uses ((x,y) → (y,w−x)): a point on the old TOP edge (y=h) lands
+    // on x′=h=new width, i.e. the new RIGHT edge — so Top→Right, Right→Bottom,
+    // Bottom→Left, Left→Top. (The inverse map put every banding marker on the
+    // OPPOSITE edge — visible on drawer cabinets where the slide holes expose
+    // the true front edge, and it made the linear slot look rear-mounted.)
+    band: { top: p.band.left, right: p.band.top, bottom: p.band.right, left: p.band.bottom },
     holes: p.holes.map((h) => {
       const [x, y] = rot([h.x, h.y]);
       return { ...h, x, y };

@@ -536,7 +536,7 @@ export function explodedReportHtml(
 
     <div class="page">
       <h2>${escH(cab.name)} – Panel Size Table – ${totalCabParts} parts – ${totalCabArea.toFixed(3)} m²</h2>
-      <p class="small">Per-cabinet cut list – every part rotated once (L-W) then grain lock. Banding: T/B/L/R. Bend = banded edge length × qty. Area = W×H×qty. Holes = holes per part × qty. Material column shows plywood name (follows material).</p>
+      <p class="small">Per-cabinet cut list – span panels + backs keep grain along the length, every other part rotated once (L-W) then grain lock. Banding: T/B/L/R. Bend = banded edge length × qty. Area = W×H×qty. Holes = holes per part × qty. Material column shows plywood name (follows material).</p>
       ${cutTable}
       <h3 style="margin-top:10px">Hardware per Cabinet</h3>
       ${hwTable}

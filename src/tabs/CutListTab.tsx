@@ -93,7 +93,8 @@ export function CutListTab({
         <div>
           <h2 className="card-h"><LayoutList size={17} className="text-amber-400" /> {t(lang, "cutList")}</h2>
           <p className="hint mt-1">
-            Every piece is <span className="text-amber-300">rotated once (length ↔ width)</span> before grain lock is applied. {t(lang, "grainHint")}
+            Span panels (tops, bottoms, shelves, sections) and backs keep their <span className="text-amber-300">grain along the length</span>; every
+            other piece is <span className="text-amber-300">rotated once (length ↔ width)</span> before grain lock is applied. {t(lang, "grainHint")}
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">

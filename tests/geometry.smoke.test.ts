@@ -1,5 +1,5 @@
 import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, doorHingeCount, makeCabinet } from "../src/lib/defaults";
-import { buildDxf } from "../src/lib/dxf";
+import { buildDxf, buildDxfForSheet } from "../src/lib/dxf";
 import { layoutCabs, overlapBoxes, panelPositions } from "../src/tabs/View2DTab";
 import { bomReportHtml, frontElevationHtml, frontElevationDxf, frontElevationSvg } from "../src/lib/export";
 import { explodedReportHtml } from "../src/lib/explodedReport";
@@ -579,6 +579,74 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   // and the DXF must not contain the word glass at all (no text, no layer, no label)
   const dxfAll = buildDxf([c], S, null, true);
   check("dxf: zero mentions of glass in every flat export", !/glass/i.test(dxfAll), dxfAll.match(/glass/gi)?.length?.toString() ?? "");
+}
+
+/* 24 — banding edges land on the TRUE front edge after auto-rotation.
+   Drawer cabinets exposed the bug: the slide holes hug the front edge, but the
+   banding marker was drawn on the opposite edge (the remap was inverted). */
+{
+  const c = makeCabinet("base", 600, 720, 560, "BandEdge");
+  const z = c.rows[0].columns[0];
+  z.drawers = [{ id: "d1", hidden: false, frontHeight: 220, slideDepthCm: 35, frontMdf: true }];
+  z.door = null;
+  const parts = allParts([c], S);
+  const L = parts.find((p) => p.name === "Side panel L")!;
+  const R = parts.find((p) => p.name === "Side panel R")!;
+  // rotated L: front edge (x=D) maps to y'=0 = BOTTOM; mirrored R: front (x=0) maps to y'=D = TOP
+  check("band L: front edge = bottom after rotation", L.band.bottom === true && !L.band.top, JSON.stringify(L.band));
+  check("band R: front edge = top after rotation (mirrored)", R.band.top === true && !R.band.bottom, JSON.stringify(R.band));
+  const slideY = L.holes.filter((h) => h.kind === "slide").map((h) => h.y);
+  check("band L: slide holes hug the same (front) edge as the banding", slideY.length > 0 && Math.min(...slideY) < 60 && Math.max(...slideY) < L.h / 2, slideY.slice(0, 4).join(","));
+  const slideYR = R.holes.filter((h) => h.kind === "slide").map((h) => h.y);
+  check("band R: slide holes hug the banded top edge", slideYR.length > 0 && Math.max(...slideYR) > R.h - 60 && Math.min(...slideYR) > R.h / 2, slideYR.slice(0, 4).join(","));
+}
+
+/* 25 — span panels keep grain along the span (no auto-rotation); oak backs lock
+   their grain and orient long-side-first so the nester never rotates them wrong */
+{
+  const c = makeCabinet("base", 900, 720, 560, "SpanGrain");
+  const parts = allParts([c], S);
+  const top = parts.find((p) => p.name === "Top")!;
+  check("Top keeps w=span (not rotated)", Math.abs(top.w - (900 - 2 * S.bodyThk)) < 0.01 && top.w > top.h, `${top.w}x${top.h}`);
+  const shelf = parts.find((p) => p.name.startsWith("Shelf"))!;
+  check("Shelf keeps w=span", shelf.w > shelf.h, `${shelf.w}x${shelf.h}`);
+  const S2: Settings = { ...S, plyMaterials: [...(S.plyMaterials ?? []), { id: "ply-oak", name: "Oak", color: "#c9a06a", opacity: 1, solid: false }] };
+  const oak = makeCabinet("base", 600, 720, 560, "OakBack");
+  oak.matId = "ply-oak";
+  const backOak = allParts([oak], S2).find((p) => p.name === "Back")!;
+  check("oak back: grain locked (follows the oak rule)", backOak.grain === true);
+  check("oak back: long side along Length", backOak.w >= backOak.h, `${backOak.w}x${backOak.h}`);
+  const backWhite = allParts([makeCabinet("base", 600, 720, 560, "WBack")], S2).find((p) => p.name === "Back")!;
+  check("white back: grain free (unchanged)", backWhite.grain === false);
+}
+
+/* 26 — drawer box parts: NO edge markers in the DXF, but the BOM still counts
+   every meter of their tape (band data stays on the part) */
+{
+  const c = makeCabinet("base", 600, 720, 560, "DrwBand");
+  c.rows[0].columns[0].drawers = [{ id: "d1", hidden: false, frontHeight: 220, slideDepthCm: 35, frontMdf: false }];
+  c.rows[0].columns[0].door = null;
+  const parts = allParts([c], S);
+  const side = parts.find((p) => p.name.startsWith("Drawer side"))!;
+  check("drawer side still carries band data (BOM counts it)", !!(side.band.top || side.band.bottom || side.band.left || side.band.right), JSON.stringify(side.band));
+  const onlyDrawer = { placed: [{ part: side, x: 0, y: 0, w: side.w, h: side.h, rotated: false }] } as unknown as import("../src/lib/nesting").Sheet;
+  check("drawer side: zero BANDING markers in DXF", !buildDxfForSheet(onlyDrawer, false, { bandMarkers: true }).includes("BANDING"));
+  const sideL = parts.find((p) => p.name === "Side panel L")!;
+  const onlySide = { placed: [{ part: sideL, x: 0, y: 0, w: sideL.w, h: sideL.h, rotated: false }] } as unknown as import("../src/lib/nesting").Sheet;
+  check("cabinet side: BANDING markers kept", buildDxfForSheet(onlySide, false, { bandMarkers: true }).includes("BANDING"));
+}
+
+/* 27 — MDF auto sheet: tall doors nest on 3050×1220 instead of going unplaced */
+{
+  const c = makeCabinet("tall", 600, 2500, 560, "AutoMdf");
+  c.hasFronts = true;
+  (c as unknown as { rows: unknown }).rows = [
+    { id: "r1", h: 2500, columns: [{ id: "c1", width: 0, shelves: 0, fixed: false, drawers: [], door: { type: "single", style: "overlay", swing: "left", material: "mdf", mdfThk: S.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center" } }] },
+  ];
+  const SAuto: Settings = { ...S, mdfSheet: "auto" };
+  const mdf = nestParts(allParts([c], SAuto), SAuto).filter((g) => g.material === "mdf");
+  check("mdf auto: tall door nested (not unplaced)", mdf.length > 0 && mdf.every((g) => g.unplaced === 0), mdf.map((g) => g.unplaced).join(","));
+  check("mdf auto: tall door lands on a 3050 sheet", mdf.some((g) => g.sheets.some((s) => s.sheetW === 3050)), mdf.map((g) => g.sheets.map((s) => s.sheetW).join("/")).join(" "));
 }
 
 if (failures) {

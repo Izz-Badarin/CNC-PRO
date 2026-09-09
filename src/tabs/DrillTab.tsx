@@ -374,14 +374,18 @@ function PartDrillPreview({ part, dimMode, grid32 }: { part: Part; dimMode: "cha
 
   // FRONT edge detection — slide holes are measured from the front edge, so the
   // edge whose coordinate has a hole < 60mm is the front (39mm is the standard
-  // first slide hole). The label tells the operator which face is which.
+  // first slide hole). Mirrored RIGHT panels carry the pattern flipped, so
+  // their holes hug the FAR edge instead (top after the cut-list rotation).
+  // The label tells the operator which face is which.
   const slideM = holesM.filter((hl) => hl.kind === "slide");
-  let frontEdge: "left" | "bottom" | null = null;
+  let frontEdge: "left" | "bottom" | "top" | "right" | null = null;
   if (slideM.length) {
     const xs = [...new Set(slideM.map((h) => h.X))];
     const ys = [...new Set(slideM.map((h) => h.Y))];
     if (xs.length > 1 && Math.min(...xs) < 60) frontEdge = "left";
     else if (ys.length > 1 && Math.min(...ys) < 60) frontEdge = "bottom";
+    else if (ys.length > 1 && Math.max(...ys) > effH - 60) frontEdge = "top";
+    else if (xs.length > 1 && Math.max(...xs) > effW - 60) frontEdge = "right";
   }
 
   // unique hole column (x) and row (y) positions — used to build dimension chains
@@ -622,6 +626,24 @@ function PartDrillPreview({ part, dimMode, grid32 }: { part: Part; dimMode: "cha
               <line x1={ox} y1={oy + h + 5} x2={ox + w} y2={oy + h + 5} stroke="#f5b33c" strokeWidth="1.6" />
               <path d={`M ${ox + w} ${oy + h + 5} l -7 -3.5 M ${ox + w} ${oy + h + 5} l -7 3.5`} stroke="#f5b33c" strokeWidth="1.6" fill="none" />
               <text x={ox + w} y={oy + h + 17} fill="#f5b33c" fontSize="9" fontWeight="700" textAnchor="end">
+                FRONT
+              </text>
+            </g>
+          )}
+          {frontEdge === "top" && (
+            <g>
+              <line x1={ox} y1={oy - 5} x2={ox + w} y2={oy - 5} stroke="#f5b33c" strokeWidth="1.6" />
+              <path d={`M ${ox} ${oy - 5} l 7 -3.5 M ${ox} ${oy - 5} l 7 3.5`} stroke="#f5b33c" strokeWidth="1.6" fill="none" />
+              <text x={ox} y={oy - 9} fill="#f5b33c" fontSize="9" fontWeight="700">
+                FRONT
+              </text>
+            </g>
+          )}
+          {frontEdge === "right" && (
+            <g>
+              <line x1={ox + w + 5} y1={oy + h} x2={ox + w + 5} y2={oy} stroke="#f5b33c" strokeWidth="1.6" />
+              <path d={`M ${ox + w + 5} ${oy + h} l -3.5 -7 M ${ox + w + 5} ${oy + h} l 3.5 -7`} stroke="#f5b33c" strokeWidth="1.6" fill="none" />
+              <text x={ox + w + 9} y={oy + h / 2} fill="#f5b33c" fontSize="9" fontWeight="700" textAnchor="middle" transform={`rotate(90 ${ox + w + 9} ${oy + h / 2})`}>
                 FRONT
               </text>
             </g>

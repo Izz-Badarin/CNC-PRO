@@ -22,6 +22,14 @@ export const DXF_GRID_ROWS = 5;
 const holeLayer = (kind: string) =>
   kind === "shelf" ? "SHELF_HOLES" : kind === "hinge" ? "HINGE_HOLES" : "SLIDE_HOLES";
 
+/**
+ * Drawer BOX parts (sides / box front-back / bottoms — but NOT the visible MDF
+ * drawer fronts, which are finished faces like doors) carry their banding data
+ * on the part (so the BOM still counts every meter of tape) but get NO edge
+ * markers in the DXF — the small box parts stay clean for the operator.
+ */
+const isDrawerBoxPart = (p: { name: string }) => /drawer/i.test(p.name) && !/front/i.test(p.name);
+
 const esc = (s: string) => s.replace(/[^\x20-\x7E]/g, "?");
 
 function header(): string {
@@ -88,8 +96,9 @@ export function buildDxfForSheet(sheet: Sheet, labels: boolean, opts?: { bandMar
     // a small inset from the cut edge. Shorter edges fall back to 1 centered
     // arrow. Band labels already match the part's dims (rotatePartOnce remaps
     // them); a packer rotation (pp.rotated) shifts them again: Top→Right,
-    // Right→Bottom, Bottom→Left, Left→Top.
-    if ((opts?.bandMarkers ?? true) && part.shape === "rect") {
+    // Right→Bottom, Bottom→Left, Left→Top. Drawer box parts are skipped (their
+    // banding is counted in the BOM only — see isDrawerBoxPart).
+    if ((opts?.bandMarkers ?? true) && part.shape === "rect" && !isDrawerBoxPart(part)) {
       const b = part.band;
       const phys = pp.rotated
         ? { top: b.left, right: b.top, bottom: b.right, left: b.bottom }

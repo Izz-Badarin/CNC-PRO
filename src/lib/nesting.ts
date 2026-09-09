@@ -94,10 +94,22 @@ export function placedOutline(pp: PlacedPart): [number, number][] {
 }
 
 /** real sheet size for a material: plywood & veneer back are ALWAYS 2440×1220;
- *  MDF follows the user's choice (3050×1220 or 2440×1220). */
+ *  MDF follows the user's choice (3050×1220 or 2440×1220). With "auto" the MDF
+ *  parts are SPLIT per part (see groupParts): tall parts that only fit the big
+ *  board nest on 3050×1220, everything else on 2440×1220. */
 export function sheetDimsFor(material: PartMaterial, S: Settings): { w: number; h: number } {
   if (material === "mdf" && S.mdfSheet === "3050x1220") return { w: 3050, h: 1220 };
   return { w: S.sheetW, h: S.sheetH };
+}
+
+/** sheet-size tag suffix for MDF-auto groups that nest on the 3050×1220 board */
+export const SHEET_3050_TAG = "@3050";
+
+/** resolve the real board size for a nest group key (honors the MDF-auto tag) */
+export function dimsForGroup(key: string, S: Settings): { w: number; h: number } {
+  const segs = key.split("@");
+  if (segs[0] === "mdf" && segs[3] === "3050") return { w: 3050, h: 1220 };
+  return sheetDimsFor(segs[0] as PartMaterial, S);
 }
 
 /* ================= scoring ================= */
@@ -608,11 +620,22 @@ function nestGroupSync(items: Item[], key: string, S: Settings): NestGroup {
   };
 }
 
-function groupParts(parts: Part[]): Map<string, Part[]> {
+function groupParts(parts: Part[], S?: Settings): Map<string, Part[]> {
   const groups = new Map<string, Part[]>();
+  // MDF "auto" usable areas (a part that fits NEITHER board stays in the 2440
+  // group so it is reported unplaced with a reason instead of vanishing)
+  const m = S?.sheetMargin ?? 10;
+  const uw24 = 2440 - 2 * m, uh = 1220 - 2 * m, uw30 = 3050 - 2 * m;
+  const fits = (w: number, h: number, UW: number, UH: number, locked: boolean) =>
+    (w <= UW + 1e-6 && h <= UH + 1e-6) || (!locked && h <= UW + 1e-6 && w <= UH + 1e-6);
   parts.forEach((p) => {
     // third segment = plywood material id so different plywoods never share a sheet
-    const key = `${p.material}@${p.thickness}@${p.matId ?? "def"}`;
+    let key = `${p.material}@${p.thickness}@${p.matId ?? "def"}`;
+    // MDF auto: tall parts that only fit the big board get their own 3050 group
+    if (S && p.material === "mdf" && S.mdfSheet === "auto") {
+      const locked = !!p.grain;
+      if (!fits(p.w, p.h, uw24, uh, locked) && fits(p.w, p.h, uw30, uh, locked)) key += SHEET_3050_TAG;
+    }
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(p);
   });
@@ -629,11 +652,20 @@ function expand(parts: Part[]): Item[] {
 
 /* ---- public sync API (used by DXF / cut list) ---- */
 
+/** map one group's placements back from the transposed (nestDirection Y) frame */
+function untransposeGroup(g: NestGroup) {
+  g.sheets.forEach((s) => {
+    s.placed = s.placed.map((p) => ({ ...p, x: p.y, y: p.x, w: p.h, h: p.w, rotated: !p.rotated }));
+    s.offcuts = s.offcuts.map((o) => ({ ...o, x: o.y, y: o.x, w: o.h, h: o.w }));
+  });
+}
+
 export function nestParts(parts: Part[], S: Settings): NestGroup[] {
   const out: NestGroup[] = [];
-  groupParts(parts).forEach((plist, key) => {
+  groupParts(parts, S).forEach((plist, key) => {
     // per-material sheet size: plywood/back locked 2440×1220 · MDF per Settings
-    const dims = sheetDimsFor(key.split("@")[0] as PartMaterial, S);
+    // (auto splits tall parts onto 3050×1220 via dimsForGroup)
+    const dims = dimsForGroup(key, S);
     let items = expand(plist);
     const S2: Settings = { ...S, sheetW: dims.w, sheetH: dims.h };
     if (S.nestDirection === "Y") {
@@ -647,11 +679,7 @@ export function nestParts(parts: Part[], S: Settings): NestGroup[] {
       s.sheetW = dims.w;
       s.sheetH = dims.h;
     });
-    if (S.nestDirection === "Y") {
-      g.sheets.forEach((s) => {
-        s.placed = s.placed.map((p) => ({ ...p, x: p.y, y: p.x, w: p.h, h: p.w, rotated: !p.rotated }));
-      });
-    }
+    if (S.nestDirection === "Y") untransposeGroup(g);
     out.push(g);
   });
   out.sort((a, b) => a.key.localeCompare(b.key));
@@ -675,7 +703,7 @@ export async function runNesting(
   shouldStop: () => boolean,
 ): Promise<NestGroup[]> {
   const groups: NestGroup[] = [];
-  const entries = [...groupParts(parts).entries()];
+  const entries = [...groupParts(parts, S).entries()];
   const total = entries.length;
   let done = 0;
   for (const [key, plist] of entries) {
@@ -684,9 +712,17 @@ export async function runNesting(
     const started = Date.now();
     await yield0();
     // iterative strategy evaluation with budget: run strategies one tick at a time.
-    const items = expand(plist);
-    const dims = sheetDimsFor(key.split("@")[0] as PartMaterial, S);
-    const g = await nestGroupBudget(items, key, { ...S, sheetW: dims.w, sheetH: dims.h }, shouldStop, () => {
+    // (same transpose contract as the sync path so the UI preview, BOM counts
+    // and DXF output always agree, whatever nestDirection is set)
+    let items = expand(plist);
+    const dims = dimsForGroup(key, S);
+    const S2: Settings = { ...S, sheetW: dims.w, sheetH: dims.h };
+    if (S.nestDirection === "Y") {
+      items = items.map((i) => ({ ...i, w: i.h, h: i.w }));
+      S2.sheetW = dims.h;
+      S2.sheetH = dims.w;
+    }
+    const g = await nestGroupBudget(items, key, S2, shouldStop, () => {
       if (shouldStop()) return;
       if (Date.now() - started > S.timeBudget * 1000) return;
     });
@@ -694,6 +730,7 @@ export async function runNesting(
       s.sheetW = dims.w;
       s.sheetH = dims.h;
     });
+    if (S.nestDirection === "Y") untransposeGroup(g);
     groups.push(g);
     done++;
     onProgress({ running: true, phase: `Finished ${key} — ${g.sheets.length} sheet(s), ${(g.avgUtil * 100).toFixed(1)}% util (${g.strategy})`, done, total, groups: [...groups] });
