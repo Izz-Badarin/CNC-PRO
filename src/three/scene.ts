@@ -1,3 +1,5 @@
+import { modelBounds } from "./bounds";
+import { layout3DCabs } from "../lib/layout3d";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
@@ -1274,9 +1276,14 @@ export class CabinetViewer {
     // soft studio environment → believable metal, glass and laminate
     try {
       const pmrem = new THREE.PMREMGenerator(this.renderer);
-      this.envRT = pmrem.fromScene(new RoomEnvironment(), 0.04);
-      this.scene.environment = this.envRT.texture;
-      pmrem.dispose();
+      const room = new RoomEnvironment();
+      try {
+        this.envRT = pmrem.fromScene(room, 0.04);
+        this.scene.environment = this.envRT.texture;
+      } finally {
+        room.dispose();
+        pmrem.dispose();
+      }
     } catch {
       /* older GPUs / no float targets — plain lighting still looks fine */
     }
@@ -1350,7 +1357,7 @@ export class CabinetViewer {
    * the shadow frustum and the floor grid to match the project.
    */
   private frame(dir?: THREE.Vector3, animate = true, force = false) {
-    const box = new THREE.Box3().setFromObject(this.builtWrap);
+    const box = modelBounds(this.builtWrap);
     if (box.isEmpty() || !CabinetViewer.finite(box)) return;
     box.getCenter(this.center);
     const size = box.getSize(new THREE.Vector3());
@@ -1478,7 +1485,7 @@ export class CabinetViewer {
   private updateRoom(box: THREE.Box3) {
     const usable = !box.isEmpty() && CabinetViewer.finite(box);
     this.roomGroup.visible = this.roomOn && usable && this.style !== "blueprint";
-    if (this.grid) this.grid.visible = !this.roomOn;
+    if (this.grid) this.grid.visible = !this.roomGroup.visible;
     (this.ground.material as THREE.MeshStandardMaterial).color.set(this.roomOn ? "#3a352d" : STYLES[this.style].ground);
     if (!this.roomOn || !usable) return;
     const size = box.getSize(new THREE.Vector3());
@@ -1491,7 +1498,7 @@ export class CabinetViewer {
   setRoom(on: boolean) {
     if (this.roomOn === on) return;
     this.roomOn = on;
-    this.updateRoom(new THREE.Box3().setFromObject(this.builtWrap));
+    this.updateRoom(modelBounds(this.builtWrap));
   }
 
   /* ---------------- labels ---------------- */
@@ -1517,8 +1524,8 @@ export class CabinetViewer {
       this.labelWrap.remove(c);
       disposeObject(c);
     });
-    this.runDimWrap.clear();
     disposeObject(this.runDimWrap);
+    this.runDimWrap.clear();
 
     this.built.forEach((b) => {
       const cab = b.group.userData?.cab as Cabinet | undefined;
@@ -1532,7 +1539,7 @@ export class CabinetViewer {
     });
 
     // ---- overall run dimensions ----
-    const box = new THREE.Box3().setFromObject(this.builtWrap);
+    const box = modelBounds(this.builtWrap);
     if (!box.isEmpty() && CabinetViewer.finite(box)) {
       const min = box.min.clone().multiplyScalar(1000);
       const max = box.max.clone().multiplyScalar(1000);
@@ -1638,7 +1645,7 @@ export class CabinetViewer {
     this.style = style;
     this.updateGrid(this.gridSpan || 6);
     this.applyStyle();
-    this.updateRoom(new THREE.Box3().setFromObject(this.builtWrap));
+    this.updateRoom(modelBounds(this.builtWrap));
   }
 
   setEdges(on: boolean) {
@@ -1708,40 +1715,17 @@ export class CabinetViewer {
     this.panelGroups = [];
     this.builtWrap.clear();
 
-    let x = 0;
-    const spacing = isFinite(opts.spacing) ? opts.spacing : 0;
-    const okLayout = (l: { x: number; y: number } | null | undefined) => !!l && Number.isFinite(l.x) && Number.isFinite(l.y);
-    cabs.forEach((cab) => {
-      // a cabinet with corrupt (NaN/missing) dimensions would create NaN
-      // geometry → NaN bounding box → NaN camera → the WHOLE scene goes blank
-      if (!Number.isFinite(cab.width) || !Number.isFinite(cab.height) || !Number.isFinite(cab.depth)) return;
-      const q = Math.max(1, cab.qty || 1);
-      for (let i = 0; i < q; i++) {
-        const bc = buildCabinetGroup(cab, S);
-        bc.group.scale.setScalar(0.001);
-        // when following the 2D arrangement, a laid-out cabinet sits at its
-        // arranged spot (x along the wall, y = lift above the floor); qty>1
-        // duplicates continue side-by-side from that spot. Cabinets without a
-        // layout keep the classic auto-row on the floor.
-        const laid = opts.followLayout && okLayout(cab.layout);
-        if (laid) {
-          bc.group.position.x = (cab.layout!.x + i * (cab.width + spacing)) / 1000;
-          bc.group.position.y = cab.layout!.y / 1000;
-        } else {
-          bc.group.position.x = x / 1000;
-          bc.group.position.y = 0;
-          x += cab.width + spacing;
-        }
-        // Plan-view depth offset (mm): lets a cabinet stand IN FRONT of another
-        // one (positive z = further into the room, toward the viewer)
-        const zOff = cab.plan && Number.isFinite(cab.plan.z) ? cab.plan.z : 0;
-        bc.group.position.z = zOff / 1000;
-        this.showDims = opts.showDims;
-        bc.dims.visible = opts.showDims;
-        this.builtWrap.add(bc.group);
-        this.built.push(bc);
-        this.applyLayers(bc);
-      }
+    const positions = layout3DCabs(cabs, !!opts.followLayout, opts.spacing);
+    const x = positions.reduce((right, p) => Math.max(right, p.x + p.cab.width), 0);
+    this.showDims = opts.showDims;
+    positions.forEach(({ cab, x, y, z }) => {
+      const bc = buildCabinetGroup(cab, S);
+      bc.group.scale.setScalar(0.001);
+      bc.group.position.set(x / 1000, y / 1000, z / 1000);
+      bc.dims.visible = opts.showDims;
+      this.builtWrap.add(bc.group);
+      this.built.push(bc);
+      this.applyLayers(bc);
     });
 
     // ---- raw project panels — floating standing panels on the floor ----
@@ -1832,7 +1816,9 @@ export class CabinetViewer {
     this.built.forEach((b) => disposeObject(b.group));
     this.panelGroups.forEach((g) => disposeObject(g));
     this.panelGroups = [];
-    this.labelWrap.traverse((o) => disposeObject(o));
+    disposeObject(this.labelWrap);
+    this.ground.geometry.dispose();
+    (this.ground.material as THREE.Material).dispose();
     this.scene.remove(this.labelWrap);
     if (this.grid) {
       this.scene.remove(this.grid);
@@ -1865,5 +1851,11 @@ function disposeObject(root: THREE.Object3D) {
     };
     if (Array.isArray(mat)) mat.forEach(kill);
     else if (mat) kill(mat);
+    // Blueprint swaps out the original material; release that one too.
+    const original = mesh.userData.mat0 as THREE.Material | THREE.Material[] | undefined;
+    if (original && original !== mat) {
+      if (Array.isArray(original)) original.forEach(kill);
+      else kill(original);
+    }
   });
 }

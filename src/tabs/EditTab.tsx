@@ -204,7 +204,7 @@ export function EditTab({
     );
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[500px_1fr] anim-rise">
+    <div className="grid gap-5 xl:grid-cols-[500px_minmax(0,1fr)] anim-rise">
       <div className="space-y-4 max-h-[calc(100vh-170px)] overflow-y-auto pr-1 pb-6">
         <div className="card p-4">
           {/* large Kitchen Mode toggle sits before the cabinet name field */}
@@ -808,7 +808,7 @@ export function EditTab({
         )}
       </div>
 
-      <div className="card p-4 xl:sticky xl:top-[120px] h-fit">
+      <div className="card p-4 min-w-0 xl:sticky xl:top-[120px] h-fit">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <h3 className="card-h text-[14px]"><PencilRuler size={15} className="text-amber-400" /> {cab.name} — 360°</h3>
           <div className="flex gap-1.5">

@@ -1,3 +1,5 @@
+import { modelBounds } from "../src/three/bounds";
+import { layout3DCabs } from "../src/lib/layout3d";
 import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, doorHingeCount, makeCabinet } from "../src/lib/defaults";
 import { buildDxf, buildDxfForSheet } from "../src/lib/dxf";
 import { layoutCabs, overlapBoxes, panelPositions } from "../src/tabs/View2DTab";
@@ -647,6 +649,47 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   const mdf = nestParts(allParts([c], SAuto), SAuto).filter((g) => g.material === "mdf");
   check("mdf auto: tall door nested (not unplaced)", mdf.length > 0 && mdf.every((g) => g.unplaced === 0), mdf.map((g) => g.unplaced).join(","));
   check("mdf auto: tall door lands on a 3050 sheet", mdf.some((g) => g.sheets.some((s) => s.sheetW === 3050)), mdf.map((g) => g.sheets.map((s) => s.sheetW).join("/")).join(" "));
+}
+
+// 3D mixed layouts must not stack auto cabinets inside manually placed ones.
+{
+  const placed = makeCabinet("base", 600, 720, 600, "Placed");
+  placed.layout = { x: 0, y: 900 };
+  placed.qty = 2;
+  const auto = makeCabinet("base", 500, 720, 600, "Auto");
+  const pos = layout3DCabs([auto, placed], true, 20);
+  check("3D includes every quantity instance", pos.length === 3);
+  check("3D auto row starts after ALL placed copies regardless of order", pos[0].x === 1240);
+  check("3D preserves manual elevation and copy spacing", pos[1].y === 900 && pos[2].x === 620);
+  const row = layout3DCabs([auto, placed], false, 20);
+  check("3D auto mode lays out all copies side by side", row.map(p => p.x).join() === "0,520,1140" && row.every(p => p.y === 0));
+  placed.layout = { x: NaN, y: 0 };
+  check("3D invalid layout falls back to auto row", layout3DCabs([placed, auto], true)[2].x === 1200);
+}
+
+// Physical bounds must ignore dimension decorations, including hidden sprites.
+{
+  const root = new THREE.Group();
+  root.scale.setScalar(0.001);
+  root.position.x = 2;
+  const board = new THREE.Mesh(new THREE.BoxGeometry(600, 720, 560));
+  board.position.set(300, 360, -280);
+  root.add(board);
+  const labels = new THREE.Group();
+  labels.visible = false;
+  const label = new THREE.Sprite();
+  label.position.set(-5000, 9000, 4000);
+  label.scale.set(10000, 2000, 1);
+  labels.add(label);
+  root.add(labels);
+  const size = modelBounds(root).getSize(new THREE.Vector3());
+  check("3D measurements ignore labels and preserve world scale", Math.abs(size.x - 0.6) < 1e-9 && Math.abs(size.y - 0.72) < 1e-9 && Math.abs(size.z - 0.56) < 1e-9);
+  const before = modelBounds(root);
+  label.scale.multiplyScalar(100);
+  board.visible = false;
+  check("3D fit stays stable after label scaling and layer toggles", before.equals(modelBounds(root)));
+  check("3D bounds include placement", Math.abs(before.min.x - 2) < 1e-9);
+  check("empty 3D bounds remain empty", modelBounds(new THREE.Group()).isEmpty());
 }
 
 if (failures) {
