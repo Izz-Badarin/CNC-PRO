@@ -323,14 +323,19 @@ export function buildCabinetGroup(cab: Cabinet, S: Settings): BuiltCabinet {
 function buildCover3D(cab: Cabinet, S: Settings, cv: CoverPanel, grp: THREE.Group, kick: number) {
   // material: plywood covers can pick ANY library material (matId); MDF covers
   // pick a finish — white = flat laminated · oak = oak-tinted grain texture.
+  const mat = cv.mat ?? "mdf";
+  // thk 0 = auto (plywood → bodyThk, MDF → mdfThk) — the SAME rule as the cut
+  // list, nesting and the 2D front view. Without this a 0 became a zero-thick
+  // mesh and the panel vanished in 3D / 360°.
+  const thk = Number.isFinite(cv.thk) && cv.thk > 0 ? cv.thk : mat === "mdf" ? S.mdfThk : S.bodyThk;
   const finish = cv.finish ?? "white";
-  const ply = cv.mat === "plywood" ? plyMaterialById(S, cv.matId ?? cab.matId) : OAK_MDF_PLY;
+  const ply = mat === "plywood" ? plyMaterialById(S, cv.matId ?? cab.matId) : OAK_MDF_PLY;
   // grain always follows the cabinet W or H — never D:
   //   L/R covers are H×D panels → grain VERTICAL along the height
   //   T/B covers are W×D panels → grain HORIZONTAL along the width
   const vert = cv.side === "L" || cv.side === "R";
-  const mat =
-    cv.mat === "plywood"
+  const mat3 =
+    mat === "plywood"
       ? woodMat(vert ? cv.h : cv.w, vert ? cv.w : cv.h, ply, vert)
       : finish === "oak"
         ? woodMat(vert ? cv.h : cv.w, vert ? cv.w : cv.h, ply, vert)
@@ -338,19 +343,19 @@ function buildCover3D(cab: Cabinet, S: Settings, cv: CoverPanel, grp: THREE.Grou
   let mesh: THREE.Mesh;
   if (cv.side === "L") {
     // vertical panel on the left face: thk(x) × h(y) × w(z, =depth)
-    mesh = box(cv.thk, cv.h, cv.w, mat, "carcass");
-    mesh.position.set(-cv.thk / 2, cv.h / 2, -cv.w / 2);
+    mesh = box(thk, cv.h, cv.w, mat3, "carcass");
+    mesh.position.set(-thk / 2, cv.h / 2, -cv.w / 2);
   } else if (cv.side === "R") {
-    mesh = box(cv.thk, cv.h, cv.w, mat, "carcass");
-    mesh.position.set(cab.width + cv.thk / 2, cv.h / 2, -cv.w / 2);
+    mesh = box(thk, cv.h, cv.w, mat3, "carcass");
+    mesh.position.set(cab.width + thk / 2, cv.h / 2, -cv.w / 2);
   } else if (cv.side === "T") {
     // horizontal panel on top: w(x) × thk(y) × depth(z)
-    mesh = box(cv.w, cv.thk, cv.h, mat, "carcass");
-    mesh.position.set(cv.w / 2, cab.height + cv.thk / 2, -cv.h / 2);
+    mesh = box(cv.w, thk, cv.h, mat3, "carcass");
+    mesh.position.set(cv.w / 2, cab.height + thk / 2, -cv.h / 2);
   } else {
     // bottom panel: w(x) × thk(y) × depth(z), below the kick
-    mesh = box(cv.w, cv.thk, cv.h, mat, "carcass");
-    mesh.position.set(cv.w / 2, -kick - cv.thk / 2, -cv.h / 2);
+    mesh = box(cv.w, thk, cv.h, mat3, "carcass");
+    mesh.position.set(cv.w / 2, -kick - thk / 2, -cv.h / 2);
   }
   mesh.castShadow = true;
   mesh.receiveShadow = true;
