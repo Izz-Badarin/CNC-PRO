@@ -17,6 +17,7 @@ export function ThreeCanvas({
   showEdges = false,
   showLabels = false,
   showRoom = false,
+  framing = 1,
   onReady,
   onCabinetClick,
   className,
@@ -37,6 +38,8 @@ export function ThreeCanvas({
   showLabels?: boolean;
   /** back wall + floor — the run sits in a room instead of a void */
   showRoom?: boolean;
+  /** manual zoom of the automatic framing: 0.5 = closer, 2 = further out */
+  framing?: number;
   onReady?: (v: CabinetViewer) => void;
   onCabinetClick?: (cab: Cabinet | null) => void;
   className?: string;
@@ -113,6 +116,10 @@ export function ThreeCanvas({
   useEffect(() => {
     viewerRef.current?.setRoom(showRoom);
   }, [showRoom]);
+
+  useEffect(() => {
+    viewerRef.current?.setFraming(framing);
+  }, [framing]);
 
   useEffect(() => {
     if (viewerRef.current) viewerRef.current.doorsOpen = doorsOpen;

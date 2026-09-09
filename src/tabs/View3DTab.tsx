@@ -34,6 +34,7 @@ export function View3DTab({
   const [showEdges, setShowEdges] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
   const [showRoom, setShowRoom] = useState(false);
+  const [framing, setFraming] = useState(1);
 
   const anyLaid = cabinets.some((c) => c.layout);
   // true run footprint when following the 2D arrangement (stacked units count
@@ -73,8 +74,24 @@ export function View3DTab({
             <Btn size="sm" onClick={() => viewer.current?.setView("side")}>Side</Btn>
             <Btn size="sm" onClick={() => viewer.current?.setView("top")}>Top</Btn>
           </div>
+          <div className="mt-2">
+            <div className="flex items-center justify-between text-[11px] text-ink-300">
+              <span>Zoom</span>
+              <span className="font-mono text-amber-300">{Math.round(framing * 100)}%</span>
+            </div>
+            <input
+              type="range"
+              min={40}
+              max={220}
+              step={5}
+              value={Math.round(framing * 100)}
+              onChange={(e) => setFraming(parseInt(e.target.value) / 100)}
+              className="w-full accent-amber-500 cursor-pointer"
+            />
+          </div>
           <p className="mt-1.5 text-[10.5px] leading-snug text-ink-500">
-            The whole run is framed automatically — drag to orbit, hit <b className="text-ink-300">Fit</b> to re-frame.
+            The whole run is framed automatically — drag to orbit, hit <b className="text-ink-300">Fit</b> to re-frame,
+            or pull <b className="text-ink-300">Zoom</b> back for a wider shot.
           </p>
         </div>
         <div>
@@ -196,6 +213,7 @@ export function View3DTab({
             showEdges={showEdges}
             showLabels={showLabels}
             showRoom={showRoom}
+            framing={framing}
             onReady={(v) => (viewer.current = v)}
           />
         </div>

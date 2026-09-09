@@ -1210,6 +1210,8 @@ export class CabinetViewer {
   private cabinetTagsOn = false;
   /** set once the user orbits/zooms — auto-framing then stops fighting them */
   private userMoved = false;
+  /** manual zoom of the automatic framing: 0.5 = tighter, 2 = further away */
+  private framing = 1;
   private camAnim: { fp: THREE.Vector3; ft: THREE.Vector3; tp: THREE.Vector3; tt: THREE.Vector3; t0: number; dur: number } | null = null;
   doorsOpen = false;
   drawersOpen = false;
@@ -1338,7 +1340,7 @@ export class CabinetViewer {
     const extRight = Math.abs(h.x * right.x) + Math.abs(h.y * right.y) + Math.abs(h.z * right.z);
     const extUp = Math.abs(h.x * camUp.x) + Math.abs(h.y * camUp.y) + Math.abs(h.z * camUp.z);
     const extDepth = Math.abs(h.x * dir.x) + Math.abs(h.y * dir.y) + Math.abs(h.z * dir.z);
-    const pad = 1.06; // tight but safe: the run fills the frame without touching the edges
+    const pad = 1.12; // the run fills the frame with a comfortable margin
     return Math.max(extUp / Math.tan(vFov / 2), extRight / Math.tan(hFov / 2)) * pad + extDepth + 0.04;
   }
 
@@ -1358,23 +1360,28 @@ export class CabinetViewer {
     if (!Number.isFinite(d.x) || d.lengthSq() < 1e-8) d.set(1.05, 0.62, 1.35);
     d.normalize();
 
-    const dist = this.fitDistance(size, d);
+    const dist = this.fitDistance(size, d) * this.framing;
     const target = this.center.clone();
     const pos = target.clone().addScaledVector(d, dist);
 
     // clip planes follow the framing: no near-plane slicing when you zoom in,
-    // no z-fighting on a 20m run
-    this.camera.near = Math.max(0.01, dist * 0.0015);
-    this.camera.far = Math.max(30, dist * 3 + this.radius * 8);
+    // no z-fighting on a 20m run — and the far plane stays WELL beyond the
+    // zoom-out limit, so pulling back never makes the model disappear
+    const maxD = Math.max(24, dist * 8);
+    this.controls.minDistance = Math.max(0.08, this.radius * 0.08);
+    this.controls.maxDistance = maxD;
+    this.camera.near = Math.max(0.02, dist * 0.01);
+    this.camera.far = Math.max(80, maxD * 2 + this.radius * 4);
     this.camera.updateProjectionMatrix();
-    this.controls.minDistance = Math.max(0.08, this.radius * 0.1);
-    this.controls.maxDistance = Math.max(24, dist * 6);
 
-    // fog tuned to the view distance — the far end of a long run stays solid
+    // fog sits BEHIND the model at the fitted distance (depth cue only), so
+    // pulling the camera back never dissolves the cabinets
     const fog = this.scene.fog as THREE.Fog | null;
     if (fog) {
-      fog.near = dist * 0.95;
-      fog.far = Math.max(dist * 2.4, dist + this.radius * 6);
+      // keyed to the zoom-out limit, so the cabinets never fade — only the grid
+      // in the far distance does
+      fog.near = maxD * 0.9;
+      fog.far = maxD * 2.6;
     }
 
     // key light + shadow frustum cover the whole run
@@ -1410,6 +1417,17 @@ export class CabinetViewer {
   fitView(animate = true) {
     this.userMoved = false;
     this.frame(undefined, animate, true);
+  }
+
+  /**
+   * How much of the frame the model should fill. 1 = the automatic fit,
+   * < 1 = closer, > 1 = further away. Re-frames immediately (keeps the angle).
+   */
+  setFraming(f: number) {
+    const v = Math.min(2.5, Math.max(0.4, Number.isFinite(f) ? f : 1));
+    if (Math.abs(v - this.framing) < 0.001) return;
+    this.framing = v;
+    this.frame(undefined, false, true);
   }
 
   private stepCamAnim() {
