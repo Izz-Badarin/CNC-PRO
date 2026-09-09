@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { allParts, bandingByMaterial, columnFaceWidth, columnLayout, doorDims, drillOps, doorHingeCount, generatePanelParts, kickH, stackOn, stackedHeights } from "../lib/model";
 import { nestParts } from "../lib/nesting";
+import { plyMaterialById } from "../lib/defaults";
 import type { Cabinet, Customer, PanelItem, ProjectInfo, Settings } from "../types";
 import { Btn, Chip } from "../components/ui";
 import { bomReportHtml, download, openPrintWindow } from "../lib/export";
@@ -62,23 +63,28 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, project = 
     const shelfPins = totalShelves * 4;
     const slides: Record<number, number> = {};
     const materials: Record<string, number> = {};
-    generatePanelParts(panels, settings).forEach((p) => {
-      const m = p.material === "plywood" ? (p.matId ?? "plywood") : p.material;
-      materials[m] = (materials[m] ?? 0) + (p.w/1000)*(p.h/1000)*p.qty;
-    });
+    // veneer back area tracked PER PLYWOOD MATERIAL — the back follows the
+    // cabinet's plywood (matId), so the BOM gets one line per back material
+    const backArea: Record<string, number> = {};
+    const addArea = (p: { material: string; matId?: string | null; w: number; h: number; qty: number }) => {
+      const m = p.material === "plywood" ? (p.matId ?? "plywood") : p.material === "back" ? `back:${p.matId ?? "def"}` : p.material;
+      materials[m] = (materials[m] ?? 0) + (p.w / 1000) * (p.h / 1000) * p.qty;
+      if (p.material === "back") backArea[m] = (backArea[m] ?? 0) + (p.w / 1000) * (p.h / 1000) * p.qty;
+    };
+    generatePanelParts(panels, settings).forEach(addArea);
     cabinets.forEach((cab) => {
-      allParts([cab], settings).forEach((p) => {
-        const m = p.material === "plywood" ? (p.matId ?? "plywood") : p.material;
-        materials[m] = (materials[m] ?? 0) + (p.w/1000)*(p.h/1000)*p.qty;
-      });
+      allParts([cab], settings).forEach(addArea);
       drillOps([cab], settings).forEach((op) => {
         if (op.type === "hinge") hinges++;
       });
       const fullSpan = (stackOn(cab) ? stackedHeights(cab).reduce((a, h) => a + h, 0) : cab.height) - kickH(cab, settings);
+      // a cabinet-level full door suppresses every per-section door in the
+      // model — don't count the suppressed per-column glass door hinges too
+      const fullDoorActive = !!cab.fullDoor && cab.fullDoor !== "off";
       cab.rows.forEach((row) => {
         const lays = columnLayout(cab, row, settings);
         row.columns.forEach((col, ci) => {
-          if (col.door) {
+          if (col.door && !fullDoorActive) {
             if (col.door.material === "glass" && col.door.type !== "sliding") {
               const faceW = lays.length === 1 ? cab.width : columnFaceWidth(cab, lays[ci], settings);
               const leafH = doorDims(faceW, col.door.full ? fullSpan : row.h, col.door, settings).h;
@@ -116,7 +122,13 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, project = 
       if (a>0) rows.push({category:"Materials",item:"Plywood (2440×1220)",qty:Math.ceil(a/(2.44*1.22)),unit:"sheets",note:`${a.toFixed(2)} m²`});
     }
     if (materials["mdf"]) rows.push({category:"Materials",item:`MDF (${settings.mdfSheet})`,qty:sheetCount["mdf@def"] ?? Math.ceil(materials["mdf"]/(settings.mdfSheet==="3050x1220"?3.05*1.22:2.44*1.22)),unit:"sheets",note:`${materials["mdf"].toFixed(2)} m² · nesting`});
-    if (materials["back"]) rows.push({category:"Materials",item:"Veneer back (2440×1220)",qty:sheetCount["back@def"] ?? Math.ceil(materials["back"]/(2.44*1.22)),unit:"sheets",note:`${materials["back"].toFixed(2)} m² · nesting`});
+    // every veneer back material gets its own row, named after the plywood it
+    // follows — sheet count from the actual nesting output (back@<plyId>)
+    Object.entries(backArea).sort((a, b) => b[1] - a[1]).forEach(([key, area]) => {
+      const mid = key.slice("back:".length);
+      const pm = plyMaterialById(settings, mid === "def" ? null : mid);
+      rows.push({category:"Materials",item:`Veneer back — ${pm.name} (2440×1220)`,qty:sheetCount[`back@${mid}`] ?? Math.ceil(area/(2.44*1.22)),unit:"sheets",note:`${area.toFixed(2)} m² · follows ${pm.name} · nesting`});
+    });
     bandingByMaterial(cabinets, settings).forEach((b) => {
       rows.push({category:"Materials",item:`Edge banding — ${b.material}`,qty:Math.round(b.meters*10)/10,unit:"m",note:`${b.mm.toFixed(0)} mm`});
     });

@@ -16,8 +16,13 @@ export interface CabPos {
  * after the rightmost placed cabinet. Otherwise the whole set auto-flows one
  * side-by-side row (the historical behavior).
  */
+/** a layout is only usable when BOTH coordinates are finite — a NaN layout
+ *  would poison the 2D viewBox AND the 3D camera framing (see scene.ts) */
+const okLayout = (l: { x: number; y: number } | null | undefined): l is { x: number; y: number } =>
+  !!l && Number.isFinite(l.x) && Number.isFinite(l.y);
+
 export function layoutCabs(cabs: Cabinet[]): CabPos[] {
-  const anyLayout = cabs.some((c) => c.layout);
+  const anyLayout = cabs.some((c) => okLayout(c.layout));
   if (!anyLayout) {
     let x = 0;
     return cabs.map((cab) => {
@@ -27,10 +32,10 @@ export function layoutCabs(cabs: Cabinet[]): CabPos[] {
     });
   }
   const out: CabPos[] = [];
-  cabs.filter((c) => c.layout).forEach((c) => out.push({ cab: c, x: c.layout!.x, y: c.layout!.y }));
+  cabs.filter((c) => okLayout(c.layout)).forEach((c) => out.push({ cab: c, x: c.layout!.x, y: c.layout!.y }));
   const minX = out.length ? Math.min(...out.map((p) => p.x)) : 0;
   let cursor = out.length ? Math.max(...out.map((p) => p.x + p.cab.width)) + 4 : 0;
-  cabs.filter((c) => !c.layout).forEach((cab) => {
+  cabs.filter((c) => !okLayout(c.layout)).forEach((cab) => {
     out.push({ cab, x: Math.max(cursor, minX), y: 0 });
     cursor += cab.width + 4;
   });
@@ -47,9 +52,11 @@ export function panelPositions(cabs: Cabinet[], panels: PanelItem[]) {
   const right = pos.length ? Math.max(...pos.map((p) => p.x + p.cab.width)) : 0;
   let cursor = right + 40;
   return panels.map((pn) => {
-    if (pn.layout) return { pn, x: pn.layout.x, y: pn.layout.y ?? 0 };
+    // a corrupt (NaN) panel layout falls back to the auto-flow cursor instead of
+    // poisoning the 2D viewBox / 3D camera
+    if (okLayout(pn.layout)) return { pn, x: pn.layout.x, y: pn.layout.y };
     const out = { pn, x: cursor, y: 0 };
-    cursor += Math.max(60, pn.w) + 30;
+    cursor += Math.max(60, Number.isFinite(pn.w) ? pn.w : 60) + 30;
     return out;
   });
 }

@@ -1247,6 +1247,49 @@ export function glassDoorRefs(cabs: Cabinet[], S: Settings): Part[] {
     const stacked = stackOn(cab);
     const heights = stacked ? stackedHeights(cab) : [cab.height];
     const fullH = heights.reduce((a, h) => a + h, 0) - kick; // full-door span (all boxes)
+    // cabinet-level FULL glass door (glass / glass-left / glass-right /
+    // glass-double from the Boxes control) — same variant parsing as
+    // genCabinetFullDoor, so the DXF GLASS DOOR REF matches the BOM count.
+    // Only STACKED cabinets have a cabinet-level door (buildStackedBody).
+    const fd = cab.fullDoor;
+    if (stacked && fd && fd.startsWith("glass") && fd !== "off") {
+      const suffix = fd.includes("-") ? fd.split("-")[1] : "";
+      const type: DoorSpec["type"] = suffix === "double" ? "double" : suffix === "left" || suffix === "right" ? "single" : cab.width > 620 ? "double" : "single";
+      const swing: DoorSpec["swing"] = suffix === "right" ? "right" : "left";
+      const dims = doorDims(
+        cab.width,
+        fullH,
+        { type, style: "overlay", swing, material: "glass", mdfThk: S.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true, hingeCount: cab.fullDoorHinges } as DoorSpec,
+        S,
+      );
+      const nHinges = Math.min(6, Math.max(1, cab.fullDoorHinges ?? doorHingeCount(dims.h)));
+      const cupYs = hingeCupYs(dims.h, nHinges);
+      const wR = Math.max(5, Math.round(dims.w * 10) / 10);
+      for (let j = 0; j < dims.count; j++) {
+        const hingedLeft = dims.count === 1 ? swing === "left" : j === 0;
+        out.push({
+          cabId: cab.id,
+          cabName: `${cab.name}_${Math.round(cab.width)}x${Math.round(cab.height)}`,
+          name: `Glass full door${dims.count === 2 ? (j === 0 ? " L" : " R") : ""} (reference)`,
+          w: wR,
+          h: Math.max(5, Math.round(dims.h * 10) / 10),
+          qty: 1,
+          material: "glass",
+          thickness: 0,
+          band: {},
+          holes: cupYs.map((y) => ({ x: hingedLeft ? S.hingeCupEdge : wR - S.hingeCupEdge, y, dia: S.hingeCupDiameter, depth: S.hingeCupDepth, kind: "hinge" as const })),
+          grooves: [],
+          shape: "rect",
+          outline: [],
+          grain: false,
+          note: `REFERENCE — full-cabinet glass door, NOT drilled here · ${nHinges} × Ø${S.hingeCupDiameter} cups · drill the glass at these positions`,
+          reference: true,
+        });
+      }
+      // a cabinet-level full door suppresses every per-section door — do not
+      // emit per-column references for the same opening
+      return;
+    }
     heights.forEach((_bh, bi) => {
       const rowsForBox = stacked ? cab.rows.filter((r) => (r.box ?? 0) === bi) : cab.rows;
       rowsForBox.forEach((r) => {

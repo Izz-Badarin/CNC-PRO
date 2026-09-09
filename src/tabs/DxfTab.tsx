@@ -1,8 +1,7 @@
 import { useMemo, useState } from "react";
 import { FileDown, FolderDown, Layers, PackageOpen } from "lucide-react";
 import type { Cabinet, PanelItem, PartMaterial, Settings } from "../types";
-import { buildDxf, dxfFileDefs } from "../lib/dxf";
-import { DEFAULT_PLY_ID } from "../lib/defaults";
+import { buildDxf, dxfFileDefs, plyGroupMatch } from "../lib/dxf";
 import { allParts, type GrainOverrides } from "../lib/model";
 import { nestParts } from "../lib/nesting";
 import { downloadRaw } from "../lib/export";
@@ -39,11 +38,13 @@ export function DxfTab({
   }
 
   const matStats = (mat: PartMaterial, matId?: string | null) => {
-    // rule J — the default "def" plywood group also belongs to the default
-    // plywood file (same match as buildDxf)
-    const gs = groups.filter(
-      (g) => g.material === mat && (mat !== "plywood" || g.matId === (matId ?? null) || (g.matId === null && matId === DEFAULT_PLY_ID))
-    );
+    // plywood AND veneer-back use the shared rule-J match (default "def"
+    // group → project-default file) — keeps the table in sync with buildDxf
+    const gs = groups.filter((g) => {
+      if (g.material !== mat) return false;
+      if (mat === "plywood" || mat === "back") return plyGroupMatch(g, matId, settings.defaultPlyId);
+      return true;
+    });
     const sheets = gs.reduce((a, g) => a + g.sheets.length, 0);
     const parts = gs.reduce((a, g) => a + g.partCount, 0);
     const util = gs.length ? gs.reduce((a, g) => a + g.avgUtil, 0) / gs.length : 0;
@@ -53,16 +54,30 @@ export function DxfTab({
 
   const doExport = (mat: PartMaterial | null, labels: boolean, matId?: string | null) => {
     if (mat === null) {
-      defs.forEach((d) =>
-        downloadRaw(`${d.filename}${labels ? "" : "_nolabel"}.dxf`, buildDxf(cabinets, settings, d.material, labels, grain, d.matId, panels)),
+      let made = 0;
+      const skipped: string[] = [];
+      defs.forEach((d) => {
+        const st = matStats(d.material, d.matId);
+        if (st.sheets === 0) {
+          skipped.push(d.title); // a 0-sheet DXF is just a header — it opens EMPTY
+          return;
+        }
+        downloadRaw(`${d.filename}${labels ? "" : "_nolabel"}.dxf`, buildDxf(cabinets, settings, d.material, labels, grain, d.matId, panels));
+        made++;
+      });
+      setPreview(
+        `Exported ${made} DXF file(s)${labels ? "" : " without labels"}${skipped.length ? ` · skipped ${skipped.length} empty file(s): ${skipped.join(", ")}` : ""}.`,
       );
-      setPreview(`Exported ${defs.length} DXF files (${defs.map((d) => d.title).join(", ")})${labels ? "" : " without labels"}.`);
       return;
     }
     const def = defs.find((d) => d.material === mat && d.matId === (matId ?? null))!;
+    const st = matStats(mat, def.matId);
+    if (st.sheets === 0) {
+      setPreview(`Nothing to cut from ${def.title} — the file was skipped (a 0-sheet DXF opens empty).`);
+      return;
+    }
     const name = `${def.filename}${labels ? "" : "_nolabel"}.dxf`;
     downloadRaw(name, buildDxf(cabinets, settings, mat, labels, grain, def.matId, panels));
-    const st = matStats(mat);
     setPreview(
       `Exported ${name} — ${st.sheets} sheet(s), ${st.parts} parts, avg util ${(st.util * 100).toFixed(1)}%${labels ? "" : " (no labels)"}.`,
     );

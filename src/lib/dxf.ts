@@ -1,7 +1,7 @@
 import type { Cabinet, PanelItem, PartMaterial, Settings } from "../types";
 import { nestParts, placedOutline, rotPoint, type Sheet } from "./nesting";
 import { allParts, glassDoorRefs, type GrainOverrides } from "./model";
-import { DEFAULT_PLY_ID, plyMaterialsOf } from "./defaults";
+import { partMatName, plyMaterialsOf } from "./defaults";
 
 const LAYERS: [string, number][] = [
   ["SHEET", 8],
@@ -166,7 +166,7 @@ export function buildDxfFromSheets(sel: DxfSheetRef[], S: Settings, labels: bool
   const GAP_Y = 400;
   let slot = 0;
 
-  sel.forEach(({ key, sheet }) => {
+  sel.forEach(({ sheet }) => {
     // per-sheet size: plywood/back 2440×1220 · MDF possibly 3050×1220
     const SW = sheet.sheetW || S.sheetW;
     const SH = sheet.sheetH || S.sheetH;
@@ -193,14 +193,19 @@ export function buildDxfFromSheets(sel: DxfSheetRef[], S: Settings, labels: bool
     frame += line("SHEET", SW, 0, SW, SH);
     frame += line("SHEET", SW, SH, 0, SH);
     frame += line("SHEET", 0, SH, 0, 0);
-    if (labels)
+    if (labels) {
+      // human material name (plywood library name / "Veneer back - <ply name>")
+      // instead of the internal group key — the operator must be able to tell
+      // at a glance which board this sheet is cut from.
+      const title = partMatName(S, { material: sheet.material, matId: sheet.matId }).replace("·", "-");
       frame += text(
         "LABEL",
         0,
         SH + 40,
         46,
-        `Sheet ${sheet.index + 1} - ${sheet.key || key} - ${SW}x${SH} - util ${(sheet.util * 100).toFixed(1)}% - ${sheet.placed.length} parts`,
+        `Sheet ${sheet.index + 1} - ${title} ${sheet.thickness}mm - ${SW}x${SH} - util ${(sheet.util * 100).toFixed(1)}% - ${sheet.placed.length} parts`,
       );
+    }
 
     // CNC clamping holes in free areas (toggleable via Settings.clampHoles)
     const clamp = S.clampHoles === false ? "" : buildClampHoles(shifted, S);
@@ -214,16 +219,22 @@ export function buildDxfFromSheets(sel: DxfSheetRef[], S: Settings, labels: bool
   return out;
 }
 
-/** plywood group match: the group's matId equals the requested one — OR the
- *  group is the DEFAULT ("def") group and the requested file is the default
- *  plywood (rule J — default-matId parts, e.g. raw panels, must not be dropped
- *  from the default plywood DXF). */
-const plyGroupMatch = (g: { matId: string | null }, matId: string | null | undefined) =>
-  g.matId === (matId ?? null) || (g.matId === null && matId === DEFAULT_PLY_ID);
+/** plywood / veneer-back group match: the group's matId equals the requested
+ *  one — OR the group is the DEFAULT ("def") group and the requested file is
+ *  the PROJECT default plywood (rule J — default-matId parts, e.g. raw panels,
+ *  must not be dropped from the default file). The default file is the one
+ *  whose matId is the project's defaultPlyId (NOT a fixed library id), so a
+ *  project that defaults to a custom plywood never gets an empty
+ *  "cabinets_plywood" / "cabinets_back" file. */
+export const plyGroupMatch = (g: { matId: string | null }, matId: string | null | undefined, defId: string) =>
+  g.matId === (matId ?? null) || (g.matId === null && matId === defId);
 
 export function buildDxf(cabs: Cabinet[], S: Settings, material: PartMaterial | null, labels: boolean, ov: GrainOverrides = {}, matId?: string | null, panels: PanelItem[] = []): string {
   const groups = nestParts(allParts(cabs, S, ov, panels), S).filter(
-    (g) => (!material || g.material === material) && (material !== "plywood" || plyGroupMatch(g, matId)),
+    (g) =>
+      (!material || g.material === material) &&
+      // veneer back follows the cabinet plywood — split per material just like plywood
+      ((material !== "plywood" && material !== "back") || plyGroupMatch(g, matId, S.defaultPlyId)),
   );
   const sel: DxfSheetRef[] = [];
   groups.forEach((g) => g.sheets.forEach((sheet) => sel.push({ key: g.key, sheet })));
@@ -306,20 +317,31 @@ export interface DxfFileDef {
 /** filesystem-friendly slug for material-based filenames */
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "plywood";
 
+/**
+ * One DXF file PER PLYWOOD MATERIAL for both the carcass (plywood) and the
+ * veneer back — the back follows the cabinet plywood, so it must be cut from
+ * the matching back board. The PROJECT default plywood keeps the classic
+ * filenames ("cabinets_plywood" / "cabinets_back") so old workflows don't
+ * break; every other material gets `cabinets_plywood_<slug>` / `cabinets_back_<slug>`.
+ */
 export function dxfFileDefs(S: Settings): DxfFileDef[] {
   const defs: DxfFileDef[] = [];
+  const defId = S.defaultPlyId;
   plyMaterialsOf(S).forEach((m) => {
+    const isDef = m.id === defId;
     defs.push({
-      // keep the classic filename for the default plywood so old projects don't break
-      filename: m.id === DEFAULT_PLY_ID ? "cabinets_plywood" : `cabinets_plywood_${slug(m.name)}`,
+      filename: isDef ? "cabinets_plywood" : `cabinets_plywood_${slug(m.name)}`,
       material: "plywood" as PartMaterial,
       matId: m.id,
       title: m.name,
     });
+    defs.push({
+      filename: isDef ? "cabinets_back" : `cabinets_back_${slug(m.name)}`,
+      material: "back" as PartMaterial,
+      matId: m.id,
+      title: `Veneer back — ${m.name}`,
+    });
   });
-  defs.push(
-    { filename: "cabinets_mdf", material: "mdf", title: "MDF" },
-    { filename: "cabinets_back", material: "back", title: "Back panel" },
-  );
+  defs.push({ filename: "cabinets_mdf", material: "mdf", title: "MDF" });
   return defs;
 }

@@ -171,11 +171,17 @@ function plyBoxMat(ply: PlywoodMaterial): THREE.MeshStandardMaterial {
 
 type Tag = "carcass" | "door" | "drawer" | "shelf" | "back" | "kick" | "panel";
 
-function box(w: number, h: number, d: number, mat: THREE.Material, tag: Tag, cast = true): THREE.Mesh {
+/**
+ * `name` = semantic part name (Phase 9) — used by setExploded() for
+ * DETERMINISTIC explode offsets (side L −X · side R +X · top +Y · …)
+ * instead of guessing from position.
+ */
+function box(w: number, h: number, d: number, mat: THREE.Material, tag: Tag, cast = true, name?: string): THREE.Mesh {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
   m.castShadow = cast;
   m.receiveShadow = true;
   m.userData.tag = tag;
+  if (name) m.userData.partName = name;
   return m;
 }
 
@@ -267,9 +273,13 @@ const OPEN_ANGLE = (108 * Math.PI) / 180;
 /** raw project panel — a standing W×H×thk box (grain vertical on the face) */
 function buildPanel3D(pn: PanelItem, S: Settings): THREE.Group {
   const g = new THREE.Group();
-  const thk = pn.thk > 0 ? pn.thk : pn.material === "plywood" ? S.bodyThk : pn.material === "back" ? S.backThk : S.mdfThk;
-  const W = Math.max(5, pn.w);
-  const H = Math.max(5, pn.h);
+  // clamp non-finite values (NaN geometry would poison the scene bounding box)
+  const w = Number.isFinite(pn.w) ? pn.w : 5;
+  const h = Number.isFinite(pn.h) ? pn.h : 5;
+  const t = Number.isFinite(pn.thk) ? pn.thk : 0;
+  const thk = t > 0 ? t : pn.material === "plywood" ? S.bodyThk : pn.material === "back" ? S.backThk : S.mdfThk;
+  const W = Math.max(5, w);
+  const H = Math.max(5, h);
   let mat: THREE.Material;
   if (pn.material === "plywood") {
     const ply = plyMaterialById(S, pn.matId ?? null);
@@ -447,8 +457,8 @@ function buildWing3D(
     wg.add(s);
     return s;
   };
-  mkSide(0);
-  mkSide(w - T);
+  mkSide(0).userData.partName = "side L";
+  mkSide(w - T).userData.partName = "side R";
 
   // linear slot — dark groove strip on the inner face of the chosen side panel(s)
   const slotV = cab.slot ?? "none";
@@ -456,28 +466,31 @@ function buildWing3D(
   if (slotV !== "none" && !isNotched(cab.type)) {
     const sw = Math.max(6, S.slotWidth);
     const zc = d - Math.max(sw, slotFromFront);
+    // the strip visually belongs to its side panel — named so it explodes
+    // with the panel instead of hitting the position fallback
     if (slotV === "left" || slotV === "both") {
-      const st = box(3, BH, sw, mats.slot, "carcass");
+      const st = box(3, BH, sw, mats.slot, "carcass", false, "side L");
       st.position.set(T + 1.5, BH / 2, zc);
       wg.add(st);
     }
     if (slotV === "right" || slotV === "both") {
-      const st = box(3, BH, sw, mats.slot, "carcass");
+      const st = box(3, BH, sw, mats.slot, "carcass", false, "side R");
       st.position.set(w - T - 1.5, BH / 2, zc);
       wg.add(st);
     }
   }
 
-  const bottom = box(w - 2 * T, T, d, woodMat(w, d, ply, true), "carcass");
+  const bottom = box(w - 2 * T, T, d, woodMat(w, d, ply, true), "carcass", true, "bottom");
   bottom.position.set(w / 2, T / 2, d / 2);
   wg.add(bottom);
   const top = bottom.clone();
+  top.userData.partName = "top";
   top.position.y = BH - T / 2;
   wg.add(top);
   if (cab.hasBack !== false) {
     // back panel takes the CABINET'S plywood color (rule Q) — a grain material
     // shows the wood texture, a solid/laminated board renders flat
-    const back = box(w - 2, BH - 2, S.backThk, ply.solid ? plyBoxMat(ply) : woodMat(w, BH, ply), "back", false);
+    const back = box(w - 2, BH - 2, S.backThk, ply.solid ? plyBoxMat(ply) : woodMat(w, BH, ply), "back", false, "back");
     back.position.set(w / 2, BH / 2, -S.backThk / 2);
     wg.add(back);
   }
@@ -486,12 +499,12 @@ function buildWing3D(
   // FULL carcass depth (back → recess line) to match the cut-list parts exactly.
   const kick = kickH(cab, S);
   if (kick > 0 && !o?.skipKick) {
-    const front = box(w - 2 * T, kick - 4, T, mats.kick, "kick", false);
+    const front = box(w - 2 * T, kick - 4, T, mats.kick, "kick", false, "kick");
     front.position.set(w / 2, -kick / 2 - 1, d - S.kickDepth - T / 2);
     wg.add(front);
     const sideDepth = Math.max(20, d - S.kickDepth);
     [-1, 1].forEach((s) => {
-      const side = box(T, kick - 4, sideDepth, mats.kick, "kick", false);
+      const side = box(T, kick - 4, sideDepth, mats.kick, "kick", false, "kick");
       side.position.set(w / 2 + s * (w / 2 - T * 1.5), -kick / 2 - 1, sideDepth / 2);
       wg.add(side);
     });
@@ -506,7 +519,7 @@ function buildWing3D(
     const lays = columnLayout(cab, r, S);
     // row section (horizontal divider) — same size as top/bottom, always present
     if (rowIdx++ > 0) {
-      const sec = box(w - 2 * T, T, d, woodMat(w, d, ply, true), "carcass");
+      const sec = box(w - 2 * T, T, d, woodMat(w, d, ply, true), "carcass", true, "row section");
       sec.position.set(w / 2, y0 - T / 2, d / 2);
       wg.add(sec);
     }
@@ -520,7 +533,7 @@ function buildWing3D(
       // vertical divider on the right of this column (height − deduction)
       if (!lay.last) {
         const dh = Math.max(20, r.h - S.dividerDeduct);
-        const dv = box(T, dh, d, woodMat(T, dh, ply, true), "carcass");
+        const dv = box(T, dh, d, woodMat(T, dh, ply, true), "carcass", true, "divider");
         dv.position.set(colX + cw + T / 2, y0 + dh / 2, d / 2);
         wg.add(dv);
       }
@@ -600,7 +613,7 @@ function buildColumn3D(
       for (let k = 0; k < shelvesAbove; k++) {
         const sy2 = shY + positions[k];
         const sd = d - S.shelfFrontSetback - 6;
-        const sh = box(clearW - 6, T, sd, woodMat(clearW, d, ply, true), "shelf");
+        const sh = box(clearW - 6, T, sd, woodMat(clearW, d, ply, true), "shelf", true, "shelf");
         sh.position.set(faceCx, sy2, sd / 2 + 2);
         wg.add(sh);
       }
@@ -608,7 +621,7 @@ function buildColumn3D(
     // splitter panel at the bank edge — always drawn when requested
     if (dz > 0 && shH > 20 && (col.shelves > 0 || col.splitter)) {
       const splitY = aboveBank ? y0 + bank.y + bank.h : y0 + bank.y;
-      const sp = box(clearW, T, d, woodMat(clearW, d, ply, true), "carcass");
+      const sp = box(clearW, T, d, woodMat(clearW, d, ply, true), "carcass", true, "splitter");
       sp.position.set(faceCx, splitY, d / 2);
       wg.add(sp);
     }
@@ -617,7 +630,7 @@ function buildColumn3D(
     // veneer back, inside the carcass (z: 0 → thk)
     if (col.mdfBack) {
       const thk = Math.max(6, col.mdfBackThk || S.mdfThk);
-      const mb = box(clearW - 2, rowH - 2, thk, mats.mdf, "carcass");
+      const mb = box(clearW - 2, rowH - 2, thk, mats.mdf, "carcass", true, "mdf back");
       mb.position.set(faceCx, y0 + rowH / 2, thk / 2);
       wg.add(mb);
     }
@@ -749,6 +762,7 @@ function buildColumn3D(
         dg.add(bBot);
         drawersAcc.push({ node: dg, baseZ: frontZ, dist: sd * 0.62, cur: 0 });
       }
+      dg.userData.partName = "drawer"; // whole drawer slides out on explode
       wg.add(dg);
       dy += dr.frontHeight;
     });
@@ -829,7 +843,7 @@ function buildDoor3D(
       const cx = baseX + (j === 0 ? gap + dw / 2 : w - gap - dw / 2);
       const panel = new THREE.Group();
       panel.position.set(cx, y0 + gap, d + thk / 2 + gap + (j === 1 ? thk + 5 : 0));
-      const p = box(dw, dh, thk, doorMat, "door");
+      const p = box(dw, dh, thk, doorMat, "door", true, "door");
       p.position.set(0, dh / 2, 0);
       if (door.material === "glass") addGlassFrame(p);
       panel.add(p);
@@ -847,7 +861,7 @@ function buildDoor3D(
     const zFront = door.style === "inset" ? d - thk / 2 - 2 : d + thk / 2 + gap;
     const pivot = new THREE.Group();
     pivot.position.set(baseX + (hingeLeft ? x1 : x1 + dw), y0 + (door.style === "inset" ? S.bodyThk + gap : gap), zFront);
-    const dp = box(dw, dh, thk, doorMat, "door");
+    const dp = box(dw, dh, thk, doorMat, "door", true, "door");
     dp.position.set(hingeLeft ? dw / 2 : -dw / 2, dh / 2, 0);
     if (door.material === "glass") addGlassFrame(dp);
     pivot.add(dp);
@@ -1194,8 +1208,13 @@ export class CabinetViewer {
 
     let x = 0;
     const spacing = isFinite(opts.spacing) ? opts.spacing : 0;
+    const okLayout = (l: { x: number; y: number } | null | undefined) => !!l && Number.isFinite(l.x) && Number.isFinite(l.y);
     cabs.forEach((cab) => {
-      const q = Math.max(1, cab.qty || 1);
+      // a cabinet with corrupt (NaN/missing) dimensions would create NaN
+      // geometry → NaN bounding box → NaN camera → the WHOLE scene goes blank.
+      // Skip it here instead (the storage layer also sanitizes on load).
+      if (!Number.isFinite(cab.width) || !Number.isFinite(cab.height) || !Number.isFinite(cab.depth)) return;
+      const q = Math.max(1, Math.round(cab.qty) || 1);
       for (let i = 0; i < q; i++) {
         const bc = buildCabinetGroup(cab, S);
         bc.group.scale.setScalar(0.001);
@@ -1203,7 +1222,7 @@ export class CabinetViewer {
         // arranged spot (x along the wall, y = lift above the floor); qty>1
         // duplicates continue side-by-side from that spot. Cabinets without a
         // layout keep the classic auto-row on the floor.
-        const laid = opts.followLayout && cab.layout;
+        const laid = opts.followLayout && okLayout(cab.layout);
         if (laid) {
           bc.group.position.x = (cab.layout!.x + i * (cab.width + spacing)) / 1000;
           bc.group.position.y = cab.layout!.y / 1000;
@@ -1214,7 +1233,8 @@ export class CabinetViewer {
         }
         // Plan-view depth offset (mm): lets a cabinet stand IN FRONT of another
         // one (positive z = further into the room, toward the viewer)
-        bc.group.position.z = (cab.plan?.z ?? 0) / 1000;
+        const zOff = cab.plan && Number.isFinite(cab.plan.z) ? cab.plan.z : 0;
+        bc.group.position.z = zOff / 1000;
         bc.dims.visible = opts.showDims;
         this.builtWrap.add(bc.group);
         this.built.push(bc);
@@ -1227,8 +1247,10 @@ export class CabinetViewer {
     if (opts.panels && opts.panels.length) {
       let px = x + 80;
       opts.panels.forEach((pn) => {
+        // a panel with NaN w/h would create NaN geometry → NaN bbox → blank scene
+        if (!Number.isFinite(pn.w) || !Number.isFinite(pn.h)) return;
         const grp = buildPanel3D(pn, S);
-        const laid = opts.followLayout && pn.layout;
+        const laid = opts.followLayout && !!pn.layout && Number.isFinite(pn.layout.x) && Number.isFinite(pn.layout.y ?? 0);
         if (laid) {
           grp.position.x = pn.layout!.x / 1000;
           grp.position.y = (pn.layout!.y ?? 0) / 1000;
@@ -1243,7 +1265,9 @@ export class CabinetViewer {
     }
 
     const bbox = new THREE.Box3().setFromObject(this.builtWrap);
-    if (!bbox.isEmpty()) {
+    // a NaN in ANY mesh position yields a NaN bbox — framing the camera from it
+    // would blank the entire 3D view, so reframe only from finite extents
+    if (!bbox.isEmpty() && Number.isFinite(bbox.min.x) && Number.isFinite(bbox.min.y) && Number.isFinite(bbox.min.z) && Number.isFinite(bbox.max.x) && Number.isFinite(bbox.max.y) && Number.isFinite(bbox.max.z)) {
       bbox.getCenter(this.center);
       const size = bbox.getSize(new THREE.Vector3());
       this.radius = Math.max(size.x, size.y, size.z, 0.6) / 2;
@@ -1282,87 +1306,85 @@ export class CabinetViewer {
   private explodedBackup = new Map<THREE.Object3D, THREE.Vector3>();
   private explodedBackupRot = new Map<THREE.Object3D, THREE.Euler>();
 
-  /** apply exploded offsets: sides ±150 X, top/bottom ±120 Y, back -100 Z, doors +200 Z 45°, drawers +300 Z, shelves +30 Y */
+  /**
+   * Exploded view — DETERMINISTIC per-part offsets (Phase 9). Every mesh is
+   * tagged with a semantic `partName` at build time, so the explode no longer
+   * guesses from coordinates:
+   *   side L −150 X · side R +150 X · top +120 Y · bottom −40 Y · back −120 Z
+   *   kick −40 Y · row section +80 Y · shelf +40 Y · splitter +60 Y
+   *   mdf back −60 Z · drawer +300 Z (whole drawer group) · door +250 Z
+   * Untagged parts (corner cabinets, covers) fall back to a tag-based rule.
+   */
   setExploded(v: boolean) {
-    if (v===this.exploded) return;
-    if (v){
-      // save and apply
+    if (v === this.exploded) return;
+    if (v) {
       this.explodedBackup.clear();
       this.explodedBackupRot.clear();
-      this.built.forEach(bc=>{
+      this.built.forEach((bc) => {
         const W = bc.width;
-        // estimate BH from bbox of carcass? Use group size: we can infer from top/bottom positions
-        // We'll traverse meshes inside bc.group
-        let shelfIdx=0;
-        bc.group.traverse((o:any)=>{
-          if (!o.isMesh) return;
+        let shelfIdx = 0;
+        // Walk the tree parent-first. A named object (mesh OR group, e.g. a
+        // drawer group) gets its deterministic offset ONCE; its descendants
+        // move with it and must never be offset again (no double-move).
+        const visit = (o: any, namedAncestor: boolean) => {
+          const name = o.userData?.partName as string | undefined;
           const tag = o.userData?.tag as string | undefined;
-          if (!tag) return;
-          // clone original
-          this.explodedBackup.set(o, o.position.clone());
-          this.explodedBackupRot.set(o, o.rotation.clone() as any);
-          const pos = o.position;
-          // heuristic based on tag and position
-          if (tag==='carcass'){
-            // side L: x < 20
-            if (pos.x < 25 && pos.y>20 && pos.y<10000){
-              // check if height is tall (BH) – side panel: y ~ BH/2, height ~ BH
-              // we use x < 25 as side L
-              o.position.x -= 150;
-            } else if (pos.x > W-25){
-              o.position.x += 150;
-            } else if (pos.y < 20){
-              // bottom
-              o.position.y -= 20;
-            } else if (pos.y > 400 || pos.y > (o.geometry?.parameters?.height ? 0 : 0)){
-              // top – if y is near top (BH)
-              // we detect top by y > BH-30 – but BH unknown, use y > 500? Let's use y > 600? Actually BH up to 2000
-              // We'll detect top as y > pos.y && tag carcass and not side – use y > 0 and z ~ D/2 and height ~ T
-              // For simplicity, if y > 100 and x between 20 and W-20 and z ~ D/2 and height small (T) then top/bottom
-              // We'll use y threshold: if y > 300 and x ~ W/2 => likely top, but we don't know BH. We'll just check if y > 100 and o.geometry bounding box height < 30
+          let dx = 0, dy = 0, dz = 0;
+          if (name) {
+            switch (name) {
+              case "side L": dx = -150; break;
+              case "side R": dx = 150; break;
+              case "top": dy = 120; break;
+              case "bottom": dy = -40; break;
+              case "back": dz = -120; break;
+              case "kick": dy = -40; break;
+              case "row section": dy = 80; break;
+              case "shelf": dy = 40 + shelfIdx++ * 10; break;
+              case "splitter": dy = 60; break;
+              case "mdf back": dz = -60; break;
+              case "drawer": dz = 300; break;
+              case "door": dz = 250; break;
+              default: break; // dividers / slot strips stay in place
+            }
+          } else if (!namedAncestor && o.isMesh && tag) {
+            // fallback for parts built without a partName (corner cabinets, covers)
+            if (tag === "back") dz = -120;
+            else if (tag === "door") dz = 250;
+            else if (tag === "drawer") dz = 300;
+            else if (tag === "shelf") dy = 40;
+            else if (tag === "carcass" && o.position.y < 25) dy = -40; // thin bottom plate
+            else if (tag === "carcass") {
+              // position heuristic only as a last resort
               const h = (o.geometry as any)?.parameters?.height ?? 0;
-              if (h>0 && h<30){
-                // horizontal panel
-                if (pos.y < 100) o.position.y -= 20;
-                else o.position.y += 120;
-              } else {
-                // fallback: if y > 500, treat as top
-                if (pos.y > 500) o.position.y += 120;
-              }
+              const horizontal = h > 0 && h < 30;
+              if (horizontal && o.position.y < 60) dy = -40;
+              else if (horizontal) dy = 120;
+              else if (o.position.x < 25 && o.position.y > 20) dx = -150;
+              else if (o.position.x > W - 25) dx = 150;
             }
-            // also handle top/bottom by checking y
-            const isHorizontal = (o.geometry as any)?.parameters?.height !== undefined && (o.geometry as any).parameters.height < 30;
-            if (isHorizontal){
-              if (pos.y < 50) o.position.y -= 20;
-              else if (pos.y > 200) o.position.y += 120;
-            }
-          } else if (tag==='back'){
-            o.position.z -= 100;
-          } else if (tag==='door'){
-            o.position.z += 200;
-            // open 45°
-            // rotation handled via doorFrac, but also add extra offset
-            // for swing doors, we will have doorFrac set to 0.42
-          } else if (tag==='drawer'){
-            o.position.z += 300;
-          } else if (tag==='shelf'){
-            o.position.y += 30 + shelfIdx*6;
-            shelfIdx++;
           }
-        });
+          if (dx !== 0 || dy !== 0 || dz !== 0) {
+            this.explodedBackup.set(o, o.position.clone());
+            this.explodedBackupRot.set(o, o.rotation.clone() as any);
+            o.position.x += dx;
+            o.position.y += dy;
+            o.position.z += dz;
+          }
+          (o.children ?? []).forEach((c: any) => visit(c, namedAncestor || !!name));
+        };
+        visit(bc.group, false);
       });
-      this.exploded=true;
+      this.exploded = true;
     } else {
-      // restore
-      this.explodedBackup.forEach((p,o)=>{
+      this.explodedBackup.forEach((p, o) => {
         o.position.copy(p);
       });
-      this.explodedBackupRot.forEach((r,o:any)=>{
+      this.explodedBackupRot.forEach((r, o: any) => {
         o.rotation.copy(r);
       });
       this.explodedBackup.clear();
       this.explodedBackupRot.clear();
-      this.exploded=false;
+      this.exploded = false;
     }
   }
 
@@ -1488,6 +1510,41 @@ export class CabinetViewer {
     g.updateWorldMatrix(true, true); // compose the ×1000 root (children keep baked mm-space matrices)
     const data = await new GLTFExporter().parseAsync(g, { binary: true });
     return new Blob([data as ArrayBuffer], { type: "model/gltf-binary" });
+  }
+
+  /**
+   * Phase 9: GLB of a SINGLE cabinet (in millimetres, world position baked).
+   * The other cabinets/panels are hidden for the export and restored after.
+   * Returns null when the cabinet id is unknown.
+   */
+  async exportGlbCabinet(cabId: string, name?: string): Promise<Blob | null> {
+    const target = this.built.find((b) => (b.group.userData as any)?.cabId === cabId);
+    if (!target) return null;
+    const prevCab = this.built.map((b) => b.group.visible);
+    const prevPan = this.panelGroups.map((g) => g.visible);
+    this.built.forEach((b) => (b.group.visible = b === target));
+    this.panelGroups.forEach((g) => (g.visible = false));
+    try {
+      this.builtWrap.updateWorldMatrix(true, true);
+      const g = new THREE.Group();
+      g.name = (name || cabId).replace(/[^a-z0-9_\-]+/gi, "_") + "_mm";
+      g.scale.setScalar(1000); // mm (scene units are metres)
+      target.group.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.isMesh && mesh.geometry) {
+          const c = mesh.clone();
+          c.matrixAutoUpdate = false;
+          c.matrix.copy(mesh.matrixWorld);
+          g.add(c);
+        }
+      });
+      g.updateWorldMatrix(true, true);
+      const data = await new GLTFExporter().parseAsync(g, { binary: true });
+      return new Blob([data as ArrayBuffer], { type: "model/gltf-binary" });
+    } finally {
+      this.built.forEach((b, i) => (b.group.visible = prevCab[i] ?? true));
+      this.panelGroups.forEach((gp, i) => (gp.visible = prevPan[i] ?? true));
+    }
   }
 
   /** E4: OBJ text of the current model, in millimetres */
