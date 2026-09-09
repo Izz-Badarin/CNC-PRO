@@ -1,10 +1,16 @@
 import { useRef, useState } from "react";
-import { Camera, DoorClosed, DoorOpen, Layers, Link2, Move3d, RotateCcw, SquareMousePointer } from "lucide-react";
+import { Camera, DoorClosed, DoorOpen, Layers, Link2, Maximize2, Move3d, RotateCcw, SquareMousePointer } from "lucide-react";
 import type { Cabinet, PanelItem, Settings } from "../types";
 import { Btn, Empty, Field, Num } from "../components/ui";
 import { ThreeCanvas } from "../components/ThreeCanvas";
 import { LayerToggles } from "../components/LayerToggles";
-import type { CabinetViewer } from "../three/scene";
+import type { CabinetViewer, ViewStyle } from "../three/scene";
+
+const STYLE_BTN: { id: ViewStyle; label: string; hint: string }[] = [
+  { id: "realistic", label: "Realistic", hint: "Textured boards, soft shadows" },
+  { id: "technical", label: "Technical", hint: "Panel outlines + grid" },
+  { id: "blueprint", label: "Blueprint", hint: "Cyan x-ray line drawing" },
+];
 
 export function View3DTab({
   cabinets,
@@ -24,6 +30,9 @@ export function View3DTab({
   const [showDims, setShowDims] = useState(false);
   const [layers, setLayers] = useState<Record<string, boolean>>({});
   const [followLayout, setFollowLayout] = useState(true);
+  const [viewStyle, setViewStyle] = useState<ViewStyle>("technical");
+  const [showEdges, setShowEdges] = useState(true);
+  const [showLabels, setShowLabels] = useState(true);
 
   const anyLaid = cabinets.some((c) => c.layout);
   // true run footprint when following the 2D arrangement (stacked units count
@@ -56,11 +65,39 @@ export function View3DTab({
         <div>
           <div className="field-label !mb-2 flex items-center gap-1.5"><Camera size={12} /> Camera</div>
           <div className="grid grid-cols-3 gap-1.5">
+            <Btn size="sm" onClick={() => viewer.current?.setView("fit")}><Maximize2 size={13} /> Fit</Btn>
             <Btn size="sm" onClick={() => viewer.current?.setView("reset")}><RotateCcw size={13} /> Reset</Btn>
-            <Btn size="sm" onClick={() => viewer.current?.setView("top")}>Top</Btn>
+            <Btn size="sm" onClick={() => viewer.current?.setView("iso")}>Iso</Btn>
             <Btn size="sm" onClick={() => viewer.current?.setView("front")}>Front</Btn>
             <Btn size="sm" onClick={() => viewer.current?.setView("side")}>Side</Btn>
-            <Btn size="sm" onClick={() => viewer.current?.setView("iso")}>Iso</Btn>
+            <Btn size="sm" onClick={() => viewer.current?.setView("top")}>Top</Btn>
+          </div>
+          <p className="mt-1.5 text-[10.5px] leading-snug text-ink-500">
+            The whole run is framed automatically — drag to orbit, hit <b className="text-ink-300">Fit</b> to re-frame.
+          </p>
+        </div>
+        <div>
+          <div className="field-label !mb-2">Display style</div>
+          <div className="grid grid-cols-3 gap-1.5">
+            {STYLE_BTN.map((s) => (
+              <Btn key={s.id} size="sm" title={s.hint} variant={viewStyle === s.id ? "ok" : "default"} onClick={() => setViewStyle(s.id)}>
+                {s.label}
+              </Btn>
+            ))}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1.5">
+            <label className="flex items-center gap-2 text-[12px] text-ink-200 cursor-pointer">
+              <input type="checkbox" className="chk" checked={showDims} onChange={(e) => setShowDims(e.target.checked)} />
+              Dims
+            </label>
+            <label className="flex items-center gap-2 text-[12px] text-ink-200 cursor-pointer">
+              <input type="checkbox" className="chk" checked={showEdges} onChange={(e) => setShowEdges(e.target.checked)} />
+              Edges
+            </label>
+            <label className="flex items-center gap-2 text-[12px] text-ink-200 cursor-pointer">
+              <input type="checkbox" className="chk" checked={showLabels} onChange={(e) => setShowLabels(e.target.checked)} />
+              Labels
+            </label>
           </div>
         </div>
         <div className="flex gap-2 flex-wrap">
@@ -73,10 +110,6 @@ export function View3DTab({
           <Btn size="sm" variant={followLayout ? "ok" : "default"} onClick={() => setFollowLayout(!followLayout)}>
             <Link2 size={14} /> Follow 2D
           </Btn>
-          <label className="flex items-center gap-2 text-[12px] text-ink-200 cursor-pointer">
-            <input type="checkbox" className="chk" checked={showDims} onChange={(e) => setShowDims(e.target.checked)} />
-            Dims
-          </label>
         </div>
         {setSettings && (
           <div>
@@ -139,6 +172,9 @@ export function View3DTab({
             drawersOpen={drawersOpen}
             followLayout={followLayout}
             panels={panels}
+            viewStyle={viewStyle}
+            showEdges={showEdges}
+            showLabels={showLabels}
             onReady={(v) => (viewer.current = v)}
           />
         </div>

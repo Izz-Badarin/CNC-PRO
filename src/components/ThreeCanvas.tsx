@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { Cabinet, PanelItem, Settings } from "../types";
-import { CabinetViewer } from "../three/scene";
+import { CabinetViewer, type ViewStyle } from "../three/scene";
 import { useDebounced } from "../lib/useDebounced";
 import * as THREE from "three";
 
@@ -13,6 +13,9 @@ export function ThreeCanvas({
   drawersOpen = false,
   followLayout = false,
   panels = [],
+  viewStyle = "realistic",
+  showEdges = false,
+  showLabels = false,
   onReady,
   onCabinetClick,
   className,
@@ -25,6 +28,12 @@ export function ThreeCanvas({
   drawersOpen?: boolean;
   followLayout?: boolean;
   panels?: PanelItem[];
+  /** realistic = textured render · technical = panel outlines · blueprint = x-ray */
+  viewStyle?: ViewStyle;
+  /** outline every panel (crisp CAD-style edges) */
+  showEdges?: boolean;
+  /** name + size tag floating above every cabinet */
+  showLabels?: boolean;
   onReady?: (v: CabinetViewer) => void;
   onCabinetClick?: (cab: Cabinet | null) => void;
   className?: string;
@@ -85,6 +94,18 @@ export function ThreeCanvas({
   useEffect(() => {
     viewerRef.current?.setShowDims(showDims);
   }, [showDims]);
+
+  useEffect(() => {
+    viewerRef.current?.setStyle(viewStyle);
+  }, [viewStyle]);
+
+  useEffect(() => {
+    viewerRef.current?.setEdges(showEdges);
+  }, [showEdges]);
+
+  useEffect(() => {
+    viewerRef.current?.setCabinetTags(showLabels);
+  }, [showLabels]);
 
   useEffect(() => {
     if (viewerRef.current) viewerRef.current.doorsOpen = doorsOpen;
