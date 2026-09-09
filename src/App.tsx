@@ -261,7 +261,14 @@ export default function App() {
 
   const newProject = () => {
     const hasWork = cabinets.length > 0 || (project.name && project.name !== "Untitled Project") || panels.length > 0;
-    if (hasWork && !window.confirm("Start a new project? The current project remains saved in your browser, but unsaved changes will be cleared from the editor.")) return;
+    if (hasWork && !window.confirm("Start a new project? Unsaved editor changes will be cleared. The current project will be kept in the browser backup history.")) return;
+    // Keep a recoverable snapshot before autosave replaces the active project with
+    // the blank one. This makes New safe without forcing an unexpected download.
+    if (hasWork) {
+      try {
+        rotateBackups(SETTINGS_VERSION, JSON.stringify({ version: SETTINGS_VERSION, settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain, rotation }));
+      } catch {}
+    }
     setCabinetsState([]);
     setProjectState(defaultProject());
     // Customers, materials/settings, and the cabinet library are shared resources;
@@ -322,12 +329,12 @@ export default function App() {
     try {
       const data = (await readProjectFile(f)) as { cabinets: Cabinet[]; settings?: Settings; project?: ProjectInfo; customers?: Customer[]; grain?: GrainOverrides; rotation?: RotationOverrides; library?: LibraryItem[] };
       setCabinetsState((data.cabinets ?? []).map(migrateCabinet));
-      if (data.settings) setSettingsState(migrateSettings(data.settings));
-      if (data.project) setProjectState(sanitizeProject({ ...defaultProject(), ...data.project }));
-      if (data.customers) setCustomersState(data.customers);
-      if (data.grain) setGrainState(data.grain as GrainOverrides);
-      if (data.rotation) setRotationState(data.rotation as RotationOverrides);
-      if (data.library) setLibraryState([...builtinLibrary(), ...(data.library as LibraryItem[]).filter((l) => !l.builtin)]);
+      setSettingsState(migrateSettings(data.settings ?? DEFAULT_SETTINGS));
+      setProjectState(sanitizeProject({ ...defaultProject(), ...(data.project ?? {}) }));
+      setCustomersState(data.customers ?? []);
+      setGrainState((data.grain ?? {}) as GrainOverrides);
+      setRotationState((data.rotation ?? {}) as RotationOverrides);
+      setLibraryState([...builtinLibrary(), ...((data.library ?? []) as LibraryItem[]).filter((l) => !l.builtin)]);
       setSelectedId(data.cabinets?.[0]?.id ?? null);
       lastFileRef.current = f.name;
       dirtyRef.current = false;
