@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, FileImage, Layers2, RotateCcw, RotateCw, Ruler } from "lucide-react";
 import type { Cabinet, PanelItem, Settings } from "../types";
-import { columnHasDrawers, columnLayout, drawerBank, hasKick, railShelfYs, stackOn, stackedHeights } from "../lib/model";
+import { columnHasDrawers, columnLayout, coverPanelDims, drawerBank, hasKick, railShelfYs, stackOn, stackedHeights } from "../lib/model";
 import { Btn, Empty } from "../components/ui";
 import { downloadRaw, frontElevationDxf, frontElevationHtml, openPrintWindow } from "../lib/export";
 import { layoutCabs, panelPositions, type CabPos } from "../lib/layout2d";
@@ -998,23 +998,29 @@ export function buildSideSvg(cabs: Cabinet[], S: Settings, panels: PanelItem[] =
 
     // cover panels
     (cab.covers ?? []).forEach((cv) => {
-      const cvThk = Number.isFinite(cv.thk) && cv.thk > 0 ? cv.thk : cv.mat === "mdf" ? S.mdfThk : S.bodyThk;
+      const dims = coverPanelDims(cab, S, cv);
+      const cvThk = dims.thk;
       const fill = cv.mat === "mdf" ? (cv.finish === "oak" ? "#6b4a2c" : "#3a4f6a") : "#5a4a36";
       const stroke = cv.mat === "mdf" ? (cv.finish === "oak" ? "#a97b48" : "#6b8bb0") : "#8a7a5a";
       if (cv.side === "L") {
         // the side we are looking at — the cover IS the silhouette
         out += `<rect x="${f(x)}" y="${f(top)}" width="${f(dw)}" height="${f(Hc * sc)}" fill="${fill}" opacity="0.28"/>`;
-        out += `<rect x="${f(x - cvThk * sc)}" y="${f(floor - Math.min(cv.h, Hc) * sc)}" width="${f(Math.max(0.8, cvThk * sc))}" height="${f(Math.min(cv.h, Hc) * sc)}" fill="${fill}" stroke="${stroke}"/>`;
+        out += `<rect x="${f(x - cvThk * sc)}" y="${f(floor - Math.min(dims.h, Hc) * sc)}" width="${f(Math.max(0.8, cvThk * sc))}" height="${f(Math.min(dims.h, Hc) * sc)}" fill="${fill}" stroke="${stroke}"/>`;
       } else if (cv.side === "R") {
         out += `<rect x="${f(x)}" y="${f(top)}" width="${f(dw)}" height="${f(Hc * sc)}" fill="none" stroke="${stroke}" stroke-width="1" stroke-dasharray="6 4"/>`;
       } else if (cv.side === "T") {
-        out += `<rect x="${f(x)}" y="${f(top - cvThk * sc)}" width="${f(dw)}" height="${f(cvThk * sc)}" fill="${fill}" stroke="${stroke}"/>`;
-        out += `<text x="${f(x + dw / 2)}" y="${f(top - cvThk * sc - 5)}" fill="${stroke}" font-size="7.5" text-anchor="middle">COVER TOP ${Math.round(cv.w)}×${Math.round(cv.h)}</text>`;
+        // real panel depth (h = dims.h), front-anchored like the 3D mesh
+        const tw = Math.max(0.8, dims.h * sc);
+        const tx = x + dw - tw;
+        out += `<rect x="${f(tx)}" y="${f(top - cvThk * sc)}" width="${f(tw)}" height="${f(cvThk * sc)}" fill="${fill}" stroke="${stroke}"/>`;
+        out += `<text x="${f(tx + tw / 2)}" y="${f(top - cvThk * sc - 5)}" fill="${stroke}" font-size="7.5" text-anchor="middle">COVER TOP ${Math.round(dims.w)}×${Math.round(dims.h)}</text>`;
       } else {
         const by = floor + kick * sc;
-        out += `<rect x="${f(x)}" y="${f(by)}" width="${f(dw)}" height="${f(cvThk * sc)}" fill="${fill}" stroke="${stroke}"/>`;
-        out += `<text x="${f(x + dw / 2)}" y="${f(by + cvThk * sc + 11)}" fill="${stroke}" font-size="7.5" text-anchor="middle">COVER BOTTOM ${Math.round(cv.w)}×${Math.round(cv.h)}</text>`;
-        out += `<line x1="${f(x)}" y1="${f(by + cvThk * sc)}" x2="${f(x + dw)}" y2="${f(by + cvThk * sc)}" stroke="#3d5878" stroke-width="1" stroke-dasharray="4 3"/>`;
+        const bw = Math.max(0.8, dims.h * sc);
+        const bx = x + dw - bw;
+        out += `<rect x="${f(bx)}" y="${f(by)}" width="${f(bw)}" height="${f(cvThk * sc)}" fill="${fill}" stroke="${stroke}"/>`;
+        out += `<text x="${f(bx + bw / 2)}" y="${f(by + cvThk * sc + 11)}" fill="${stroke}" font-size="7.5" text-anchor="middle">COVER BOTTOM ${Math.round(dims.w)}×${Math.round(dims.h)}</text>`;
+        out += `<line x1="${f(bx)}" y1="${f(by + cvThk * sc)}" x2="${f(bx + bw)}" y2="${f(by + cvThk * sc)}" stroke="#3d5878" stroke-width="1" stroke-dasharray="4 3"/>`;
       }
     });
 

@@ -1,4 +1,4 @@
-import type { Banding, Cabinet, CabinetType, ColumnSpec, DoorSpec, MdfFinish, PanelItem, Part, RowSpec, Settings } from "../types";
+import type { Banding, Cabinet, CabinetType, ColumnSpec, CoverPanel, DoorSpec, MdfFinish, PanelItem, Part, RowSpec, Settings } from "../types";
 import {
   DOOR_GAP_BETWEEN_DOUBLE,
   DRAWER_HEIGHT_INCREMENT,
@@ -157,6 +157,67 @@ export function columnLayoutIn(innerW: number, cols: ColumnSpec[], S: Settings):
 
 export function columnLayout(cab: Cabinet, row: RowSpec, S: Settings): ColLayout[] {
   return columnLayoutIn(cab.width - 2 * S.bodyThk, row.columns ?? [], S);
+}
+
+/** resolved cover thickness — 0 = auto (plywood → bodyThk · MDF → mdfThk) */
+export function coverThk(cv: CoverPanel, S: Settings): number {
+  const mat = cv.mat ?? "mdf";
+  return Number.isFinite(cv.thk) && cv.thk > 0 ? cv.thk : mat === "mdf" ? S.mdfThk : S.bodyThk;
+}
+
+/** legacy covers may omit w/h — sensible defaults (L/R: depth×height, T/B: width×depth) */
+const coverW0 = (cab: Cabinet, cv: CoverPanel): number =>
+  Number.isFinite(cv.w) && cv.w > 0 ? cv.w : cv.side === "T" || cv.side === "B" ? cab.width : cab.depth;
+const coverH0 = (cab: Cabinet, cv: CoverPanel): number =>
+  Number.isFinite(cv.h) && cv.h > 0 ? cv.h : cv.side === "T" || cv.side === "B" ? cab.depth : cab.height;
+
+/** thickness of the existing LEFT cover on a cabinet (0 when absent) */
+export const coverLeftThk = (cab: Cabinet, S: Settings, covers: CoverPanel[] = cab.covers ?? []): number => {
+  const l = covers.find((c) => c.side === "L");
+  return l ? coverThk(l, S) : 0;
+};
+/** thickness of the existing RIGHT cover on a cabinet (0 when absent) */
+export const coverRightThk = (cab: Cabinet, S: Settings, covers: CoverPanel[] = cab.covers ?? []): number => {
+  const r = covers.find((c) => c.side === "R");
+  return r ? coverThk(r, S) : 0;
+};
+
+/** span a Top/Bottom cover must cover: cabinet + left + right cover thicknesses */
+export const coverSpanWidth = (cab: Cabinet, S: Settings, covers: CoverPanel[] = cab.covers ?? []): number =>
+  Math.round((cab.width + coverLeftThk(cab, S, covers) + coverRightThk(cab, S, covers)) * 10) / 10;
+
+/**
+ * X centre (cabinet-local, cabinet spans 0..width) where a Top/Bottom cover is
+ * mounted. It is the centre of the ASSEMBLY — cabinet + left/right covers (the
+ * left cover occupies −tL..0, the right cover width..width+tR), so the cover
+ * covers everything and increasing its width grows it equally on BOTH sides.
+ * With no L/R covers (or equal thicknesses) this is exactly the cabinet centre.
+ */
+export const coverCenterX = (cab: Cabinet, S: Settings, covers: CoverPanel[] = cab.covers ?? []): number =>
+  Math.round(((cab.width + coverRightThk(cab, S, covers) - coverLeftThk(cab, S, covers)) / 2) * 10) / 10;
+
+/**
+ * Effective REAL size of a cover panel (single source of truth shared by the
+ * cut list, 3D, the 2D front view and the side view so everything agrees):
+ *  · T/B covers always SPAN the cabinet width plus any left/right cover
+ *    thicknesses (minimum width — the typed width only adds overhang). The
+ *    panel is centered on the assembly (see coverCenterX), so raising the
+ *    width grows it evenly on BOTH sides, and a top/bottom added after
+ *    left/right covers still covers everything.
+ *  · L/R covers keep their typed size.
+ */
+export function coverPanelDims(
+  cab: Cabinet,
+  S: Settings,
+  cv: CoverPanel,
+  covers: CoverPanel[] = cab.covers ?? [],
+): { w: number; h: number; thk: number } {
+  const thk = coverThk(cv, S);
+  const w0 = coverW0(cab, cv);
+  const w = cv.side === "T" || cv.side === "B"
+    ? Math.max(Math.max(5, w0), coverSpanWidth(cab, S, covers))
+    : Math.max(5, w0);
+  return { w: Math.round(w * 10) / 10, h: Math.max(5, Math.round(coverH0(cab, cv) * 10) / 10), thk };
 }
 
 /** width of the front covering a column (overlays the carcass edges at the ends) */
@@ -338,17 +399,27 @@ export function generateCabinetParts(cab: Cabinet, S: Settings): Part[] {
   else buildBody(cab, S, mk, T);
 
   // ---- cover panels (L / R / T / B): full height × full depth by default ----
+  // T/B covers SPAN the cabinet + any left/right cover thicknesses (auto
+  // minimum width, centered — see coverPanelDims) and carry noRotate so they
+  // keep the span as their length in the cut list / nesting, exactly like the
+  // top/bottom/shelf span panels do. L/R covers keep the auto-rotation
+  // (upright grain along the height).
   (cab.covers ?? []).forEach((cv) => {
     const mat = cv.mat ?? "mdf";
-    const thk = cv.thk || (mat === "mdf" ? S.mdfThk : T);
-    const w = Math.max(5, Math.round(cv.w * 10) / 10);
-    const h = Math.max(5, Math.round(cv.h * 10) / 10);
+    const dims = coverPanelDims(cab, S, cv);
+    const thk = dims.thk;
+    const w = dims.w;
+    const h = dims.h;
     const label = cv.side === "L" ? "Left" : cv.side === "R" ? "Right" : cv.side === "T" ? "Top" : "Bottom";
+    const tB = cv.side === "T" || cv.side === "B";
     // material: plywood covers can choose ANY plywood from the library (matId);
     // mdf covers pick a finish — white (no banding) or oak (banded + grain).
     const finish = mat === "mdf" ? (cv.finish ?? S.mdfFinish) : "white";
     const matId = mat === "plywood" ? (cv.matId ?? plyMaterialOf(S, cab).id) : undefined;
     const matName = mat === "mdf" ? (finish === "oak" ? `MDF oak ${thk}mm` : `MDF white ${thk}mm`) : `plywood ${thk}mm`;
+    const spanNote = tB
+      ? ` · spans cabinet ${Math.round(cab.width)} + L/R covers → ${Math.round(w)} (centered)`
+      : "";
     mk({
       name: `Cover panel ${label}`,
       w,
@@ -358,7 +429,8 @@ export function generateCabinetParts(cab: Cabinet, S: Settings): Part[] {
       matId,
       band: mat === "plywood" ? { top: true, bottom: true, left: true, right: true } : mdfBand(S, finish),
       grain: mat === "plywood" || finish === "oak",
-      note: `cover ${label.toLowerCase()} · ${matName} · ${mat === "plywood" || finish === "oak" ? "banding: LWLW" : "white MDF · no banding"}`,
+      noRotate: tB,
+      note: `cover ${label.toLowerCase()} · ${matName}${spanNote} · ${mat === "plywood" || finish === "oak" ? "banding: LWLW" : "white MDF · no banding"}`,
     });
   });
 
@@ -1103,7 +1175,7 @@ function genStandardDrawer(
         note: `inlaid ${S.hiddenFrontInset}mm inside · section width − ${S.hiddenFrontDeduct} · ${mdfBanded(S) ? "MDF oak · banding: LWLW" : "MDF white · no banding"}`,
       });
     } else {
-      // normal drawers use the same inlay rule when a front is requested
+      // visible front sits ON the overlay plane (flush with doors)
       mk({
         name: `${label} front${tag} #${i + 1}`,
         w: faceW - 2 * S.doorGap,
@@ -1112,7 +1184,7 @@ function genStandardDrawer(
         thickness: S.mdfThk,
         band: mdfBand(S),
         grain: false,
-        note: `inlaid ${S.hiddenFrontInset}mm inside · ${slideMm}mm slide · ${mdfBanded(S) ? "MDF oak · banding: LWLW" : "MDF white · no banding"}`,
+        note: `overlay front · ${slideMm}mm slide · ${mdfBanded(S) ? "MDF oak · banding: LWLW" : "MDF white · no banding"}`,
       });
     }
   }
@@ -1180,7 +1252,7 @@ function genKitchenDrawer(
       thickness: S.mdfThk,
       band: mdfBand(S),
       grain: false,
-      note: `inlaid ${S.hiddenFrontInset}mm inside · kitchen · ${mdfBanded(S) ? "MDF oak · banding: LWLW" : "MDF white · no banding"}`,
+      note: `${dr.hidden ? `inlaid ${S.hiddenFrontInset}mm inside` : "overlay front"} · kitchen · ${mdfBanded(S) ? "MDF oak · banding: LWLW" : "MDF white · no banding"}`,
     });
   mk({
     name: `${label} bottom${tag} #${i + 1}`,

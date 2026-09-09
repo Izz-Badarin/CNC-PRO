@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import type { Cabinet, ColumnSpec, CoverPanel, DrawerSpec, DoorSpec, RowSpec, Settings } from "../types";
 import { AVAILABLE_DRAWER_DEPTHS, duplicateCabinet, HINGE_BRANDS, mkColumn, mkDoor, mkDrawer, nextCopyName, plyMaterialById, plyMaterialsOf, recommendedShelves, shelfGap, TYPE_META, uid, type LibraryItem } from "../lib/defaults";
-import { boxHeight, carcassDepth, columnFaceWidth, columnHasDrawers, columnLayout, doorDims, drawerBank, effectiveHingeCount, generateCabinetParts, isCorner, isNotched, kickH, railShelfYs, stackOn, stackedHeights, validateCabinet } from "../lib/model";
+import { boxHeight, carcassDepth, columnFaceWidth, columnHasDrawers, columnLayout, coverPanelDims, coverSpanWidth, doorDims, drawerBank, effectiveHingeCount, generateCabinetParts, isCorner, isNotched, kickH, railShelfYs, stackOn, stackedHeights, validateCabinet } from "../lib/model";
 /* English-only labels */
 const L: Record<string, string> = {
   noCabinets: "No cabinets yet",
@@ -537,7 +537,9 @@ export function EditTab({
                       {
                         id: uid(),
                         side,
-                        w: side === "T" || side === "B" ? cab.width : cab.depth,
+                        // T/B: span the cabinet + any L/R covers (auto minimum,
+                        // centered); L/R: full depth × full height.
+                        w: side === "T" || side === "B" ? coverSpanWidth(cab, settings, cs) : cab.depth,
                         h: side === "T" || side === "B" ? cab.depth : cab.height,
                         thk: 0, // 0 = auto (ply 16.5 / MDF 19)
                         mat: "mdf",
@@ -610,7 +612,11 @@ export function EditTab({
                         : "white MDF · no banding"}
                   </Chip>
                   <Chip tone="amber">
-                    {Math.round(cv.w * 10) / 10} × {Math.round(cv.h * 10) / 10} × {cv.thk > 0 ? `${cv.thk}mm` : `auto (${cv.mat === "plywood" ? settings.bodyThk : settings.mdfThk}mm)`}
+                    {(() => {
+                      const dims = coverPanelDims(cab, settings, cv);
+                      const tB = cv.side === "T" || cv.side === "B";
+                      return `${Math.round(dims.w * 10) / 10} × ${Math.round(dims.h * 10) / 10} × ${cv.thk > 0 ? `${cv.thk}mm` : `auto (${cv.mat === "plywood" ? settings.bodyThk : settings.mdfThk}mm)`}${tB && dims.w > cv.w ? ` · spans cabinet + L/R (min ${Math.round(coverSpanWidth(cab, settings))})` : ""}`;
+                    })()}
                   </Chip>
                   <Btn
                     size="sm"

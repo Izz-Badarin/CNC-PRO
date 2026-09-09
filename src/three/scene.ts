@@ -7,6 +7,8 @@ import {
   columnFaceWidth,
   columnLayout,
   columnLayoutIn,
+  coverCenterX,
+  coverPanelDims,
   doorDims,
   drawerBank,
   hasKick,
@@ -323,8 +325,12 @@ export function buildCabinetGroup(cab: Cabinet, S: Settings): BuiltCabinet {
 
 /**
  * Render one cover panel in 3D. L/R panels stand vertically on the side face
- * (full height × full depth); T/B panels lie horizontally on the top/bottom face
- * (full width × full depth). Every dimension comes from the editable CoverPanel.
+ * (full height × full depth); T/B panels lie horizontally on the top/bottom face.
+ * Dimensions come from coverPanelDims (single source of truth with the cut list
+ * and 2D): T/B covers ALWAYS span the cabinet + any L/R cover thicknesses and
+ * are centered on the assembly (coverCenterX), so raising the width grows them
+ * evenly on BOTH sides and a top/bottom added after left/right covers still
+ * covers everything. L/R panels keep their typed size.
  */
 function buildCover3D(cab: Cabinet, S: Settings, cv: CoverPanel, grp: THREE.Group, kick: number) {
   // material: plywood covers can pick ANY library material (matId); MDF covers
@@ -333,7 +339,7 @@ function buildCover3D(cab: Cabinet, S: Settings, cv: CoverPanel, grp: THREE.Grou
   // thk 0 = auto (plywood → bodyThk, MDF → mdfThk) — the SAME rule as the cut
   // list, nesting and the 2D front view. Without this a 0 became a zero-thick
   // mesh and the panel vanished in 3D / 360°.
-  const thk = Number.isFinite(cv.thk) && cv.thk > 0 ? cv.thk : mat === "mdf" ? S.mdfThk : S.bodyThk;
+  const dims = coverPanelDims(cab, S, cv);
   const finish = cv.finish ?? "white";
   const ply = mat === "plywood" ? plyMaterialById(S, cv.matId ?? cab.matId) : OAK_MDF_PLY;
   // grain always follows the cabinet W or H — never D:
@@ -342,26 +348,27 @@ function buildCover3D(cab: Cabinet, S: Settings, cv: CoverPanel, grp: THREE.Grou
   const vert = cv.side === "L" || cv.side === "R";
   const mat3 =
     mat === "plywood"
-      ? woodMat(vert ? cv.h : cv.w, vert ? cv.w : cv.h, ply, vert, !vert)
+      ? woodMat(vert ? dims.h : dims.w, vert ? dims.w : dims.h, ply, vert, !vert)
       : finish === "oak"
-        ? woodMat(vert ? cv.h : cv.w, vert ? cv.w : cv.h, ply, vert, !vert)
+        ? woodMat(vert ? dims.h : dims.w, vert ? dims.w : dims.h, ply, vert, !vert)
         : new THREE.MeshStandardMaterial({ color: S.colorMdf, roughness: 0.55, metalness: 0.02 });
   let mesh: THREE.Mesh;
   if (cv.side === "L") {
     // vertical panel on the left face: thk(x) × h(y) × w(z, =depth)
-    mesh = box(thk, cv.h, cv.w, mat3, "carcass");
-    mesh.position.set(-thk / 2, cv.h / 2, -cv.w / 2);
+    mesh = box(dims.thk, dims.h, dims.w, mat3, "carcass");
+    mesh.position.set(-dims.thk / 2, dims.h / 2, -dims.w / 2);
   } else if (cv.side === "R") {
-    mesh = box(thk, cv.h, cv.w, mat3, "carcass");
-    mesh.position.set(cab.width + thk / 2, cv.h / 2, -cv.w / 2);
+    mesh = box(dims.thk, dims.h, dims.w, mat3, "carcass");
+    mesh.position.set(cab.width + dims.thk / 2, dims.h / 2, -dims.w / 2);
   } else if (cv.side === "T") {
-    // horizontal panel on top: w(x) × thk(y) × depth(z)
-    mesh = box(cv.w, thk, cv.h, mat3, "carcass");
-    mesh.position.set(cv.w / 2, cab.height + thk / 2, -cv.h / 2);
+    // horizontal panel on top: w(x) × thk(y) × depth(z), centered on the
+    // assembly (cabinet + L/R covers) so it grows evenly on both sides
+    mesh = box(dims.w, dims.thk, dims.h, mat3, "carcass");
+    mesh.position.set(coverCenterX(cab, S), cab.height + dims.thk / 2, -dims.h / 2);
   } else {
     // bottom panel: w(x) × thk(y) × depth(z), below the kick
-    mesh = box(cv.w, thk, cv.h, mat3, "carcass");
-    mesh.position.set(cv.w / 2, -kick - thk / 2, -cv.h / 2);
+    mesh = box(dims.w, dims.thk, dims.h, mat3, "carcass");
+    mesh.position.set(coverCenterX(cab, S), -kick - dims.thk / 2, -dims.h / 2);
   }
   mesh.castShadow = true;
   mesh.receiveShadow = true;
@@ -450,7 +457,12 @@ function buildWing3D(
   top.position.y = BH - T / 2;
   wg.add(top);
   if (cab.hasBack !== false) {
-    const back = box(w - 2, BH - 2, S.backThk, mats.back, "back", false);
+    // the back follows the cabinet's plywood material (colour + opacity + grain
+    // along its LONG SIDE) — same pipeline as the carcass, matching the cut-list
+    // part (Back · matId = cabinet plywood, grain locked, long side along the
+    // sheet length). tall backs run the grain vertically, wide backs keep it
+    // along the span. Geometry/position/layer unchanged.
+    const back = box(w - 2, BH - 2, S.backThk, woodMat(w, BH, ply, BH > w, BH <= w), "back", false);
     back.position.set(w / 2, BH / 2, -S.backThk / 2);
     wg.add(back);
   }
@@ -689,12 +701,14 @@ function buildColumn3D(
       dg.position.set(faceCx, fcy, frontZ);
       const w = faceW;
       const fw = faceW - 2 * gap;
-      // MDF fronts are opt-in for every drawer, and always inlaid inside the carcass
+      // MDF fronts are opt-in for every drawer. A VISIBLE front sits ON the
+      // overlay front plane (like a door, flush with the cabinet face); a
+      // HIDDEN front is inlaid inside the carcass so a door can close over it.
       if (dr.frontMdf && cab.hasFronts !== false) {
         const inset = S.hiddenFrontInset || 30;
         const fwMdf = dr.hidden ? Math.max(60, w - S.hiddenFrontDeduct) : fw;
         const mf = box(fwMdf, fh, S.mdfThk, mats.mdf, "drawer");
-        mf.position.z = -inset;
+        mf.position.z = dr.hidden ? -inset : 0;
         dg.add(mf);
       }
       if (cab.isKitchen) {

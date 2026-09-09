@@ -1,16 +1,33 @@
 import { modelBounds } from "../src/three/bounds";
 import { layout3DCabs } from "../src/lib/layout3d";
-import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, doorHingeCount, makeCabinet } from "../src/lib/defaults";
+import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, doorHingeCount, makeCabinet, plyMaterialById } from "../src/lib/defaults";
 import { buildDxf, buildDxfForSheet } from "../src/lib/dxf";
 import { buildSideSvg, layoutCabs, overlapBoxes, panelPositions } from "../src/tabs/View2DTab";
 import { bomReportHtml, frontElevationHtml, frontElevationDxf, frontElevationSvg, projectJson, readProjectFile } from "../src/lib/export";
 import { explodedReportHtml } from "../src/lib/explodedReport";
 import * as THREE from "three";
 import { OBJExporter } from "three/examples/jsm/exporters/OBJExporter.js";
-import { allParts, bandLengthMm, carcassDepth, doorDims, drillOps, fullDoorAutoDims, generateCabinetParts, glassDoorRefs, kickH, railShelfYs, stackOn, stackedHeights, totalBandingM, validateCabinet } from "../src/lib/model";
+import { allParts, bandLengthMm, carcassDepth, coverCenterX, coverPanelDims, doorDims, drillOps, fullDoorAutoDims, generateCabinetParts, glassDoorRefs, kickH, railShelfYs, stackOn, stackedHeights, totalBandingM, validateCabinet } from "../src/lib/model";
 import type { Part } from "../src/types";
 import { nestParts, layoutIsValid, sheetDimsFor } from "../src/lib/nesting";
 import type { Settings } from "../src/types";
+import { buildCabinetGroup } from "../src/three/scene";
+
+/* Node has no DOM — scene.ts bakes textures / label sprites on a 2D canvas.
+ * A minimal stub keeps those code paths alive in the smoke suite. */
+(globalThis as any).document = {
+  createElement: () => {
+    const ctx = {
+      font: "", fillStyle: "", strokeStyle: "", lineWidth: 1, textAlign: "", textBaseline: "",
+      createLinearGradient: () => ({ addColorStop: () => {} }),
+      fillRect: () => {}, clearRect: () => {}, fill: () => {}, beginPath: () => {},
+      moveTo: () => {}, lineTo: () => {}, stroke: () => {}, ellipse: () => {}, arc: () => {},
+      rect: () => {}, roundRect: () => {}, fillText: () => {}, strokeText: () => {},
+      measureText: (t: string) => ({ width: (t || "").length * 30 }),
+    };
+    return { width: 0, height: 0, style: {}, getContext: () => ctx };
+  },
+};
 
 /* Geometry-engine regression suite — run with `npm test`. */
 
@@ -702,7 +719,167 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   check("side view includes raw panels", withPanels.includes("Oak") && withPanels.includes("19 × 600"));
 }
 
-/* 22 — saved project round-trip must keep raw panels (Save .json → reopen) */
+/* 27 — T/B cover panels span the cabinet + L/R covers and stay centered
+   (growing the width extends BOTH sides equally — cut list + 3D agree) */
+{
+  const c = makeCabinet("base", 600, 720, 560, "Covers");
+  c.covers = [
+    { id: "cvL", side: "L", w: 540, h: 700, thk: 18, mat: "mdf" },
+    { id: "cvR", side: "R", w: 540, h: 700, thk: 18, mat: "mdf" },
+    { id: "cvT", side: "T", w: 400, h: 480, thk: 0, mat: "mdf" }, // thk 0 = auto mdf
+    { id: "cvB", side: "B", w: 400, h: 490, thk: 19, mat: "mdf" },
+  ] as any;
+  const dimsT = coverPanelDims(c, S, c.covers[2], c.covers);
+  check("T cover min width = cabinet + L/R cover thicknesses",
+    dimsT.w === 636 && dimsT.h === 480 && dimsT.thk === S.mdfThk, `${dimsT.w}×${dimsT.h}×${dimsT.thk}`);
+  check("T cover centered on the assembly (equal L/R)", coverCenterX(c, S, c.covers) === 300);
+  c.covers[2].w = 800;
+  const grown = coverPanelDims(c, S, c.covers[2], c.covers);
+  check("raising T cover width grows BOTH sides (center unchanged)",
+    grown.w === 800 && coverCenterX(c, S, c.covers) === 300, `${grown.w} @ ${coverCenterX(c, S, c.covers)}`);
+  const parts = allParts([c], S);
+  const top = parts.find((p) => p.name === "Cover panel Top")!;
+  const bot = parts.find((p) => p.name === "Cover panel Bottom")!;
+  check("cut list: T cover uses the span size + noRotate + depth as height",
+    top.w === 800 && top.h === 480 && top.thickness === S.mdfThk && top.noRotate === true && top.w > top.h, `${top.w}×${top.h} rot=${top.noRotate}`);
+  check("cut list: B cover spans too", bot.w === 636 && bot.h === 490 && bot.noRotate === true, `${bot.w}×${bot.h}`);
+  const left = parts.find((p) => p.name === "Cover panel Left")!;
+  check("cut list: L cover auto-rotates upright (keeps H×D, noRotate off)",
+    left.w === 700 && left.h === 540 && !left.noRotate, `${left.w}×${left.h} rot=${left.noRotate}`);
+  // nesting: a plywood T cover is grain-locked → the packer never rotates it,
+  // so the span stays along the sheet Length (same rule as top/bottom/shelf)
+  const cN = makeCabinet("base", 600, 720, 560, "CovNest");
+  cN.matId = "ply-grain";
+  cN.covers = [
+    { id: "cvL", side: "L", w: 540, h: 700, thk: 18, mat: "plywood" },
+    { id: "cvT", side: "T", w: 400, h: 480, thk: 0, mat: "plywood" },
+  ] as any;
+  const plyG = nestParts(allParts([cN], S), S).find((g) => g.material === "plywood" && g.matId === "ply-grain");
+  const coverPl = plyG?.sheets.flatMap((s) => s.placed).find((p) => p.part.name === "Cover panel Top");
+  check("nesting: plywood T cover keeps span (never rotated)",
+    !!coverPl && !coverPl.rotated && coverPl.w === 618 && coverPl.h === 480,
+    coverPl ? `${coverPl.w}×${coverPl.h} rot=${coverPl.rotated}` : "unplaced");
+  // legacy covers without explicit w/h still produce sensible defaults
+  const legacy = makeCabinet("base", 600, 720, 560, "CovLegacy");
+  legacy.covers = [{ id: "cvL2", side: "L", thk: 18, mat: "mdf" }, { id: "cvT2", side: "T", thk: 19, mat: "mdf" }] as any;
+  const dL = coverPanelDims(legacy, S, legacy.covers[0], legacy.covers);
+  const dT = coverPanelDims(legacy, S, legacy.covers[1], legacy.covers);
+  check("legacy partial covers default sensibly (L depth×height, T width + L cover)",
+    dL.w === 560 && dL.h === 720 && dT.w === 618 && dT.h === 560, `L ${dL.w}×${dL.h} · T ${dT.w}×${dT.h}`);
+}
+
+/* 28 — 3D: back panel follows the cabinet plywood material (colour + opacity +
+   grain along its long side); drawer MDF front sits on the front face */
+{
+  // back — wide cabinet (BH ≤ w): grain stays horizontal even for a 90° material
+  const wide = makeCabinet("base", 1000, 600, 560, "BackWide");
+  wide.matId = "ply-grain";
+  const bW = buildCabinetGroup(wide, S).group;
+  bW.updateMatrixWorld(true);
+  const backW = (() => {
+    let hit: THREE.Mesh | null = null;
+    bW.traverse((o) => { if ((o as THREE.Mesh).userData?.tag === "back") hit = o as THREE.Mesh; });
+    return hit!;
+  })();
+  const plyOak = plyMaterialById(S, "ply-grain");
+  check("3D back uses the cabinet plywood colour",
+    !!backW.material && (backW.material as THREE.MeshStandardMaterial).color.equals(new THREE.Color(plyOak.color)));
+  check("3D back is textured like non-solid plywood",
+    !!(backW.material as THREE.MeshStandardMaterial).map);
+  check("3D back (wide) keeps grain along the span (no 90° rotate)",
+    Math.abs((backW.material as THREE.MeshStandardMaterial).map!.rotation) < 1e-6);
+
+  // back — tall cabinet: grain runs vertically along the height
+  const tall = makeCabinet("wall", 350, 1000, 300, "BackTall");
+  tall.matId = "ply-grain";
+  const bT = buildCabinetGroup(tall, S).group;
+  const backT = (() => {
+    let hit: THREE.Mesh | null = null;
+    bT.traverse((o) => { if ((o as THREE.Mesh).userData?.tag === "back") hit = o as THREE.Mesh; });
+    return hit!;
+  })();
+  check("3D back (tall) runs grain vertically",
+    Math.abs((backT.material as THREE.MeshStandardMaterial).map!.rotation - Math.PI / 2) < 1e-6);
+
+  // back — custom plywood opacity flows through
+  const S3: Settings = { ...S, plyMaterials: [...(S.plyMaterials ?? []), { id: "ply-op", name: "Op", color: "#88aa66", opacity: 0.35, solid: false }] };
+  const op = makeCabinet("base", 600, 720, 560, "BackOp");
+  op.matId = "ply-op";
+  const bO = buildCabinetGroup(op, S3).group;
+  const backO = (() => {
+    let hit: THREE.Mesh | null = null;
+    bO.traverse((o) => { if ((o as THREE.Mesh).userData?.tag === "back") hit = o as THREE.Mesh; });
+    return hit!;
+  })();
+  const mO = backO.material as THREE.MeshStandardMaterial;
+  check("3D back uses the plywood opacity", mO.transparent === true && Math.abs(mO.opacity - 0.35) < 1e-6, `op=${mO.opacity} trans=${mO.transparent}`);
+
+  // drawer MDF front — visible: flush on the overlay front plane
+  const c = makeCabinet("base", 600, 720, 560, "Drw3D");
+  c.hasFronts = true;
+  c.rows[0].columns[0].drawers = [{ id: "d1", hidden: false, frontHeight: 220, slideDepthCm: 35, frontMdf: true }];
+  c.rows[0].columns[0].door = null;
+  const bg = buildCabinetGroup(c, S).group;
+  bg.updateMatrixWorld(true);
+  const findMdfFront = (root: THREE.Object3D) => {
+    let hit: THREE.Mesh | null = null;
+    root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.userData?.tag === "drawer" && m.geometry?.type === "BoxGeometry" &&
+          Math.abs((m.geometry as THREE.BoxGeometry).parameters.depth - S.mdfThk) < 1e-6) hit = m;
+    });
+    return hit!;
+  };
+  const D = carcassDepth(c, S);
+  const frontWorldZ = -c.depth + S.mdfThk + D + S.mdfThk / 2 + S.doorGap;
+  const vis = findMdfFront(bg);
+  const visZ = vis.getWorldPosition(new THREE.Vector3()).z;
+  check("3D visible drawer MDF front sits ON the front face",
+    Math.abs(visZ - frontWorldZ) < 1e-6, `z=${visZ} expected=${frontWorldZ}`);
+  check("3D visible drawer MDF front uses the MDF colour",
+    (vis.material as THREE.MeshStandardMaterial).color.equals(new THREE.Color(S.colorMdf)));
+
+  // drawer MDF front — hidden: inlaid INSIDE the carcass so a door closes over it
+  const ch = makeCabinet("base", 600, 720, 560, "DrwHide");
+  ch.hasFronts = true;
+  ch.rows[0].columns[0].drawers = [{ id: "d1", hidden: true, frontHeight: 220, slideDepthCm: 35, frontMdf: true }];
+  ch.rows[0].columns[0].door = null;
+  const bh = buildCabinetGroup(ch, S).group;
+  bh.updateMatrixWorld(true);
+  const hid = findMdfFront(bh);
+  const hidZ = hid.getWorldPosition(new THREE.Vector3()).z;
+  check("3D hidden drawer MDF front is recessed by hiddenFrontInset",
+    Math.abs(hidZ - (frontWorldZ - (S.hiddenFrontInset || 30))) < 1e-6, `z=${hidZ}`);
+}
+
+/* 29 — 3D T cover: same span/centre rules as the cut list (grows both sides) */
+{
+  const c = makeCabinet("base", 600, 720, 560, "Cov3D");
+  c.covers = [
+    { id: "cvL", side: "L", w: 540, h: 700, thk: 18, mat: "mdf" },
+    { id: "cvR", side: "R", w: 540, h: 700, thk: 18, mat: "mdf" },
+    { id: "cvT", side: "T", w: 400, h: 480, thk: 0, mat: "mdf" },
+  ] as any;
+  const b = buildCabinetGroup(c, S).group;
+  b.updateMatrixWorld(true);
+  let tmesh: THREE.Mesh | null = null;
+  b.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (m.geometry?.type === "BoxGeometry") {
+      const p = (m.geometry as THREE.BoxGeometry).parameters;
+      if (Math.abs(p.width - 636) < 1e-6 && p.height === S.mdfThk && Math.abs(p.depth - 480) < 1e-6) tmesh = m;
+    }
+  });
+  const pos = tmesh!.getWorldPosition(new THREE.Vector3());
+  check("3D T cover spans cabinet + L/R covers (636 × 19 × 480)", !!tmesh);
+  check("3D T cover centered on the assembly", Math.abs(pos.x - coverCenterX(c, S)) < 1e-6, `x=${pos.x}`);
+  const half = 636 / 2;
+  check("3D T cover covers BOTH left (−18) and right (618) cover faces",
+    Math.abs(pos.x - half - (-18)) < 1e-6 && Math.abs(pos.x + half - 618) < 1e-6, `edges ${pos.x - half}..${pos.x + half}`);
+  check("3D T cover sits on top of the cabinet", Math.abs(pos.y - (c.height + S.mdfThk / 2)) < 1e-6, `y=${pos.y}`);
+}
+
+
 const roundTripPanels = (async () => {
   const cabs = [makeCabinet("base", 600, 720, 560, "Saved-01")];
   const project = {
