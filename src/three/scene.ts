@@ -1360,7 +1360,15 @@ export class CabinetViewer {
     if (!Number.isFinite(d.x) || d.lengthSq() < 1e-8) d.set(1.05, 0.62, 1.35);
     d.normalize();
 
-    const dist = this.fitDistance(size, d) * this.framing;
+    // Classic distance: the familiar `radius x 2.6` rule (x 2.9 for top view).
+    // `needed` is the no-clip minimum for THIS window shape — it only wins when
+    // the viewport is so narrow that the classic distance would chop the ends
+    // off. The Zoom slider scales whatever wins.
+    const r = Math.max(size.x, size.y, size.z, 0.6) / 2;
+    const isTop = Math.abs(d.y) > 0.98;
+    const classic = r * (isTop ? 2.9 : 2.6);
+    const needed = this.fitDistance(size, d);
+    const dist = Math.max(classic, needed) * this.framing;
     const target = this.center.clone();
     const pos = target.clone().addScaledVector(d, dist);
 
