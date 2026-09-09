@@ -1,8 +1,9 @@
-import { Plus, RotateCcw, Save, Settings2, Palette, Trash2, MoveVertical, Sparkles } from "lucide-react";
-import { useState } from "react";
+import { Plus, RotateCcw, Save, Settings2, Palette, Trash2, MoveVertical, Sparkles, HardDrive, ShieldCheck, WifiOff, Download, Trash } from "lucide-react";
+import { useState, useEffect } from "react";
 import type { PlywoodMaterial, Settings } from "../types";
-import { DEFAULT_SETTINGS, AVAILABLE_DRAWER_DEPTHS, SETTINGS_META, normalizeSlidePatterns, plyMaterialsOf, uid } from "../lib/defaults";
+import { DEFAULT_SETTINGS, AVAILABLE_DRAWER_DEPTHS, SETTINGS_META, normalizeSlidePatterns, plyMaterialsOf, uid, SETTINGS_VERSION } from "../lib/defaults";
 import { Btn, Field, Num } from "../components/ui";
+import { storageInfo, listBackups, loadRaw } from "../lib/storage";
 
 const MATERIALS: { color: keyof Settings; opacity: keyof Settings; label: string }[] = [
   { color: "colorPlywood", opacity: "opacityPlywood", label: "Plywood / carcass" },
@@ -410,6 +411,102 @@ export function SettingsTab({ settings, setSettings }: { settings: Settings; set
           <li>• New cabinets: <span className="text-amber-300">600 × 720 × 560</span>, toe kick OFF, MDF fronts OFF</li>
           <li>• Cut list: every piece is <span className="text-amber-300">rotated once (L↔W)</span>, then grain lock applies</li>
         </ul>
+      </div>
+
+      <OfflineStoragePanel />
+    </div>
+  );
+}
+
+function OfflineStoragePanel() {
+  const [info, setInfo] = useState(() => storageInfo());
+  const [backs, setBacks] = useState(() => listBackups(SETTINGS_VERSION));
+  const [log, setLog] = useState(() => {
+    try {
+      return localStorage.getItem("cnc-error-log") || "";
+    } catch {
+      return "";
+    }
+  });
+  useEffect(() => {
+    const id = setInterval(() => {
+      setInfo(storageInfo());
+      setBacks(listBackups(SETTINGS_VERSION));
+      try {
+        setLog(localStorage.getItem("cnc-error-log") || "");
+      } catch {}
+    }, 3000);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <div className="card p-5 border-amber-400/20">
+      <h2 className="card-h"><HardDrive size={17} className="text-amber-400" /> Offline & Plane Mode — Storage Diagnostics</h2>
+      <p className="hint mt-1">100% offline — no CDN, no fonts, no cloud. Works file://, PWA, plane mode. Auto-migration, quota handling, IndexedDB fallback, backup rotation.</p>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <div className="rounded-xl border border-white/[0.07] bg-ink-900/60 p-3">
+          <div className="text-[11px] uppercase tracking-wide text-ink-400">LocalStorage used</div>
+          <div className="mt-1 font-mono text-[18px] font-bold text-amber-300">{Math.round(info.used / 1024)} KB</div>
+          <div className="text-[11px] text-ink-400">{info.percent}% of ~5MB • {info.count} keys</div>
+          <div className="mt-2 h-1.5 rounded-full bg-ink-700 overflow-hidden"><div className={`h-full ${info.percent > 85 ? "bg-red-400" : info.percent > 70 ? "bg-amber-400" : "bg-emerald-400"}`} style={{ width: `${Math.min(100, info.percent)}%` }} /></div>
+        </div>
+        <div className="rounded-xl border border-white/[0.07] bg-ink-900/60 p-3">
+          <div className="text-[11px] uppercase tracking-wide text-ink-400">Offline mode</div>
+          <div className="mt-1 flex items-center gap-2">
+            {typeof navigator !== "undefined" && !navigator.onLine ? <WifiOff size={16} className="text-amber-300" /> : <ShieldCheck size={16} className="text-emerald-400" />}
+            <span className="font-mono text-[13px] text-ink-100">{location.protocol === "file:" ? "FILE:// SINGLE-FILE" : typeof navigator !== "undefined" && navigator.onLine ? "ONLINE (but offline-ready)" : "OFFLINE / PLANE MODE"}</span>
+          </div>
+          <div className="text-[11px] text-ink-400 mt-1">SW: {"serviceWorker" in navigator ? (location.protocol === "file:" ? "N/A file:// (single-file works)" : "supported — v2 cache-first") : "not supported"}</div>
+        </div>
+        <div className="rounded-xl border border-white/[0.07] bg-ink-900/60 p-3">
+          <div className="text-[11px] uppercase tracking-wide text-ink-400">Backups (last 5 kept)</div>
+          <div className="mt-1 font-mono text-[13px] text-ink-100">{backs.length} backups</div>
+          <div className="text-[11px] text-ink-400">Auto every 60s • rotation • IndexedDB fallback</div>
+          <div className="mt-2 flex gap-1.5 flex-wrap">
+            {backs.slice(0, 3).map((b) => (
+              <span key={b.key} className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-mono text-ink-400">{b.date.slice(0, 19)} {Math.round(b.size / 1024)}KB</span>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 flex gap-2 flex-wrap">
+        <Btn size="sm" onClick={() => { setInfo(storageInfo()); setBacks(listBackups(SETTINGS_VERSION)); }}><HardDrive size={12} /> Refresh</Btn>
+        <Btn size="sm" variant="danger" onClick={() => {
+          if (!confirm("Clear ALL backups? Current project stays.")) return;
+          backs.forEach((b) => { try { localStorage.removeItem(b.key); } catch {} });
+          setBacks(listBackups(SETTINGS_VERSION));
+        }}><Trash size={12} /> Clear backups</Btn>
+        <Btn size="sm" onClick={() => {
+          try {
+            const data = loadRaw(`cnc-cabinet-designer-pro-v${SETTINGS_VERSION}`);
+            if (!data) { alert("No saved project found"); return; }
+            const blob = new Blob([data], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `cnc-backup-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+          } catch {}
+        }}><Download size={12} /> Export raw storage</Btn>
+        <Btn size="sm" onClick={() => {
+          try {
+            localStorage.removeItem("cnc-error-log");
+            setLog("");
+          } catch {}
+        }}>Clear error log</Btn>
+      </div>
+
+      {log && (
+        <div className="mt-4 rounded-lg border border-red-400/20 bg-red-400/[0.04] p-3">
+          <div className="text-[11px] uppercase tracking-wide text-red-300 mb-1">Error log (last 20KB, plane-mode debug)</div>
+          <pre className="max-h-[120px] overflow-auto text-[10px] font-mono text-red-200/80 whitespace-pre-wrap">{log.slice(-3000)}</pre>
+        </div>
+      )}
+
+      <div className="mt-4 rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 text-[11px] text-ink-400 leading-relaxed">
+        <b className="text-ink-200">Plane mode checklist:</b> No external URLs in build (verified) • Worker inline blob works file:// • Textures procedural canvas • Downloads via Blob+fallback • Hash share links offline • 3D PNG screenshot in localStorage for BOM report • Drag-drop .json works offline • PWA manifest v2 with shortcuts • SW v2 cache-first + navigation fallback • Beforeunload dirty guard • Backup rotation + IndexedDB fallback when quota full.
       </div>
     </div>
   );

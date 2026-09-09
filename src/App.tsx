@@ -14,6 +14,8 @@ import {
   Save,
   Settings2,
   Zap,
+  HardDrive,
+  AlertTriangle,
 } from "lucide-react";
 import type { Cabinet, ColumnSpec, Customer, PanelItem, ProjectInfo, Settings } from "./types";
 import {
@@ -26,13 +28,14 @@ import {
   migrateCabinet,
   migrateSettings,
   nextCopyName,
-  uid,
   type LibraryItem,
 } from "./lib/defaults";
 import { allParts, drillOps, type GrainOverrides } from "./lib/model";
 import { download, readProjectFile } from "./lib/export";
 import { buildShareUrl, clearShareParam, decodeProject, shareParamFromUrl } from "./lib/share";
+import { findLatestPersistedKey, loadRaw, saveRaw, rotateBackups, idbSet, storageInfo, safeParse, listBackups } from "./lib/storage";
 import { Btn } from "./components/ui";
+import { OfflineBadge } from "./components/OfflineBadge";
 import { ProjectTab } from "./tabs/ProjectTab";
 import { EditTab } from "./tabs/EditTab";
 import { View3DTab } from "./tabs/View3DTab";
@@ -40,13 +43,10 @@ import { View2DTab } from "./tabs/View2DTab";
 import { CutListTab } from "./tabs/CutListTab";
 import { NestingTab } from "./tabs/NestingTab";
 import { DrillTab } from "./tabs/DrillTab";
-
 import { DxfTab } from "./tabs/DxfTab";
 import { SettingsTab } from "./tabs/SettingsTab";
 import { BomTab } from "./tabs/BomTab";
 import { PlanTab } from "./tabs/PlanTab";
-
-
 
 type TabId = "project" | "edit" | "view3d" | "view2d" | "plan" | "cut" | "nest" | "drill" | "dxf" | "bom" | "settings";
 
@@ -59,7 +59,6 @@ const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: "cut", label: "Cut List", icon: <LayoutList size={15} /> },
   { id: "nest", label: "Nesting", icon: <Package size={15} /> },
   { id: "drill", label: "Drilling", icon: <Crosshair size={15} /> },
-
   { id: "dxf", label: "DXF Export", icon: <FolderDown size={15} /> },
   { id: "bom", label: "BOM / Hardware", icon: <Package size={15} /> },
   { id: "settings", label: "Settings", icon: <Settings2 size={15} /> },
@@ -95,18 +94,25 @@ function demoCabinets(): Cabinet[] {
 
 function loadPersisted(): PersistState {
   try {
-    const raw = localStorage.getItem(LS_KEY);
+    const latestKey = findLatestPersistedKey(SETTINGS_VERSION) || LS_KEY;
+    const raw = loadRaw(latestKey) || loadRaw(LS_KEY);
     if (raw) {
-      const data = JSON.parse(raw);
-      const saved: LibraryItem[] = Array.isArray(data.library) ? data.library.filter((l: LibraryItem) => !l.builtin) : [];
-      return {
-        settings: migrateSettings(data.settings),
-        cabinets: (Array.isArray(data.cabinets) ? data.cabinets : []).map(migrateCabinet),
-        project: { ...defaultProject(), ...(data.project ?? {}) },
-        customers: Array.isArray(data.customers) ? data.customers : [],
-        library: [...builtinLibrary(), ...saved],
-        grain: data.grain && typeof data.grain === "object" ? data.grain : {},
-      };
+      const data = safeParse<any>(raw);
+      if (data) {
+        const saved: LibraryItem[] = Array.isArray(data.library) ? data.library.filter((l: LibraryItem) => !l.builtin) : [];
+        // if we loaded from older version, migrate and resave later
+        if (latestKey !== LS_KEY) {
+          console.log(`[CNC-PRO] Migrating storage ${latestKey} -> ${LS_KEY}`);
+        }
+        return {
+          settings: migrateSettings(data.settings),
+          cabinets: (Array.isArray(data.cabinets) ? data.cabinets : []).map(migrateCabinet),
+          project: { ...defaultProject(), ...(data.project ?? {}) },
+          customers: Array.isArray(data.customers) ? data.customers : [],
+          library: [...builtinLibrary(), ...saved],
+          grain: data.grain && typeof data.grain === "object" ? data.grain : {},
+        };
+      }
     }
   } catch {
     /* fresh start */
@@ -122,7 +128,6 @@ export default function App() {
   const [customers, setCustomersState] = useState<Customer[]>(persisted.customers);
   const [library, setLibraryState] = useState<LibraryItem[]>(persisted.library);
   const [grain, setGrainState] = useState<GrainOverrides>(persisted.grain);
-  /** raw panels — SINGLE SOURCE OF TRUTH is `project.panels` (persisted with the project) */
   const panels = project.panels ?? [];
   const setPanels = useCallback((fn: (p: PanelItem[]) => PanelItem[]) => {
     setProjectState((p) => ({ ...p, panels: fn(p.panels ?? []) }));
@@ -131,13 +136,25 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(persisted.cabinets[0]?.id ?? null);
   const [saveFlash, setSaveFlash] = useState(false);
   const [shareFlash, setShareFlash] = useState(false);
+  const [quotaWarn, setQuotaWarn] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState<any>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  // last filename used by Save/Save As — quick Save reuses it, Save As renames
   const lastFileRef = useRef<string | null>(null);
-  // clipboard for copy/paste columns between cabinets
   const [clipboard, setClipboard] = useState<{ kind: "column"; col: ColumnSpec } | null>(null);
+  const dirtyRef = useRef(false);
 
-  // import a shared project from the URL hash (#p=...) if present
+  // PWA install prompt
+  useEffect(() => {
+    const handler = (e: any) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
+
+  // import shared project from URL hash
   useEffect(() => {
     const p = shareParamFromUrl();
     if (!p) return;
@@ -153,27 +170,74 @@ export default function App() {
       clearShareParam();
       alert("Shared project loaded from the link.");
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // robust autosave with quota handling, backup rotation, idb fallback
   useEffect(() => {
+    dirtyRef.current = true;
     const t = setTimeout(() => {
       try {
-        localStorage.setItem(
-          LS_KEY,
-          JSON.stringify({ settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain }),
-        );
-      } catch {
-        /* ignore */
+        const payload = JSON.stringify({ settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain });
+        const res = saveRaw(LS_KEY, payload);
+        if (!res.ok) {
+          if (res.quota) {
+            setQuotaWarn(`Storage full (${storageInfo().percent}%). Export your project as .json to free space. Old backups will be trimmed.`);
+            // try to free oldest backups
+            const backs = listBackups(SETTINGS_VERSION);
+            if (backs.length > 2) {
+              try {
+                const oldest = backs[backs.length - 1];
+                localStorage.removeItem(oldest.key);
+                // retry
+                const retry = saveRaw(LS_KEY, payload);
+                if (retry.ok) setQuotaWarn(null);
+              } catch {}
+            }
+            // IndexedDB fallback
+            void idbSet(LS_KEY, payload);
+          } else {
+            setQuotaWarn(`Save failed: ${res.error}`);
+            void idbSet(LS_KEY, payload);
+          }
+        } else {
+          setQuotaWarn(null);
+          // rotate backups every 10 saves or 60s
+          try {
+            const last = localStorage.getItem("cnc-last-backup-ts");
+            const now = Date.now();
+            if (!last || now - parseInt(last, 10) > 60000) {
+              rotateBackups(SETTINGS_VERSION, payload);
+              localStorage.setItem("cnc-last-backup-ts", String(now));
+            }
+          } catch {}
+          dirtyRef.current = false;
+        }
+      } catch (e: any) {
+        setQuotaWarn(`Autosave error: ${String(e?.message || e).slice(0, 200)}`);
+        try {
+          void idbSet(LS_KEY, JSON.stringify({ settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain }));
+        } catch {}
       }
-    }, 300);
+    }, 400);
     return () => clearTimeout(t);
   }, [settings, cabinets, project, customers, library, grain]);
+
+  // beforeunload warning if dirty and no file saved
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (dirtyRef.current) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, []);
 
   const setCabinets = useCallback((fn: (c: Cabinet[]) => Cabinet[]) => setCabinetsState(fn), []);
   const updateCabinet = useCallback(
     (id: string, fn: (c: Cabinet) => Cabinet) => setCabinetsState((prev) => prev.map((c) => (c.id === id ? fn(c) : c))),
-    [],
+    []
   );
   const setCustomers = useCallback((fn: (c: Customer[]) => Customer[]) => setCustomersState(fn), []);
 
@@ -185,13 +249,10 @@ export default function App() {
 
   const saveProject = (asNew = false) => {
     let name = (lastFileRef.current ?? project.name ?? "cabinet-project").replace(/[^\w\- ]+/g, "").trim() || "cabinet-project";
-    // rule K — quick Save is instant once the project has a real name (or a
-    // file was already saved this session); an "Untitled Project" asks for a
-    // name first. Save As ALWAYS asks.
     const untitled = !project.name || project.name.trim() === "Untitled Project";
     if (asNew || (untitled && !lastFileRef.current)) {
       const input = window.prompt(asNew ? "Save project as…" : "Name this project…", project.name && !untitled ? project.name : "cabinet-project");
-      if (input === null) return; // cancelled
+      if (input === null) return;
       const trimmed = input.trim();
       if (trimmed) {
         name = trimmed.replace(/[^\w\- ]+/g, "").trim() || name;
@@ -199,8 +260,9 @@ export default function App() {
       }
     }
     const fname = `${name}.json`;
-    download(fname, JSON.stringify({ version: SETTINGS_VERSION, settings, cabinets, project: { ...project, name }, customers }, null, 2), "application/json");
+    download(fname, JSON.stringify({ version: SETTINGS_VERSION, settings, cabinets, project: { ...project, name }, customers, library: library.filter((l) => !l.builtin), grain }, null, 2), "application/json");
     lastFileRef.current = fname;
+    dirtyRef.current = false;
     setSaveFlash(true);
     setTimeout(() => setSaveFlash(false), 1400);
   };
@@ -230,12 +292,15 @@ export default function App() {
 
   const loadProject = async (f: File) => {
     try {
-      const data = (await readProjectFile(f)) as { cabinets: Cabinet[]; settings?: Settings; project?: ProjectInfo; customers?: Customer[] };
+      const data = (await readProjectFile(f)) as { cabinets: Cabinet[]; settings?: Settings; project?: ProjectInfo; customers?: Customer[]; grain?: GrainOverrides; library?: LibraryItem[] };
       setCabinetsState((data.cabinets ?? []).map(migrateCabinet));
       if (data.settings) setSettingsState(migrateSettings(data.settings));
       if (data.project) setProjectState({ ...defaultProject(), ...data.project });
       if (data.customers) setCustomersState(data.customers);
+      if (data.grain) setGrainState(data.grain as GrainOverrides);
+      if (data.library) setLibraryState([...builtinLibrary(), ...(data.library as LibraryItem[]).filter((l) => !l.builtin)]);
       setSelectedId(data.cabinets?.[0]?.id ?? null);
+      dirtyRef.current = false;
     } catch (e) {
       alert("Could not load project file: " + (e as Error).message);
     }
@@ -249,8 +314,31 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-full flex flex-col">
-      {/* ================= header ================= */}
+    <div
+      className="min-h-full flex flex-col"
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        const f = e.dataTransfer.files?.[0];
+        if (f && f.name.endsWith(".json")) loadProject(f);
+      }}
+    >
+      {/* drag overlay */}
+      {dragOver && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-ink-950/80 backdrop-blur-sm pointer-events-none">
+          <div className="rounded-2xl border-2 border-dashed border-amber-400 bg-amber-400/10 px-10 py-12 text-center">
+            <FolderOpen size={32} className="mx-auto text-amber-400 mb-3" />
+            <p className="font-display font-bold text-amber-100">Drop project .json to load</p>
+            <p className="text-[11px] text-ink-400 mt-1">Works fully offline — plane mode safe</p>
+          </div>
+        </div>
+      )}
+
       <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-ink-950/85 backdrop-blur-md">
         <div className="mx-auto max-w-[1680px] px-4 lg:px-6">
           <div className="flex items-center gap-4 py-3">
@@ -262,15 +350,18 @@ export default function App() {
               <div>
                 <h1 className="font-display text-[17px] font-bold tracking-tight leading-none">
                   CNC Cabinet Designer <span className="text-amber-400">Pro</span>
-                  <span className="ml-1.5 rounded-md bg-amber-400/15 px-1.5 py-0.5 text-[10px] font-mono text-amber-300 align-middle">v11</span>
+                  <span className="ml-1.5 rounded-md bg-amber-400/15 px-1.5 py-0.5 text-[10px] font-mono text-amber-300 align-middle">v11 • OFFLINE</span>
                 </h1>
                 <p className="text-[10.5px] text-ink-400 mt-1 tracking-wide">
-                  16.5MM POLYBOARD · AUTO-SHELF 300–350 · MULTI-STRATEGY NESTING · QUOTES
+                  16.5MM POLYBOARD · AUTO-SHELF 300–350 · MULTI-STRATEGY NESTING · 100% OFFLINE
                 </p>
               </div>
             </div>
 
             <div className="ml-auto flex items-center gap-2.5">
+              <div className="hidden xl:flex mr-2">
+                <OfflineBadge />
+              </div>
               <div className="hidden lg:flex items-center gap-2 mr-2">
                 <input
                   className="inp !w-[170px] !py-1.5 text-[12px]"
@@ -281,7 +372,6 @@ export default function App() {
                 <span className={`rounded-md px-2 py-1 text-[10.5px] font-semibold ${STATUS_TONE[project.status] ?? STATUS_TONE.draft}`}>
                   {project.status}
                 </span>
-
               </div>
               <div className="hidden md:flex items-center gap-4 mr-3 font-mono text-[11px] text-ink-400">
                 <span><b className="text-ink-100">{stats.units}</b> units</span>
@@ -297,9 +387,25 @@ export default function App() {
               <Btn size="sm" onClick={() => fileRef.current?.click()}>
                 <FolderOpen size={14} /> Load
               </Btn>
-              <Btn size="sm" onClick={() => void shareLink()} title="Copy a link that opens this exact project">
+              <Btn size="sm" onClick={() => void shareLink()} title="Copy a link that opens this exact project — works offline (hash)">
                 <Link2 size={14} /> {shareFlash ? "Copied!" : "Share link"}
               </Btn>
+              {installPrompt && (
+                <Btn
+                  size="sm"
+                  variant="warn"
+                  onClick={async () => {
+                    try {
+                      installPrompt.prompt();
+                      const choice = await installPrompt.userChoice;
+                      if (choice.outcome === "accepted") setInstallPrompt(null);
+                    } catch {}
+                  }}
+                  title="Install as offline PWA — works in plane mode"
+                >
+                  <HardDrive size={14} /> Install
+                </Btn>
+              )}
               <input
                 ref={fileRef}
                 type="file"
@@ -314,6 +420,15 @@ export default function App() {
             </div>
           </div>
 
+          {quotaWarn && (
+            <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-200">
+              <AlertTriangle size={14} /> {quotaWarn}
+              <Btn size="sm" variant="warn" onClick={() => saveProject(true)} className="ml-auto">
+                Export now
+              </Btn>
+            </div>
+          )}
+
           <nav className="flex gap-1 overflow-x-auto pb-2 -mb-px" style={{ scrollbarWidth: "none" }}>
             {TABS.map((tb) => (
               <button key={tb.id} className={`tab-btn ${tab === tb.id ? "active" : ""}`} onClick={() => setTab(tb.id)}>
@@ -325,7 +440,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* ================= main ================= */}
       <main className="mx-auto w-full max-w-[1680px] flex-1 px-4 lg:px-6 py-5">
         {tab === "project" && (
           <ProjectTab
@@ -371,23 +485,23 @@ export default function App() {
         {tab === "cut" && <CutListTab cabinets={cabinets} settings={settings} grain={grain} setGrain={setGrainState} panels={panels} />}
         {tab === "nest" && <NestingTab cabinets={cabinets} settings={settings} grain={grain} setSettings={setSettingsState} panels={panels} />}
         {tab === "drill" && <DrillTab cabinets={cabinets} settings={settings} />}
-
         {tab === "dxf" && <DxfTab cabinets={cabinets} settings={settings} grain={grain} panels={panels} />}
-        {tab === "bom" && <BomTab cabinets={cabinets} settings={settings} panels={panels} grain={grain} />}
+        {tab === "bom" && <BomTab cabinets={cabinets} settings={settings} panels={panels} grain={grain} project={project} customers={customers} />}
         {tab === "settings" && <SettingsTab settings={settings} setSettings={setSettingsState} />}
       </main>
 
-      {/* ================= footer ================= */}
       <footer className="border-t border-white/[0.05] py-4">
-        <div className="mx-auto max-w-[1680px] px-4 lg:px-6 flex items-center justify-between text-[11px] text-ink-500 font-mono">
+        <div className="mx-auto max-w-[1680px] px-4 lg:px-6 flex flex-col sm:flex-row items-center justify-between gap-2 text-[11px] text-ink-500 font-mono">
           <span className="inline-flex items-center gap-1.5">
             <Zap size={11} className="text-amber-400" />
-            CNC Cabinet Designer Pro v11 — offline, browser-stored
+            CNC Cabinet Designer Pro v11 — offline, browser-stored • plane mode ready • PWA cached v2
           </span>
-          <span className="hidden sm:inline-flex items-center gap-1.5">
-            <FileDown size={11} /> R12 DXF · 39mm pin offset · MaxRects + shelf heuristics
-            <span className="text-ink-600" title={uid()}>·</span>
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="hidden sm:inline-flex items-center gap-1.5">
+              <FileDown size={11} /> R12 DXF · 39mm pin offset · MaxRects + shelf heuristics
+            </span>
+            <OfflineBadge />
+          </div>
         </div>
       </footer>
     </div>

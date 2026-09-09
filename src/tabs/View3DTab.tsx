@@ -33,7 +33,13 @@ export function View3DTab({
   };
   const shotPng = () => {
     const url = viewer.current?.snapshot();
-    if (url) saveAs(url, "cnc-3d-view.png");
+    if (!url) return;
+    try {
+      // O needs E1 — save last screenshot for the BOM report (localStorage)
+      localStorage.setItem("cnc-last-3d-png", url);
+      localStorage.setItem("cnc-last-3d-time", new Date().toISOString());
+    } catch {}
+    saveAs(url, "cnc-3d-view.png");
   };
   const shotGlb = async () => {
     const blob = await viewer.current?.exportGlb();

@@ -1,5 +1,21 @@
-import type { Cabinet, PanelItem, Settings } from "../types";
-import { allPartsMerged, bandLengthMm, bandStr, drillOps, type GrainOverrides } from "./model";
+import type { Cabinet, Customer, PanelItem, ProjectInfo, Settings } from "../types";
+import {
+  allPartsMerged,
+  bandLengthMm,
+  bandStr,
+  drillOps,
+  type GrainOverrides,
+  bandingByMaterial,
+  columnFaceWidth,
+  columnLayout,
+  doorDims,
+  doorHingeCount,
+  generatePanelParts as modelPanelParts,
+  kickH as modelKickH,
+  stackOn as modelStackOn,
+  stackedHeights as modelStackedHeights,
+  drillOps as modelDrillOps,
+} from "./model";
 import { nestParts } from "./nesting";
 import { layoutCabs, panelPositions } from "./layout2d";
 import { MATERIAL_LABEL } from "../types";
@@ -13,28 +29,81 @@ const matLabel = (S: Settings, p: { material: string; matId?: string }) =>
     ? plyMaterialById(S, p.matId ?? null).name
     : MATERIAL_LABEL[p.material as "plywood" | "mdf" | "back"];
 
+/** Reliable download that works offline, file://, and in PWA standalone */
+function triggerDownload(blob: Blob, filename: string) {
+  try {
+    // IE / legacy Edge
+    const nav: any = navigator as any;
+    if (nav.msSaveBlob) {
+      nav.msSaveBlob(blob, filename);
+      return true;
+    }
+  } catch {}
+  try {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.style.display = "none";
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    // file:// may block click if not in user gesture — but we are in click handler
+    a.click();
+    // fallback: if download attribute ignored (file:// Safari), open blob
+    setTimeout(() => {
+      try {
+        a.remove();
+      } catch {}
+      URL.revokeObjectURL(url);
+    }, 2500);
+    return true;
+  } catch (e) {
+    console.warn("[download] blob URL failed", e);
+    // ultimate fallback: data URL
+    try {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const a = document.createElement("a");
+        a.href = reader.result as string;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => a.remove(), 2000);
+      };
+      reader.readAsDataURL(blob);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 export function download(filename: string, content: string, mime = "text/plain") {
+  // BOM for CSV/HTML helps Excel and file:// viewers
   const blob = new Blob(["\ufeff" + content], { type: `${mime};charset=utf-8` });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  if (!triggerDownload(blob, filename)) {
+    // last resort: show content in new tab for manual save (plane mode)
+    try {
+      const w = window.open("", "_blank");
+      if (w) {
+        w.document.write(`<pre>${content.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]!))}</pre>`);
+        w.document.title = filename;
+      }
+    } catch {}
+  }
 }
 
 export function downloadRaw(filename: string, content: string, mime = "application/dxf") {
   const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  if (!triggerDownload(blob, filename)) {
+    try {
+      const w = window.open("", "_blank");
+      if (w) {
+        w.document.write(`<pre>${content.slice(0, 20000)}</pre>`);
+        w.document.title = filename;
+      }
+    } catch {}
+  }
 }
 
 const csv = (rows: (string | number)[][]) =>
@@ -112,7 +181,7 @@ export function frontElevationSvg(cabs: Cabinet[], panels: PanelItem[] = []): st
   const W = 1560, H = 880;
   const padL = 80, padR = 110, padT = 130, padB = 200;
   const sc = Math.min((W - padL - padR) / Math.max(maxX - minX, 1), (H - padT - padB) / Math.max(maxH, 1));
-  const base = H - padB; // svg y of the floor line
+  const base = H - padB;
   const ox = padL + (W - padL - padR - (maxX - minX) * sc) / 2;
   const X = (mm: number) => ox + (mm - minX) * sc;
   const Y = (mm: number) => base - mm * sc;
@@ -122,12 +191,10 @@ export function frontElevationSvg(cabs: Cabinet[], panels: PanelItem[] = []): st
   out += `<text x="${W / 2}" y="36" font-size="20" font-weight="700" text-anchor="middle" fill="#111">Front Elevation — Dimensioned</text>`;
   out += `<text x="${W / 2}" y="56" font-size="12" text-anchor="middle" fill="#555">${new Date().toLocaleString()} · all dimensions in mm</text>`;
 
-  // floor line + hatching
   const fx1 = X(minX - 80), fx2 = X(maxX + 80);
   out += `<line x1="${eF(fx1)}" y1="${eF(base)}" x2="${eF(fx2)}" y2="${eF(base)}" stroke="#111" stroke-width="3"/>`;
   for (let tx = fx1 + 8; tx < fx2 - 6; tx += 22) out += `<line x1="${eF(tx)}" y1="${eF(base)}" x2="${eF(tx - 12)}" y2="${eF(base + 12)}" stroke="#111" stroke-width="1"/>`;
 
-  // outlines + labels (panels dashed)
   items.forEach((it) => {
     const x1 = X(it.x), x2 = X(it.x + it.w), yTop = Y(it.lift + it.h);
     const dash = it.dashed ? ` stroke-dasharray="8 5"` : "";
@@ -136,12 +203,10 @@ export function frontElevationSvg(cabs: Cabinet[], panels: PanelItem[] = []): st
     out += `<text x="${eF((x1 + x2) / 2)}" y="${eF(yTop - 16)}" font-size="11" text-anchor="middle" fill="#444">${eEsc(it.sub)}</text>`;
   });
 
-  // chain dimension along the floor (every item edge) + overall
   const edges = [...new Set(items.flatMap((i) => [i.x, i.x + i.w]).map((e) => Math.round(e)))].sort((a, b) => a - b);
   out += chainDimSvg(edges, X, base + 38);
   out += chainDimSvg([minX, maxX], X, base + 92);
 
-  // per-item height dimension on the left edge
   items.forEach((it) => {
     const hx = X(it.x) - 22;
     const yA = Y(it.lift), yB = Y(it.lift + it.h);
@@ -190,11 +255,9 @@ export function frontElevationDxf(cabs: Cabinet[], panels: PanelItem[] = []): st
   out += `0\nENDTAB\n0\nENDSEC\n`;
   out += `0\nSECTION\n2\nENTITIES\n`;
 
-  // floor line + hatching
   out += line("FLOOR", minX - 80, 0, maxX + 80, 0);
   for (let tx = minX - 70; tx < maxX + 80; tx += 22) out += line("FLOOR", tx, 0, tx - 12, -12);
 
-  // outlines + labels + height dimensions
   items.forEach((it) => {
     out += line("ELEVATION", it.x, it.lift, it.x, it.lift + it.h);
     out += line("ELEVATION", it.x + it.w, it.lift, it.x + it.w, it.lift + it.h);
@@ -206,7 +269,6 @@ export function frontElevationDxf(cabs: Cabinet[], panels: PanelItem[] = []): st
     out += text("DIMENSION", it.x - 48, it.lift + it.h / 2 - 12, 24, `${Math.round(it.lift + it.h)}`);
   });
 
-  // chain dimension + overall
   const edges = [...new Set(items.flatMap((i) => [i.x, i.x + i.w]).map((e) => Math.round(e)))].sort((a, b) => a - b);
   const y1 = -60;
   edges.forEach((e) => (out += line("DIMENSION", e, -16, e, y1 - 14)));
@@ -335,6 +397,321 @@ export function openPrintWindow(html: string) {
   w.document.open();
   w.document.write(html);
   w.document.close();
+}
+
+/* ================= O — multi-page BOM HTML report (needs E1 screenshot) ================= */
+
+function escH(s: string) {
+  return s.replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c]!));
+}
+
+export interface BomReportOpts {
+  screenshotDataUrl?: string | null;
+}
+
+export function bomReportHtml(
+  cabinets: Cabinet[],
+  settings: Settings,
+  panels: PanelItem[] = [],
+  grain: GrainOverrides = {},
+  project?: ProjectInfo | null,
+  customers?: Customer[] | null,
+  opts: BomReportOpts = {},
+): string {
+  const now = new Date();
+  const nowStr = now.toLocaleString();
+  const dateStr = now.toLocaleDateString();
+  const projName = project?.name?.trim() || "Untitled Project";
+  const projType = project?.type || "-";
+  const projStatus = project?.status || "draft";
+  const projNotes = project?.notes || "";
+  const customer = customers?.find((c) => c.id === project?.customerId) ?? null;
+
+  const frontSvg = frontElevationSvg(cabinets, panels);
+  const parts = allParts(cabinets, settings, grain, panels);
+  const merged = allPartsMerged(cabinets, settings, grain, panels);
+  const nesting = nestParts(parts, settings);
+  const totalSheets = nesting.reduce((a, g) => a + g.sheets.length, 0);
+  const totalParts = merged.reduce((a, p) => a + p.qty, 0);
+  const totalArea = merged.reduce((a, p) => a + (p.w * p.h * p.qty) / 1e6, 0);
+  const totalBend = merged.reduce((a, p) => a + (bandLengthMm(p) * p.qty) / 1000, 0);
+  const totalHoles = merged.reduce((a, p) => a + p.holes.length * p.qty, 0);
+  const banding = bandingByMaterial(cabinets, settings);
+
+  let hinges = 0,
+    drawerBoxes = 0,
+    hangingRails = 0,
+    shelfPins = 0;
+  const slides: Record<number, number> = {};
+  const materials: Record<string, number> = {};
+  modelPanelParts(panels, settings).forEach((p) => {
+    const m = p.material === "plywood" ? (p.matId ?? "plywood") : p.material;
+    materials[m] = (materials[m] ?? 0) + (p.w / 1000) * (p.h / 1000) * p.qty;
+  });
+  cabinets.forEach((cab) => {
+    allParts([cab], settings).forEach((p) => {
+      const m = p.material === "plywood" ? (p.matId ?? "plywood") : p.material;
+      materials[m] = (materials[m] ?? 0) + (p.w / 1000) * (p.h / 1000) * p.qty;
+      if (p.name.includes("Shelf") && !p.name.includes("splitter")) shelfPins += Math.max(1, Math.round(settings.shelfHolesPerSide)) * 2 * p.qty;
+    });
+    modelDrillOps([cab], settings).forEach((op) => {
+      if (op.type === "hinge") hinges++;
+    });
+    const fullSpan = (modelStackOn(cab) ? modelStackedHeights(cab).reduce((a, h) => a + h, 0) : cab.height) - modelKickH(cab, settings);
+    cab.rows.forEach((row) => {
+      const lays = columnLayout(cab, row, settings);
+      row.columns.forEach((col, ci) => {
+        if (col.door && col.door.material === "glass" && col.door.type !== "sliding") {
+          const faceW = lays.length === 1 ? cab.width : columnFaceWidth(cab, lays[ci], settings);
+          const leafH = doorDims(faceW, col.door.full ? fullSpan : row.h, col.door, settings).h;
+          hinges += Math.min(6, Math.max(1, col.door.hingeCount ?? doorHingeCount(leafH)));
+        }
+        col.drawers.forEach((dr) => {
+          if (!dr.hidden) drawerBoxes++;
+          const cm = Math.round(dr.slideDepthCm);
+          slides[cm] = (slides[cm] ?? 0) + 1;
+        });
+        if (col.rail && col.rail !== "off") hangingRails += col.rail === "double" ? 2 : 1;
+      });
+    });
+    if (cab.fullDoor === "glass") {
+      const leafH = doorDims(
+        cab.width,
+        fullSpan,
+        { type: cab.width > 620 ? "double" : "single", style: "overlay", swing: "left", material: "glass", mdfThk: settings.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true, hingeCount: cab.fullDoorHinges } as any,
+        settings,
+      ).h;
+      hinges += Math.min(6, Math.max(1, cab.fullDoorHinges ?? doorHingeCount(leafH)));
+    }
+  });
+  const sheetCount: Record<string, number> = {};
+  nesting.forEach((g) => {
+    const k = `${g.material}@${g.matId ?? "def"}`;
+    sheetCount[k] = (sheetCount[k] ?? 0) + g.sheets.length;
+  });
+
+  type BomRow = { category: string; item: string; qty: number; unit: string; note?: string };
+  const bomRows: BomRow[] = [];
+  const plyMats = settings.plyMaterials ?? [];
+  if (plyMats.length > 0) {
+    plyMats.forEach((pm) => {
+      const area = materials[pm.id] ?? 0;
+      if (area > 0) bomRows.push({ category: "Materials", item: `${pm.name} (2440x1220)`, qty: sheetCount[`plywood@${pm.id}`] ?? 0, unit: "sheets", note: `${area.toFixed(2)} m2 - ${pm.solid ? "solid" : "grain"} - nesting` });
+    });
+  }
+  if (materials["plywood"] && plyMats.length === 0) {
+    const a = materials["plywood"] ?? 0;
+    if (a > 0) bomRows.push({ category: "Materials", item: "Plywood (2440x1220)", qty: Math.ceil(a / (2.44 * 1.22)), unit: "sheets", note: `${a.toFixed(2)} m2` });
+  }
+  if (materials["mdf"]) bomRows.push({ category: "Materials", item: `MDF (${settings.mdfSheet})`, qty: sheetCount["mdf@def"] ?? Math.ceil(materials["mdf"] / (settings.mdfSheet === "3050x1220" ? 3.05 * 1.22 : 2.44 * 1.22)), unit: "sheets", note: `${materials["mdf"].toFixed(2)} m2 - nesting` });
+  if (materials["back"]) bomRows.push({ category: "Materials", item: "Veneer back (2440x1220)", qty: sheetCount["back@def"] ?? Math.ceil(materials["back"] / (2.44 * 1.22)), unit: "sheets", note: `${materials["back"].toFixed(2)} m2 - nesting` });
+  banding.forEach((b) => bomRows.push({ category: "Materials", item: `Edge banding - ${b.material}`, qty: Math.round(b.meters * 10) / 10, unit: "m", note: `${b.mm.toFixed(0)} mm` }));
+  if (hinges > 0) bomRows.push({ category: "Hardware", item: "Hinges - Universal 35mm", qty: hinges, unit: "pcs", note: "35 cup bored in the door only - auto: <=1000->2 <=1500->3 <=2000->4 <=2400->5 >2400->6" });
+  Object.keys(slides)
+    .map(Number)
+    .sort((a, b) => a - b)
+    .forEach((cm) => {
+      if (slides[cm] > 0) bomRows.push({ category: "Hardware", item: `Drawer slides ${cm}0mm`, qty: slides[cm], unit: "pairs", note: "1 pair per drawer, by real drawer depth" });
+    });
+  if (drawerBoxes > 0) bomRows.push({ category: "Hardware", item: "Drawer boxes (pre-built)", qty: drawerBoxes, unit: "pcs" });
+  if (hangingRails > 0) bomRows.push({ category: "Hardware", item: "Hanging rails", qty: hangingRails, unit: "pcs" });
+  if (shelfPins > 0) bomRows.push({ category: "Hardware", item: "Shelf pins (32mm)", qty: shelfPins, unit: "pcs" });
+
+  const materialsByKey = new Map<string, typeof merged>();
+  merged.forEach((p) => {
+    const key = `${p.material}@${p.matId ?? "def"}@${p.thickness}`;
+    if (!materialsByKey.has(key)) materialsByKey.set(key, []);
+    materialsByKey.get(key)!.push(p);
+  });
+
+  const css = `
+    @page{margin:12mm;size:A4}
+    *{box-sizing:border-box}
+    body{margin:0;padding:0;background:#fff;color:#111;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:1.45}
+    .page{page-break-after:always;padding:14mm 12mm 12mm;position:relative;min-height:100vh}
+    .page:last-child{page-break-after:auto}
+    h1{font-size:22px;margin:0 0 6px;letter-spacing:-.02em}
+    h2{font-size:16px;margin:18px 0 8px;border-bottom:2px solid #111;padding-bottom:4px}
+    h3{font-size:13px;margin:14px 0 6px}
+    .muted{color:#555}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .card{border:1px solid #bbb;border-radius:6px;padding:10px 12px;background:#fafafa}
+    .badge{display:inline-block;background:#111;color:#fff;font-size:9px;font-weight:700;padding:2px 8px;border-radius:999px;letter-spacing:.06em;text-transform:uppercase}
+    table{border-collapse:collapse;width:100%;margin-top:8px}
+    th,td{border:1px solid #bbb;padding:5px 7px;text-align:left;font-size:10.5px}
+    th{background:#eee;font-weight:700}
+    td.num{text-align:right;font-family:monospace}
+    .cover{text-align:center;padding-top:28mm}
+    .cover h1{font-size:30px;margin-bottom:6px}
+    .cover .sub{font-size:13px;color:#444;margin-top:8px}
+    .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:18px}
+    .kpi .card{text-align:center}
+    .kpi .v{font-size:22px;font-weight:800}
+    .kpi .l{font-size:10px;color:#555;text-transform:uppercase;letter-spacing:.07em;margin-top:2px}
+    .shot{margin-top:10px;text-align:center}
+    .shot img{max-width:100%;max-height:420px;border:1px solid #bbb;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.12)}
+    .elevation svg{width:100%;height:auto;border:1px solid #ddd;border-radius:6px;background:#fff}
+    .small{font-size:10px;color:#666}
+    .footer{position:absolute;bottom:8mm;left:12mm;right:12mm;display:flex;justify-content:space-between;font-size:9px;color:#777;border-top:1px solid #ddd;padding-top:4px}
+    .toc a{color:#111;text-decoration:none}
+    .toc li{margin:3px 0}
+    @media print{.no-print{display:none}}
+  `;
+
+  const customerBlock = customer
+    ? `<div class="card"><b>Customer</b><br/>${escH(customer.name)}<br/><span class="small">${escH(customer.phone || "")} ${customer.email ? " - " + escH(customer.email) : ""}</span><br/><span class="small">${escH(customer.address || "")}</span></div>`
+    : `<div class="card"><b>Customer</b><br/><span class="muted">No customer linked</span></div>`;
+
+  const projectBlock = `<div class="card"><b>Project</b><br/>${escH(projName)}<br/><span class="small">Type: ${escH(projType)} - Status: ${escH(projStatus)} - ${escH(dateStr)}</span>${projNotes ? `<br/><br/><span class="small">${escH(projNotes).replace(/\n/g, "<br/>")}</span>` : ""}</div>`;
+
+  const kpis = `
+    <div class="kpi">
+      <div class="card"><div class="v">${cabinets.length}</div><div class="l">Cabinets</div><div class="small">${panels.length} panels - ${cabinets.reduce((a, c) => a + Math.max(1, c.qty), 0)} units</div></div>
+      <div class="card"><div class="v">${totalParts}</div><div class="l">Parts</div><div class="small">${totalArea.toFixed(2)} m2 - ${totalBend.toFixed(1)} m band</div></div>
+      <div class="card"><div class="v">${totalSheets}</div><div class="l">Sheets</div><div class="small">${nesting.length} groups - avg ${(nesting.reduce((a, g) => a + g.avgUtil, 0) / Math.max(1, nesting.length) * 100).toFixed(1)}% util</div></div>
+      <div class="card"><div class="v">${totalHoles}</div><div class="l">Holes</div><div class="small">${hinges} hinges - ${Object.keys(slides).length} slide sizes</div></div>
+    </div>`;
+
+  const cabRows = cabinets
+    .map((c, i) => {
+      const rows = c.rows.length;
+      const cols = c.rows.reduce((a, r) => a + r.columns.length, 0);
+      const doors = c.rows.reduce((a, r) => a + r.columns.filter((col) => col.door).length, 0);
+      const drawers = c.rows.reduce((a, r) => a + r.columns.reduce((aa, col) => aa + col.drawers.length, 0), 0);
+      return `<tr><td>${i + 1}</td><td>${escH(c.name)}${c.qty > 1 ? ` x${c.qty}` : ""}</td><td>${escH(c.type)}</td><td class="num">${c.width}x${c.height}x${c.depth}</td><td class="num">${c.qty}</td><td class="num">${rows} / ${cols}</td><td class="num">${doors}</td><td class="num">${drawers}</td><td>${c.hasToeKick ? "kick" : ""} ${c.hasFronts === false ? "no-fronts" : ""} ${c.hasBack === false ? "no-back" : ""}</td></tr>`;
+    })
+    .join("");
+
+  const panelRows = panels
+    .map((p, i) => {
+      const thk = p.thk > 0 ? p.thk : p.material === "plywood" ? settings.bodyThk : p.material === "back" ? settings.backThk : settings.mdfThk;
+      return `<tr><td>${i + 1}</td><td>${escH(p.name)}</td><td>${escH(p.material)}${p.matId ? " / " + escH(p.matId) : ""} ${p.finish ? " - " + escH(p.finish) : ""}</td><td class="num">${p.w}x${p.h}x${thk}</td><td>${p.grain ? "grain locked" : ""}</td></tr>`;
+    })
+    .join("");
+
+  const bomTable = bomRows
+    .map((r) => `<tr><td>${escH(r.category)}</td><td>${escH(r.item)}</td><td class="num">${r.qty}</td><td>${escH(r.unit)}</td><td class="small">${escH(r.note || "")}</td></tr>`)
+    .join("");
+
+  const cutByMat = [...materialsByKey.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([key, list]) => {
+      const [mat, mid, thk] = key.split("@");
+      const ply = mat === "plywood" ? plyMaterialById(settings, mid === "def" ? null : mid) : null;
+      const matName = ply ? ply.name : mat === "plywood" ? "Plywood" : mat === "mdf" ? "MDF" : "Veneer back";
+      const area = list.reduce((a, p) => a + (p.w * p.h * p.qty) / 1e6, 0);
+      const rows = list
+        .map((p, i) => `<tr><td>${i + 1}</td><td>${escH(p.cabName)}</td><td>${escH(p.name)}</td><td class="num">${p.w}x${p.h}x${p.thickness}</td><td class="num">${p.qty}</td><td>${bandStr(p.band)}</td><td class="num">${((bandLengthMm(p) * p.qty) / 1000).toFixed(2)}</td><td class="num">${p.holes.length * p.qty}</td></tr>`)
+        .join("");
+      return `<h3>${escH(matName)} - ${thk}mm - ${list.length} types - ${area.toFixed(2)} m2</h3><table><thead><tr><th>#</th><th>Cabinet</th><th>Part</th><th>Size</th><th>Qty</th><th>Banding</th><th>Bend m</th><th>Holes</th></tr></thead><tbody>${rows}</tbody></table>`;
+    })
+    .join("");
+
+  const nestingTable = nesting
+    .map((g) => {
+      const sheets = g.sheets.length;
+      const util = (g.avgUtil * 100).toFixed(1);
+      const offcuts = g.sheets.flatMap((s) => s.offcuts).length;
+      return `<tr><td>${escH(g.key)}</td><td class="num">${sheets}</td><td class="num">${g.partCount}</td><td class="num">${(g.totalArea / 1e6).toFixed(2)} m2</td><td class="num">${util}%</td><td>${escH(g.strategy || "")} - ${offcuts} offcuts</td><td class="num">${g.unplaced}</td></tr>`;
+    })
+    .join("");
+
+  const screenshotHtml = opts.screenshotDataUrl
+    ? `<div class="shot"><img src="${opts.screenshotDataUrl}" alt="3D view"/><div class="small">3D view - ${escH(nowStr)} - ${cabinets.length} cabinets + ${panels.length} panels</div></div>`
+    : `<div class="card" style="text-align:center;padding:18px"><b>3D screenshot not included</b><br/><span class="small">Go to <b>3D View</b> - click <b>PNG</b> (top bar). The app saves the last screenshot automatically (localStorage <code>cnc-last-3d-png</code>). Then return to <b>BOM / Hardware</b> - <b>Full Report</b> - the image will appear here.</span></div>`;
+
+  return `<!doctype html><html><head><meta charset="utf-8"><title>BOM Report - ${escH(projName)}</title><style>${css}</style></head><body>
+  <div class="page cover">
+    <div class="badge">CNC Cabinet Designer Pro v11 - BOM Report</div>
+    <h1>${escH(projName)}</h1>
+    <div class="sub">${escH(projType)} - ${escH(projStatus)} - ${escH(nowStr)}<br/>${cabinets.length} cabinets - ${panels.length} panels - ${totalParts} parts - ${totalSheets} sheets</div>
+    ${kpis}
+    <div class="grid2" style="margin-top:18px;text-align:left">
+      ${projectBlock}
+      ${customerBlock}
+    </div>
+    <div class="card" style="margin-top:14px;text-align:left"><b>Contents</b><ol class="toc" style="margin:6px 0 0 18px">
+      <li><a href="#p2">3D view + Front elevation (customer approval)</a></li>
+      <li><a href="#p3">Cabinets and Panels list</a></li>
+      <li><a href="#p4">BOM - Materials and Hardware</a></li>
+      <li><a href="#p5">Cut list by material (bend length)</a></li>
+      <li><a href="#p6">Nesting summary (sheets, util, strategy)</a></li>
+      <li><a href="#p7">Edge banding and Drilling notes</a></li>
+    </ol></div>
+    <div class="footer"><span>${escH(projName)} - ${escH(dateStr)}</span><span>Page 1 / 7 - BOM Report</span></div>
+  </div>
+
+  <div class="page" id="p2">
+    <h2>Customer Approval - 3D View and Front Elevation</h2>
+    <div class="grid2">
+      <div><h3>3D View (E1 screenshot)</h3>${screenshotHtml}</div>
+      <div><h3>Project summary</h3><div class="card">
+        <b>${escH(projName)}</b><br/>
+        <span class="small">Cabinets: ${cabinets.map((c) => escH(c.name)).join(", ") || "-"}</span><br/>
+        <span class="small">Panels: ${panels.map((p) => escH(p.name)).join(", ") || "-"}</span><br/><br/>
+        <span class="small">Settings: body ${settings.bodyThk}mm - MDF ${settings.mdfThk}mm - back ${settings.backThk}mm - bit ${settings.bitDiameter}mm - shelf ${settings.holeDiameter}mm<br/>
+        Hinge auto <=1000->2 <=1500->3 <=2000->4 <=2400->5 >2400->6 - cups 140mm from ends<br/>
+        Rail pilots 2x ${settings.bitDiameter}mm per rail - min gap above rail ${settings.railShelfMinGap}mm</span>
+      </div></div>
+    </div>
+    <h3 style="margin-top:14px">Front Elevation - Dimensioned (D2)</h3>
+    <div class="elevation">${frontSvg || '<div class="card">No elevation - add cabinets</div>'}</div>
+    <div class="footer"><span>${escH(projName)} - Front elevation - mm</span><span>Page 2 / 7</span></div>
+  </div>
+
+  <div class="page" id="p3">
+    <h2>Cabinets and Panels</h2>
+    <h3>Cabinets (${cabinets.length})</h3>
+    <table><thead><tr><th>#</th><th>Name</th><th>Type</th><th>WxHxD</th><th>Qty</th><th>Rows/Cols</th><th>Doors</th><th>Drawers</th><th>Flags</th></tr></thead><tbody>${cabRows || '<tr><td colspan="9" class="muted">No cabinets</td></tr>'}</tbody></table>
+    <h3 style="margin-top:12px">Raw Panels (${panels.length})</h3>
+    <table><thead><tr><th>#</th><th>Name</th><th>Material</th><th>Size</th><th>Grain</th></tr></thead><tbody>${panelRows || '<tr><td colspan="5" class="muted">No panels</td></tr>'}</tbody></table>
+    ${projNotes ? `<h3>Project notes</h3><div class="card">${escH(projNotes).replace(/\n/g, "<br/>")}</div>` : ""}
+    <div class="footer"><span>${escH(projName)} - Cabinets and Panels</span><span>Page 3 / 7</span></div>
+  </div>
+
+  <div class="page" id="p4">
+    <h2>Bill of Materials - Materials and Hardware (M + U + L)</h2>
+    <p class="small">Sheet counts from actual nesting output. Slides counted per drawer at real slide depth (pairs/drawer). Hinges from new rule incl. glass and full doors. Handles removed everywhere.</p>
+    <table><thead><tr><th>Category</th><th>Item</th><th>Qty</th><th>Unit</th><th>Note</th></tr></thead><tbody>${bomTable}</tbody></table>
+    <div class="footer"><span>${escH(projName)} - BOM</span><span>Page 4 / 7</span></div>
+  </div>
+
+  <div class="page" id="p5">
+    <h2>Cut List by Material - Bend length (I) + Grain lock (R)</h2>
+    <p class="small">Every part rotated once (L-W) then grain lock applies. Bend = total banded-edge length per row (incl. qty) - edge-banding tape to buy.</p>
+    ${cutByMat || '<div class="card">No parts</div>'}
+    <div class="footer"><span>${escH(projName)} - Cut list - ${totalParts} parts - ${totalArea.toFixed(2)} m2</span><span>Page 5 / 7</span></div>
+  </div>
+
+  <div class="page" id="p6">
+    <h2>Nesting Summary - One-material-at-a-time (N) + Strategies</h2>
+    <table><thead><tr><th>Group</th><th>Sheets</th><th>Parts</th><th>Area</th><th>Avg util</th><th>Strategy / Offcuts</th><th>Unplaced</th></tr></thead><tbody>${nestingTable || '<tr><td colspan="7">No nesting</td></tr>'}</tbody></table>
+    <h3>Sheet size rules</h3>
+    <div class="card small">Plywood / Veneer back: 2440x1220 locked. MDF: ${escH(settings.mdfSheet)} (auto = tall >2420 on 3050x1220 else 2440x1220). Margin ${settings.sheetMargin}mm - clearance ${settings.partClearance}mm - min offcut ${settings.minOffcut}mm - max sheets ${settings.maxSheets} - grainLock ${settings.grainLock ? "ON" : "OFF"} - nestFrom ${escH(settings.nestFrom)} - direction ${escH(settings.nestDirection)}</div>
+    <div class="footer"><span>${escH(projName)} - Nesting - ${totalSheets} sheets</span><span>Page 6 / 7</span></div>
+  </div>
+
+  <div class="page" id="p7">
+    <h2>Edge Banding and Drilling Notes</h2>
+    <h3>Edge banding per material</h3>
+    <table><thead><tr><th>Material</th><th>Meters</th><th>Width mm</th><th>Note</th></tr></thead><tbody>${banding.map((b) => `<tr><td>${escH(b.material)}</td><td class="num">${b.meters.toFixed(2)}</td><td class="num">${b.mm.toFixed(0)}</td><td class="small">${b.meters.toFixed(2)} m - ${b.mm}mm tape</td></tr>`).join("") || '<tr><td colspan="4">No banding</td></tr>'}</tbody></table>
+    <h3>Drilling</h3>
+    <div class="card small">
+      Shelf pins ${settings.holeDiameter}mm (${settings.shelfHolesPerSide}/side at ${settings.shelfHoleCenter}mm) - rail pilots ${settings.bitDiameter}mm (2 per rail)<br/>
+      Drawer slides ${settings.slideHoleDiameter}mm patterns - grooves ${settings.grooveWidth}mm x (slider - ${settings.grooveShorter}mm) at ${settings.grooveFromBottom}mm<br/>
+      Hinge cups ${settings.hingeCupDiameter}mm x ${settings.hingeCupDepth}mm deep at ${settings.hingeCupEdge}mm from edge - auto <=1000->2 <=1500->3 <=2000->4 <=2400->5 >2400->6 - cups 140mm from top/bottom<br/>
+      Glass doors: REFERENCE only (dashed, NOT DRILLED) - drill glass at those positions - 35 cups excluded from DXF
+    </div>
+    <h3>DXF layers</h3>
+    <div class="card small">CUT - CLAMP_HOLES - SHELF_HOLES - SLIDE_HOLES - DRAWER_GROOVE - SHEET - LABEL - plus GLASS DOOR REF label (not drilled). Units mm, R12 compatible.</div>
+    <h3>Customer approval</h3>
+    <div class="grid2">
+      <div class="card" style="height:70px">Signature / Date<br/><br/><br/></div>
+      <div class="card" style="height:70px">Approved / Notes<br/><br/><br/></div>
+    </div>
+    <div class="footer"><span>${escH(projName)} - ${escH(nowStr)} - CNC-PRO v11</span><span>Page 7 / 7 - End</span></div>
+  </div>
+  </body></html>`;
 }
 
 export function projectJson(cabs: Cabinet[], S: Settings): string {

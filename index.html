@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="CNC Cabinet Designer Pro v11 — cabinet design, cut lists, nesting optimization, drilling, hardware and DXF export" />
+    <meta name="description" content="CNC Cabinet Designer Pro v11 — 100% offline, plane mode ready, cabinet design, cut lists, nesting, drilling, hardware and DXF export" />
     <meta name="theme-color" content="#070b12" />
     <meta name="color-scheme" content="dark" />
-<title>CNC Cabinet Designer Pro v11</title>
+    <title>CNC Cabinet Designer Pro v11 — Offline</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <meta name="mobile-web-app-capable" content="yes" />
@@ -14,18 +14,15 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Cabinets" />
     <meta name="application-name" content="CNC Cabinet Designer Pro" />
+    <meta name="apple-touch-fullscreen" content="yes" />
     <!-- Offline build: no external fonts or assets — fully self-contained -->
     <script>
-      /* When this page is opened straight from disk (file://), the dev entry
-         script (/src/main.tsx) cannot load. Show a friendly offline launcher
-         instead of a blank page. In the production single-file build (dist/),
-         React mounts normally, so this never triggers there. */
       (function () {
         if (location.protocol !== "file:") return;
         window.addEventListener("DOMContentLoaded", function () {
           setTimeout(function () {
             var root = document.getElementById("root");
-            if (!root || root.innerHTML.trim() !== "") return; // app already mounted
+            if (!root || root.innerHTML.trim() !== "") return;
             var style = document.createElement("style");
             style.textContent =
               "body{margin:0;background:#070b12;color:#dbe2ec;font-family:'Segoe UI',Arial,sans-serif}" +
@@ -35,16 +32,18 @@
               ".btn{display:inline-block;margin:14px 0;background:#f5b33c;color:#070b12;font-weight:700;padding:13px 24px;border-radius:10px;text-decoration:none;font-size:15px}" +
               ".btn:hover{background:#ffc55e}" +
               "code{background:#111b29;padding:2px 7px;border-radius:6px;color:#f5b33c;font-size:13px}" +
-              ".alt{font-size:12px;color:#51637d}";
+              ".alt{font-size:12px;color:#51637d}.warn{margin-top:18px;padding:10px 14px;border-radius:8px;background:#f59e0b1a;border:1px solid #f59e0b33;color:#fcd34d;font-size:12px;text-align:left}";
+            document.head.appendChild(style);
             root.innerHTML =
               '<div class="wrap">' +
-              '<span class="badge">100% OFFLINE</span>' +
+              '<span class="badge">100% OFFLINE • PLANE MODE READY</span>' +
               "<h1>CNC Cabinet Designer Pro</h1>" +
               "<p>You opened the <b>source</b> file, which only runs through the dev server.<br/>" +
               "The real offline app is one double-click away:</p>" +
               '<a class="btn" href="./dist/index.html">Launch Offline App →</a>' +
               "<p class=\"alt\">If that page is missing, run <code>npm install</code> then <code>npm run build</code> once,<br/>" +
               "or simply double-click <code>start-offline.bat</code> — it builds and launches automatically.</p>" +
+              '<div class="warn"><b>Plane mode tip:</b> The built <code>dist/index.html</code> is a single 1.2MB file with everything inlined — 3D, nesting worker, textures, no CDN. Copy the whole <code>dist/</code> folder to USB, shop PC, or tablet and double-click. It works with no internet, no server, no install.</div>' +
               "</div>";
           }, 400);
         });
@@ -54,5 +53,12 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <noscript>
+      <div style="max-width:560px;margin:20vh auto;text-align:center;color:#94a3b8;font-family:Arial,sans-serif">
+        <h1 style="color:#e2e8f0">JavaScript required</h1>
+        <p>This app is 100% offline but needs JavaScript enabled. It has no external dependencies.</p>
+        <p><a href="./dist/index.html" style="color:#f5b33c">Open offline build →</a></p>
+      </div>
+    </noscript>
   </body>
 </html>
