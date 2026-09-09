@@ -71,6 +71,7 @@ export function View3DTab({
             <Btn size="sm" onClick={() => viewer.current?.setView("reset")}><RotateCcw size={13} /> Reset</Btn>
             <Btn size="sm" onClick={() => viewer.current?.setView("iso")}>Iso</Btn>
             <Btn size="sm" onClick={() => viewer.current?.setView("front")}>Front</Btn>
+            <Btn size="sm" onClick={() => viewer.current?.setView("elevation")} title="Flat straight-on elevation of the whole run">Elevation</Btn>
             <Btn size="sm" onClick={() => viewer.current?.setView("side")}>Side</Btn>
             <Btn size="sm" onClick={() => viewer.current?.setView("top")}>Top</Btn>
           </div>

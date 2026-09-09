@@ -1790,15 +1790,25 @@ export class CabinetViewer {
     this.panelGroups.forEach((g) => this.setVis(g));
   }
 
-  setView(preset: "iso" | "top" | "front" | "side" | "reset" | "fit") {
+  setView(preset: "iso" | "top" | "front" | "side" | "elevation" | "reset" | "fit") {
     const dirs: Record<string, THREE.Vector3> = {
       iso: new THREE.Vector3(1.05, 0.62, 1.35),
       top: new THREE.Vector3(0.001, 1, 0.001),
       front: new THREE.Vector3(0, 0.13, 1),
+      // straight-on, long lens — the flat CAD elevation of the whole run
+      elevation: new THREE.Vector3(0, 0, 1),
       side: new THREE.Vector3(1, 0.16, 0.001),
       reset: new THREE.Vector3(1.05, 0.62, 1.35),
       fit: new THREE.Vector3(), // keep the current direction, just re-frame
     };
+    // a long lens flattens the perspective: 14° reads as an elevation drawing,
+    // 42° is the normal 3D/iso look
+    const fovs: Record<string, number> = { iso: 42, reset: 42, top: 42, front: 34, side: 34, elevation: 14, fit: this.camera.fov };
+    const fov = fovs[preset] ?? 42;
+    if (Number.isFinite(fov) && Math.abs(this.camera.fov - fov) > 0.01) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
     const d = dirs[preset] ?? dirs.iso;
     const keepDir = preset === "fit" ? undefined : d.clone().normalize();
     // an explicit view button always wins over a previous manual orbit
