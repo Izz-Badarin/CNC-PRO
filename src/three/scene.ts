@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import type { Cabinet, ColumnSpec, CoverPanel, DoorSpec, PanelItem, PlywoodMaterial, Settings } from "../types";
 import {
   boxHeight,
@@ -260,6 +261,8 @@ interface StyleDef {
   shadows: boolean;
   hemi: number;
   dir: number;
+  /** strength of the generated environment map (reflections on metal & glass) */
+  env: number;
 }
 
 /** shared (cached) materials that must never be disposed on rebuild */
@@ -315,15 +318,15 @@ function attachEdges(mesh: THREE.Mesh, kind: "technical" | "blueprint") {
 const STYLES: Record<ViewStyle, StyleDef> = {
   realistic: {
     bg: "#0a0f18", ground: "#0c1320", grid1: "#1c2940", grid2: "#131e30", gridOpacity: 0.5,
-    edge: null, edgeOpacity: 0, flat: null, shadows: true, hemi: 1.05, dir: 2.1,
+    edge: null, edgeOpacity: 0, flat: null, shadows: true, hemi: 1.05, dir: 2.1, env: 0.55,
   },
   technical: {
     bg: "#080d15", ground: "#0a1018", grid1: "#31456a", grid2: "#1a2436", gridOpacity: 0.9,
-    edge: "#aec6e8", edgeOpacity: 0.5, flat: null, shadows: true, hemi: 1.15, dir: 1.75,
+    edge: "#aec6e8", edgeOpacity: 0.5, flat: null, shadows: true, hemi: 1.15, dir: 1.75, env: 0.22,
   },
   blueprint: {
     bg: "#04111f", ground: "#04111f", grid1: "#2a7fb0", grid2: "#14405e", gridOpacity: 0.95,
-    edge: "#8fe3ff", edgeOpacity: 0.95, flat: "#0f3a58", shadows: false, hemi: 1, dir: 0.35,
+    edge: "#8fe3ff", edgeOpacity: 0.95, flat: "#0f3a58", shadows: false, hemi: 1, dir: 0.35, env: 0,
   },
 };
 
@@ -1190,6 +1193,12 @@ export class CabinetViewer {
   private ground: THREE.Mesh;
   private grid: THREE.GridHelper | null = null;
   private gridSpan = 0;
+  /** generated IBL environment so metal handles / glass actually reflect */
+  private envRT: THREE.WebGLRenderTarget | null = null;
+  /** back wall + floor tint — makes the run read as a fitted kitchen, not a void */
+  private roomGroup = new THREE.Group();
+  private wall: THREE.Mesh;
+  private roomOn = false;
   /** world-space (metres) overlay layer: cabinet name tags + run dimensions */
   private labelWrap = new THREE.Group();
   /** dimension lines for the whole run (mm space, so the group is scaled) */
@@ -1259,6 +1268,26 @@ export class CabinetViewer {
     this.ground.rotation.x = -Math.PI / 2;
     this.ground.receiveShadow = true;
     this.scene.add(this.ground);
+
+    // soft studio environment → believable metal, glass and laminate
+    try {
+      const pmrem = new THREE.PMREMGenerator(this.renderer);
+      this.envRT = pmrem.fromScene(new RoomEnvironment(), 0.04);
+      this.scene.environment = this.envRT.texture;
+      pmrem.dispose();
+    } catch {
+      /* older GPUs / no float targets — plain lighting still looks fine */
+    }
+
+    // room shell: one back wall, sized to the run on every rebuild
+    this.wall = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshStandardMaterial({ color: "#cfc8bb", roughness: 0.96, metalness: 0, side: THREE.DoubleSide }),
+    );
+    this.wall.receiveShadow = true;
+    this.roomGroup.add(this.wall);
+    this.roomGroup.visible = false;
+    this.scene.add(this.roomGroup);
 
     this.runDimWrap.scale.setScalar(0.001);
     this.labelWrap.add(this.runDimWrap);
@@ -1361,6 +1390,7 @@ export class CabinetViewer {
     sc.updateProjectionMatrix();
 
     this.updateGrid(Math.max(size.x, size.z) * 1.5 + 3);
+    this.updateRoom(box);
 
     // never yank the camera away from a user who is busy orbiting — they get the
     // “Fit” button for that
@@ -1414,6 +1444,28 @@ export class CabinetViewer {
     this.scene.add(g);
     this.ground.scale.setScalar(size * 0.75);
     (this.ground.material as THREE.MeshStandardMaterial).color.set(st.ground);
+  }
+
+  /* ---------------- room shell ---------------- */
+
+  /** back wall sized to the run (and the floor grid hidden while it is on) */
+  private updateRoom(box: THREE.Box3) {
+    const usable = !box.isEmpty() && CabinetViewer.finite(box);
+    this.roomGroup.visible = this.roomOn && usable && this.style !== "blueprint";
+    if (this.grid) this.grid.visible = !this.roomOn;
+    (this.ground.material as THREE.MeshStandardMaterial).color.set(this.roomOn ? "#3a352d" : STYLES[this.style].ground);
+    if (!this.roomOn || !usable) return;
+    const size = box.getSize(new THREE.Vector3());
+    const w = Math.max(2.6, size.x + 1.8);
+    const h = Math.max(2.6, box.max.y + 1.3);
+    this.wall.scale.set(w, h, 1);
+    this.wall.position.set(this.center.x, h / 2, box.min.z - 0.04);
+  }
+
+  setRoom(on: boolean) {
+    if (this.roomOn === on) return;
+    this.roomOn = on;
+    this.updateRoom(new THREE.Box3().setFromObject(this.builtWrap));
   }
 
   /* ---------------- labels ---------------- */
@@ -1527,6 +1579,7 @@ export class CabinetViewer {
     this.hemi.intensity = st.hemi;
     this.dirLight.intensity = st.dir;
     this.fill.intensity = this.style === "blueprint" ? 0.25 : 0.5;
+    this.scene.environmentIntensity = st.env;
     this.renderer.shadowMap.enabled = st.shadows;
 
     if (this.grid) (this.grid.material as THREE.Material).opacity = st.gridOpacity;
@@ -1559,6 +1612,7 @@ export class CabinetViewer {
     this.style = style;
     this.updateGrid(this.gridSpan || 6);
     this.applyStyle();
+    this.updateRoom(new THREE.Box3().setFromObject(this.builtWrap));
   }
 
   setEdges(on: boolean) {
@@ -1570,6 +1624,16 @@ export class CabinetViewer {
   setCabinetTags(on: boolean) {
     this.cabinetTagsOn = on;
     this.syncLabelVisibility();
+  }
+
+  /** PNG data-URL of the current frame (toolbar “Save PNG”) */
+  snapshot(): string | null {
+    try {
+      this.renderer.render(this.scene, this.camera);
+      return this.renderer.domElement.toDataURL("image/png");
+    } catch {
+      return null;
+    }
   }
 
   private refreshVisibility() {
@@ -1740,6 +1804,10 @@ export class CabinetViewer {
       (this.grid.material as THREE.Material).dispose();
       this.grid = null;
     }
+    this.wall.geometry.dispose();
+    (this.wall.material as THREE.Material).dispose();
+    this.scene.remove(this.roomGroup);
+    this.envRT?.dispose();
     this.controls.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();

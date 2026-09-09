@@ -16,6 +16,7 @@ export function ThreeCanvas({
   viewStyle = "realistic",
   showEdges = false,
   showLabels = false,
+  showRoom = false,
   onReady,
   onCabinetClick,
   className,
@@ -34,6 +35,8 @@ export function ThreeCanvas({
   showEdges?: boolean;
   /** name + size tag floating above every cabinet */
   showLabels?: boolean;
+  /** back wall + floor — the run sits in a room instead of a void */
+  showRoom?: boolean;
   onReady?: (v: CabinetViewer) => void;
   onCabinetClick?: (cab: Cabinet | null) => void;
   className?: string;
@@ -106,6 +109,10 @@ export function ThreeCanvas({
   useEffect(() => {
     viewerRef.current?.setCabinetTags(showLabels);
   }, [showLabels]);
+
+  useEffect(() => {
+    viewerRef.current?.setRoom(showRoom);
+  }, [showRoom]);
 
   useEffect(() => {
     if (viewerRef.current) viewerRef.current.doorsOpen = doorsOpen;

@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Camera, DoorClosed, DoorOpen, Layers, Link2, Maximize2, Move3d, RotateCcw, SquareMousePointer } from "lucide-react";
+import { Camera, DoorClosed, DoorOpen, Download, Layers, Link2, Maximize2, Move3d, RotateCcw, SquareMousePointer } from "lucide-react";
 import type { Cabinet, PanelItem, Settings } from "../types";
 import { Btn, Empty, Field, Num } from "../components/ui";
 import { ThreeCanvas } from "../components/ThreeCanvas";
@@ -33,6 +33,7 @@ export function View3DTab({
   const [viewStyle, setViewStyle] = useState<ViewStyle>("technical");
   const [showEdges, setShowEdges] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
+  const [showRoom, setShowRoom] = useState(false);
 
   const anyLaid = cabinets.some((c) => c.layout);
   // true run footprint when following the 2D arrangement (stacked units count
@@ -98,6 +99,10 @@ export function View3DTab({
               <input type="checkbox" className="chk" checked={showLabels} onChange={(e) => setShowLabels(e.target.checked)} />
               Labels
             </label>
+            <label className="flex items-center gap-2 text-[12px] text-ink-200 cursor-pointer">
+              <input type="checkbox" className="chk" checked={showRoom} onChange={(e) => setShowRoom(e.target.checked)} />
+              Room
+            </label>
           </div>
         </div>
         <div className="flex gap-2 flex-wrap">
@@ -155,12 +160,27 @@ export function View3DTab({
       <div className="card p-4">
         <div className="flex items-center justify-between">
           <h3 className="card-h text-[14px]">All cabinets — 360°</h3>
-          <span className="font-mono text-[11px] text-ink-400">
-            run {totalRun}mm
-            <span className={`ml-2 ${followLayout && anyLaid ? "text-cyan-300/90" : "text-ink-500"}`}>
-              {followLayout && anyLaid ? "📍 from 2D arrange" : "auto row"}
+          <div className="flex items-center gap-2">
+            <Btn
+              size="sm"
+              onClick={() => {
+                const url = viewer.current?.snapshot();
+                if (!url) return;
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "cnc-3d-view.png";
+                a.click();
+              }}
+            >
+              <Download size={13} /> Save PNG
+            </Btn>
+            <span className="font-mono text-[11px] text-ink-400">
+              run {totalRun}mm
+              <span className={`ml-2 ${followLayout && anyLaid ? "text-cyan-300/90" : "text-ink-500"}`}>
+                {followLayout && anyLaid ? "📍 from 2D arrange" : "auto row"}
+              </span>
             </span>
-          </span>
+          </div>
         </div>
         <div className="mt-3 h-[calc(100vh-260px)] min-h-[480px] rounded-xl overflow-hidden border border-white/[0.07] bg-[#0a0f18]">
           <ThreeCanvas
@@ -175,6 +195,7 @@ export function View3DTab({
             viewStyle={viewStyle}
             showEdges={showEdges}
             showLabels={showLabels}
+            showRoom={showRoom}
             onReady={(v) => (viewer.current = v)}
           />
         </div>
