@@ -11,6 +11,8 @@ export interface SharePayload {
   customers: unknown;
   library: unknown;
   grain: unknown;
+  /** cut-list manual 90° rotations (optional — old links predate it) */
+  rotation?: unknown;
 }
 
 /**

@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { FileDown, FolderDown, Layers, PackageOpen } from "lucide-react";
 import type { Cabinet, PanelItem, PartMaterial, Settings } from "../types";
 import { buildDxf, dxfFileDefs, plyGroupMatch } from "../lib/dxf";
-import { allParts, type GrainOverrides } from "../lib/model";
+import { allParts, type GrainOverrides, type RotationOverrides } from "../lib/model";
 import { nestParts } from "../lib/nesting";
 import { downloadRaw } from "../lib/export";
 import { Btn, Empty, Stat } from "../components/ui";
@@ -19,14 +19,21 @@ export function DxfTab({
   settings,
   grain = {},
   panels = [],
+  rotation = {},
 }: {
   cabinets: Cabinet[];
   settings: Settings;
   grain?: GrainOverrides;
   panels?: PanelItem[];
+  rotation?: RotationOverrides;
 }) {
   const defs = useMemo(() => dxfFileDefs(settings), [settings]);
-  const groups = useMemo(() => nestParts(allParts(cabinets, settings, grain, panels), settings), [cabinets, settings, grain, panels]);
+  // cut-list manual 90° rotations are part of the input — the DXF nests the
+  // rotated pieces exactly as the cut list shows them
+  const groups = useMemo(
+    () => nestParts(allParts(cabinets, settings, grain, panels, rotation), settings),
+    [cabinets, settings, grain, panels, rotation],
+  );
   const [preview, setPreview] = useState<string>("");
 
   if (cabinets.length === 0 && panels.length === 0) {
@@ -62,7 +69,7 @@ export function DxfTab({
           skipped.push(d.title); // a 0-sheet DXF is just a header — it opens EMPTY
           return;
         }
-        downloadRaw(`${d.filename}${labels ? "" : "_nolabel"}.dxf`, buildDxf(cabinets, settings, d.material, labels, grain, d.matId, panels));
+        downloadRaw(`${d.filename}${labels ? "" : "_nolabel"}.dxf`, buildDxf(cabinets, settings, d.material, labels, grain, d.matId, panels, rotation));
         made++;
       });
       setPreview(
@@ -77,7 +84,7 @@ export function DxfTab({
       return;
     }
     const name = `${def.filename}${labels ? "" : "_nolabel"}.dxf`;
-    downloadRaw(name, buildDxf(cabinets, settings, mat, labels, grain, def.matId, panels));
+    downloadRaw(name, buildDxf(cabinets, settings, mat, labels, grain, def.matId, panels, rotation));
     setPreview(
       `Exported ${name} — ${st.sheets} sheet(s), ${st.parts} parts, avg util ${(st.util * 100).toFixed(1)}%${labels ? "" : " (no labels)"}.`,
     );

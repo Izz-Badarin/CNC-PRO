@@ -116,6 +116,8 @@ export function migrateSettings(raw: Partial<Settings> | undefined | null): Sett
   }
   base.plyMaterials = lib;
   base.defaultPlyId = lib.some((m) => m.id === base.defaultPlyId) ? base.defaultPlyId : lib[0].id;
+  // BOM waste % — old saves predate the field
+  base.bomWastePct = wastePctOf(base);
   return base;
 }
 
@@ -195,7 +197,36 @@ export const DEFAULT_SETTINGS: Settings = {
   drawerBoxBackDeduct: 49,
   drawerBoxHiddenExtra: 50,
   drawerBoxDepthFix: 7,
+
+  // BOM waste / loss allowance — every net BOM qty gets an "order" qty on top
+  bomWastePct: 10,
 };
+
+/**
+ * Waste % used for BOM "order" quantities — clamped 0..100, defaults to 10%
+ * when the saved settings predate the field or carry garbage.
+ */
+export function wastePctOf(S: Partial<Settings> | undefined | null): number {
+  const v = Number((S as { bomWastePct?: unknown } | null | undefined)?.bomWastePct);
+  return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 10;
+}
+
+/**
+ * "Order" quantity = net × (1 + waste%) rounded up for safe purchasing:
+ *  · sheets / pcs / pairs → whole units (ceil)
+ *  · meters (edge banding) → ceil to 0.1m
+ *  · anything else (m²…) → ceil to 0.01
+ */
+export function applyWaste(net: number, unit: string, pct: number): number {
+  const gross = Math.max(0, net) * (1 + Math.max(0, pct) / 100);
+  const u = (unit || "").toLowerCase();
+  if (u.startsWith("sheet") || u === "pcs" || u === "pairs" || u === "pair") {
+    const n = Math.ceil(gross - 1e-9);
+    return net > 0 ? Math.max(1, n) : 0;
+  }
+  if (u === "m" || u === "meter" || u === "meters") return Math.ceil(gross * 10 - 1e-9) / 10;
+  return Math.ceil(gross * 100 - 1e-9) / 100;
+}
 
 
 
@@ -676,6 +707,7 @@ export const SETTINGS_META: { key: keyof Settings; label: string; unit: string; 
   { key: "timeBudget", label: "Optimizer time budget", unit: "s/group", group: "Nesting" },
   { key: "sheetFullThreshold", label: "Sheet full threshold (0–1)", unit: "ratio", group: "Nesting" },
   { key: "minOffcut", label: "Min offcut dimension", unit: "mm", group: "Nesting" },
+  { key: "bomWastePct", label: "BOM waste / loss allowance (net → order qty)", unit: "%", group: "BOM" },
 ];
 
 export const SETTINGS_VERSION = 14;

@@ -15,6 +15,7 @@ import {
   isCorner,
   isNotched,
   kickH,
+  railShelfYs,
   sidePanelOutline,
   stackOn,
   stackedHeights,
@@ -90,6 +91,7 @@ const DEFAULT_SETTINGS_FALLBACK: Settings = {
   slideHolePatterns: { "25": [39, 71, 167, 231], "30": [39, 71, 167, 231], "35": [39, 71, 167, 231], "40": [39, 71, 167, 263], "45": [39, 71, 167, 263], "50": [39, 71, 263, 341], kitchen: [38, 61, 261.5, 294.5] },
   drawerHoleYStart: 60, drawerHoleYStep: 55,
   drawerBoxFrontDeduct: 33, drawerBoxBackDeduct: 49, drawerBoxHiddenExtra: 50, drawerBoxDepthFix: 7,
+  bomWastePct: 10,
 };
 /** per-material opacity 0..1 — below 1 the panels become see-through */
 const clampOp = (v: number | undefined) => Math.min(1, Math.max(0.05, v ?? 1));
@@ -632,15 +634,12 @@ function buildColumn3D(
       else if (rail === "dresses") drawRail(rh);
       else if (rail === "double") { drawRail(rh); drawRail(S.railDouble2); }
 
-      // shelf(es) above the rail — #1 sits railShelfGap above the rail center,
-      // any extra shelves divide the remaining space above #1 evenly
-      // (same math as buildColumn in model.ts)
+      // shelf(es) above the rail — the SAME railShelfYs() the part generator
+      // uses (60mm-first rule: #1 sits railShelfGap above the rail, extras
+      // fill the rest only when the space is big enough), so 3D always shows
+      // exactly what the cut list cuts
       if (col.railShelf) {
-        const count = Math.max(1, Math.round(col.railShelfCount ?? 1));
-        const firstY = rh + (S.railShelfGap || 60);
-        const above = Math.max(0, rowH - firstY);
-        for (let k = 0; k < count; k++) {
-          const shelfY = firstY + (count > 1 ? (above * k) / count : 0);
+        for (const shelfY of railShelfYs(col, S, rowH)) {
           if (shelfY >= rowH - 10) continue;
           const sd = d - S.shelfFrontSetback - 6;
           const sh = box(clearW - 6, T, sd, woodMat(clearW, d, ply, false, true), "shelf");
@@ -1337,12 +1336,13 @@ export class CabinetViewer {
     this.panelGroups.forEach((g) => this.applyVis(g));
   }
 
-  setView(preset: "iso" | "top" | "front" | "side" | "reset") {
+  setView(preset: "iso" | "top" | "front" | "side" | "left" | "reset") {
     const dirs: Record<string, THREE.Vector3> = {
       iso: new THREE.Vector3(1.15, 0.8, 1.45),
       top: new THREE.Vector3(0.02, 1, 0.02),
       front: new THREE.Vector3(0, 0.16, 1.6),
       side: new THREE.Vector3(1.6, 0.24, 0.02),
+      left: new THREE.Vector3(-1.6, 0.24, 0.02),
       reset: new THREE.Vector3(1.15, 0.8, 1.45),
     };
     const d = dirs[preset].normalize();
@@ -1350,6 +1350,21 @@ export class CabinetViewer {
     this.controls.target.copy(this.center);
     this.camera.position.copy(this.center.clone().addScaledVector(d, dist));
     this.controls.update();
+  }
+
+  /**
+   * Headless screenshot: re-renders the scene synchronously and captures the
+   * canvas in the SAME task (works without preserveDrawingBuffer). Used by the
+   * automatic ISO / front / left cabinet photos — no user screenshots needed.
+   * Returns "" when WebGL is unavailable.
+   */
+  snapshot(mime = "image/jpeg", quality = 0.85): string {
+    try {
+      this.renderer.render(this.scene, this.camera);
+      return this.renderer.domElement.toDataURL(mime, quality);
+    } catch {
+      return "";
+    }
   }
 
   dispose() {

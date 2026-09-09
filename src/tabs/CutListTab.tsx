@@ -1,8 +1,8 @@
 import { useMemo } from "react";
-import { Download, FileSpreadsheet, FileText, LayoutList, Printer, Tags, Lock } from "lucide-react";
+import { Download, FileSpreadsheet, FileText, LayoutList, Printer, Tags, Lock, RotateCw } from "lucide-react";
 import type { Cabinet, PanelItem, Settings } from "../types";
 import { MATERIAL_LABEL } from "../types";
-import { allPartsMerged, bandLengthMm, bandStr, partId, type GrainOverrides } from "../lib/model";
+import { allPartsMerged, bandLengthMm, bandStr, canonicalPartId, type GrainOverrides, type RotationOverrides } from "../lib/model";
 import { partMatName, plyMaterialById } from "../lib/defaults";
 import { cutListCsv, cutListHtml, download, labelsHtml, openPrintWindow } from "../lib/export";
 import { partColor } from "../lib/nesting";
@@ -45,18 +45,32 @@ export function CutListTab({
   grain,
   setGrain,
   panels = [],
+  rotation = {},
+  setRotation,
 }: {
   cabinets: Cabinet[];
   settings: Settings;
   grain: GrainOverrides;
   setGrain: (fn: (g: GrainOverrides) => GrainOverrides) => void;
   panels?: PanelItem[];
+  rotation?: RotationOverrides;
+  setRotation?: (fn: (r: RotationOverrides) => RotationOverrides) => void;
 }) {
   // heavy recompute — let typing settle first
   const dCabinets = useDebounced(cabinets, 180);
   const dSettings = useDebounced(settings, 180);
   const dPanels = useDebounced(panels, 180);
-  const parts = useMemo(() => allPartsMerged(dCabinets, dSettings, grain, dPanels), [dCabinets, dSettings, grain, dPanels]);
+  const parts = useMemo(
+    () => allPartsMerged(dCabinets, dSettings, grain, dPanels, rotation),
+    [dCabinets, dSettings, grain, dPanels, rotation],
+  );
+  const toggleRotate = (cid: string) =>
+    setRotation?.((r) => {
+      const n = { ...r };
+      if (n[cid]) delete n[cid];
+      else n[cid] = true;
+      return n;
+    });
 
   const byMat = useMemo(() => {
     const m = new Map<string, typeof parts>();
@@ -86,6 +100,7 @@ export function CutListTab({
       0,
     ) / 1000;
   const lockedCount = parts.filter((p) => p.grain).length;
+  const rotatedCount = parts.filter((p) => p.note.includes("manual 90°")).length;
 
   return (
     <div className="card p-5 anim-rise">
@@ -94,20 +109,22 @@ export function CutListTab({
           <h2 className="card-h"><LayoutList size={17} className="text-amber-400" /> {t(lang, "cutList")}</h2>
           <p className="hint mt-1">
             Span panels (tops, bottoms, shelves, sections) and backs keep their <span className="text-amber-300">grain along the length</span>; every
-            other piece is <span className="text-amber-300">rotated once (length ↔ width)</span> before grain lock is applied. {t(lang, "grainHint")}
+            other piece is <span className="text-amber-300">rotated once (length ↔ width)</span> before grain lock is applied. {t(lang, "grainHint")} The{" "}
+            <RotateCw size={11} className="inline -mt-0.5 text-cyan-300" /> button rotates <span className="text-cyan-300">any piece 90°</span> — length,
+            width, holes, grooves and banding all follow, and nesting, DXF, drilling, BOM and every report update to match.
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <Btn size="sm" onClick={() => download("cut-list.csv", cutListCsv(cabinets, settings, grain, panels), "text/csv")}>
+          <Btn size="sm" onClick={() => download("cut-list.csv", cutListCsv(cabinets, settings, grain, panels, rotation), "text/csv")}>
             <FileSpreadsheet size={14} /> {t(lang, "csv")}
           </Btn>
-          <Btn size="sm" variant="ok" onClick={() => openPrintWindow(cutListHtml(cabinets, settings, grain, panels))}>
+          <Btn size="sm" variant="ok" onClick={() => openPrintWindow(cutListHtml(cabinets, settings, grain, panels, rotation))}>
             <FileText size={14} /> {t(lang, "print")}
           </Btn>
-          <Btn size="sm" variant="warn" onClick={() => openPrintWindow(cutListHtml(cabinets, settings, grain, panels))}>
+          <Btn size="sm" variant="warn" onClick={() => openPrintWindow(cutListHtml(cabinets, settings, grain, panels, rotation))}>
             <Printer size={14} /> {t(lang, "pdf")}
           </Btn>
-          <Btn size="sm" onClick={() => openPrintWindow(labelsHtml(cabinets, settings, grain, panels))}>
+          <Btn size="sm" onClick={() => openPrintWindow(labelsHtml(cabinets, settings, grain, panels, rotation))}>
             <Tags size={14} /> {t(lang, "labels")}
           </Btn>
         </div>
@@ -120,18 +137,24 @@ export function CutListTab({
         <Stat label={t(lang, "edgeBanding")} value={bandM.toFixed(1)} unit="m" tone="#6ee7b7" />
         <Stat label={t(lang, "grainLock")} value={`${lockedCount}/${parts.length}`} tone="#f0abfc" />
         <Stat label="Auto rotation" value="L↔W" unit="applied" tone="#7dd3fc" />
+        <Stat label="Rotated 90°" value={String(rotatedCount)} unit={rotatedCount === 1 ? "piece" : "pieces"} tone="#67e8f9" />
       </div>
 
-      <div className="mt-3 flex gap-2">
-        <Btn size="sm" onClick={() => setGrain(() => Object.fromEntries(parts.map((p) => [partId(p), true])))}>
+      <div className="mt-3 flex gap-2 flex-wrap">
+        <Btn size="sm" onClick={() => setGrain(() => Object.fromEntries(parts.map((p) => [canonicalPartId(p), true])))}>
           <Lock size={13} /> Lock all
         </Btn>
-        <Btn size="sm" onClick={() => setGrain(() => Object.fromEntries(parts.map((p) => [partId(p), false])))}>
+        <Btn size="sm" onClick={() => setGrain(() => Object.fromEntries(parts.map((p) => [canonicalPartId(p), false])))}>
           Unlock all
         </Btn>
         <Btn size="sm" variant="ghost" onClick={() => setGrain(() => ({}))}>
           Follow system ({settings.grainLock ? "locked" : "free"})
         </Btn>
+        {rotatedCount > 0 && (
+          <Btn size="sm" variant="ghost" onClick={() => setRotation?.(() => ({}))} title="Clear every manual 90° rotation">
+            <RotateCw size={13} /> Reset rotations ({rotatedCount})
+          </Btn>
+        )}
       </div>
 
       {byMat.map(([key, list]) => {
@@ -148,7 +171,7 @@ export function CutListTab({
         const setGroupGrain = (v: boolean) =>
           setGrain((g) => {
             const ng = { ...g };
-            list.forEach((p) => (ng[partId(p)] = v));
+            list.forEach((p) => (ng[canonicalPartId(p)] = v));
             return ng;
           });
         return (
@@ -161,6 +184,24 @@ export function CutListTab({
               </span>
               <Chip tone="amber">{area.toFixed(2)} m²</Chip>
               <Chip>{list.reduce((a, p) => a + p.qty, 0)} {t(lang, "parts")}</Chip>
+              <button
+                className="ml-auto inline-flex items-center gap-1 rounded-md border border-cyan-400/30 px-1.5 py-0.5 text-[11px] text-cyan-300 hover:bg-cyan-400/10"
+                title="Rotate every piece of this group 90° (toggles off when all are already rotated)"
+                onClick={() =>
+                  setRotation?.((r) => {
+                    const ids = list.map(canonicalPartId);
+                    const allOn = ids.every((id) => r[id]);
+                    const n = { ...r };
+                    ids.forEach((id) => {
+                      if (allOn) delete n[id];
+                      else n[id] = true;
+                    });
+                    return n;
+                  })
+                }
+              >
+                <RotateCw size={12} /> Rotate group 90°
+              </button>
             </div>
             <div className="overflow-x-auto rounded-xl border border-white/[0.07]">
               <table className="tbl w-full min-w-[860px]">
@@ -169,6 +210,9 @@ export function CutListTab({
                     <th>#</th>
                     <th>{t(lang, "cabinets")}</th>
                     <th>{t(lang, "part")}</th>
+                    <th className="!text-center" title="Rotate this piece 90° — length ↔ width, holes, grooves and banding all follow; nesting, DXF, drilling and BOM update to match">
+                      <RotateCw size={13} className="inline text-cyan-300" />
+                    </th>
                     <th className="!text-center" title={`${t(lang, "grainHint")} (group — toggles every row below)`}>
                       <input
                         type="checkbox"
@@ -191,16 +235,35 @@ export function CutListTab({
                 </thead>
                 <tbody className="bg-ink-850/60">
                   {list.map((p, i) => {
-                    const id = partId(p);
+                    const id = canonicalPartId(p);
+                    const rotated = !!rotation[id];
                     return (
-                      <tr key={id + i}>
+                      <tr key={id + i} className={rotated ? "bg-cyan-400/[0.06]" : undefined}>
                         <td className="text-ink-500">{i + 1}</td>
                         <td className="text-ink-300">{p.cabName}</td>
                         <td>
                           <span className="inline-flex items-center gap-2">
                             <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: partColor(p) }} />
                             {p.name}
+                            {rotated && (
+                              <span className="rounded border border-cyan-400/40 px-1 text-[10px] text-cyan-300" title="Manually rotated 90° — reflected in nesting, DXF, drilling and BOM">
+                                ⟳ 90°
+                              </span>
+                            )}
                           </span>
+                        </td>
+                        <td className="!text-center">
+                          <button
+                            className={`inline-flex items-center justify-center rounded-md border p-1 ${
+                              rotated
+                                ? "border-cyan-400/60 bg-cyan-400/15 text-cyan-200"
+                                : "border-white/10 text-ink-400 hover:border-cyan-400/40 hover:text-cyan-300"
+                            }`}
+                            title={rotated ? "Undo the manual 90° rotation" : "Rotate this piece 90° (nesting, DXF, drilling and BOM follow)"}
+                            onClick={() => toggleRotate(id)}
+                          >
+                            <RotateCw size={13} />
+                          </button>
                         </td>
                         <td className="!text-center">
                           <input

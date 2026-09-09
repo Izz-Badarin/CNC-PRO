@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { allParts, bandingByMaterial, columnFaceWidth, columnLayout, doorDims, drillOps, doorHingeCount, generatePanelParts, glassDoorRefs, kickH, stackOn, stackedHeights } from "../lib/model";
+import { allParts, bandingByMaterial, columnFaceWidth, columnLayout, doorDims, drillOps, doorHingeCount, generatePanelParts, glassDoorRefs, kickH, stackOn, stackedHeights, type RotationOverrides } from "../lib/model";
 import { nestParts } from "../lib/nesting";
-import { plyMaterialById } from "../lib/defaults";
+import { applyWaste, plyMaterialById, wastePctOf } from "../lib/defaults";
 import type { Cabinet, Customer, PanelItem, ProjectInfo, Settings } from "../types";
 import { Btn, Chip } from "../components/ui";
 import { bomReportHtml, download, openPrintWindow } from "../lib/export";
 import { explodedReportHtml } from "../lib/explodedReport";
-import { FileText, FileSpreadsheet, Printer, Camera, Layers, PackageOpen } from "lucide-react";
+import { captureAllCabinetShots, type CabShots } from "../lib/cabShots";
+import { FileText, FileSpreadsheet, Printer, Camera, Layers, PackageOpen, Loader2 } from "lucide-react";
 
 interface Props {
   cabinets: Cabinet[];
@@ -14,6 +15,8 @@ interface Props {
   panels?: PanelItem[];
   /** grain overrides — affect nesting, hence the sheet counts */
   grain?: Record<string, boolean>;
+  /** cut-list manual 90° rotations — every quantity below reflects them */
+  rotation?: RotationOverrides;
   project?: ProjectInfo | null;
   customers?: Customer[] | null;
 }
@@ -26,10 +29,14 @@ interface BomRow {
   note?: string;
 }
 
-export function BomTab({ cabinets, settings, panels = [], grain = {}, project = null, customers = null }: Props) {
+export function BomTab({ cabinets, settings, panels = [], grain = {}, rotation = {}, project = null, customers = null }: Props) {
   const [lastScreenshot, setLastScreenshot] = useState<string | null>(null);
   const [explodedShots, setExplodedShots] = useState<Record<string, string>>({});
   const [perCabShots, setPerCabShots] = useState<Record<string, string>>({});
+  /** automatic ISO/front/left photos per cabinet — captured headlessly on demand */
+  const [autoPhotos, setAutoPhotos] = useState(true);
+  const [capturing, setCapturing] = useState<{ done: number; total: number } | null>(null);
+  const wastePct = wastePctOf(settings);
 
   // reads the shots captured in 3D View (E1 overall PNG + per-cabinet iso/exploded)
   useEffect(() => {
@@ -58,7 +65,7 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, project = 
     let hinges = 0, hangingRails = 0;
     // shelf PINS are hardware: 4 per shelf (2 per side), independent of how many
     // holes are drilled — the Drilling tab keeps the hole-op count (e.g. 132)
-    const allForPins = allParts(cabinets, settings, grain, panels);
+    const allForPins = allParts(cabinets, settings, grain, panels, rotation);
     const totalShelves = allForPins.filter((p) => p.name.startsWith("Shelf")).reduce((a, p) => a + p.qty, 0);
     const shelfPins = totalShelves * 4;
     const slides: Record<number, number> = {};
@@ -73,8 +80,8 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, project = 
     };
     generatePanelParts(panels, settings).forEach(addArea);
     cabinets.forEach((cab) => {
-      allParts([cab], settings).forEach(addArea);
-      drillOps([cab], settings).forEach((op) => {
+      allParts([cab], settings, grain, [], rotation).forEach(addArea);
+      drillOps([cab], settings, grain, [], rotation).forEach((op) => {
         if (op.type === "hinge") hinges++;
       });
       const fullSpan = (stackOn(cab) ? stackedHeights(cab).reduce((a, h) => a + h, 0) : cab.height) - kickH(cab, settings);
@@ -107,7 +114,7 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, project = 
       }
     });
     const sheetCount: Record<string, number> = {};
-    nestParts(allParts(cabinets, settings, grain, panels), settings).forEach((g) => {
+    nestParts(allParts(cabinets, settings, grain, panels, rotation), settings).forEach((g) => {
       const k = `${g.material}@${g.matId ?? "def"}`;
       sheetCount[k] = (sheetCount[k] ?? 0) + g.sheets.length;
     });
@@ -129,7 +136,7 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, project = 
       const pm = plyMaterialById(settings, mid === "def" ? null : mid);
       rows.push({category:"Materials",item:`Veneer back — ${pm.name} (2440×1220)`,qty:sheetCount[`back@${mid}`] ?? Math.ceil(area/(2.44*1.22)),unit:"sheets",note:`${area.toFixed(2)} m² · follows ${pm.name} · nesting`});
     });
-    bandingByMaterial(cabinets, settings).forEach((b) => {
+    bandingByMaterial(cabinets, settings, grain, panels, rotation).forEach((b) => {
       rows.push({category:"Materials",item:`Edge banding — ${b.material}`,qty:Math.round(b.meters*10)/10,unit:"m",note:`${b.mm.toFixed(0)} mm`});
     });
     // Glass doors are PURCHASED hardware (aluminium + glass) — they are listed
@@ -160,15 +167,15 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, project = 
     if (hangingRails>0) rows.push({category:"Hardware",item:"Hanging rails",qty:hangingRails,unit:"pcs"});
     if (shelfPins>0) rows.push({category:"Hardware",item:"Shelf pins (32mm)",qty:shelfPins,unit:"pcs",note:`${totalShelves} shelves ×4`});
     return rows;
-  }, [cabinets, settings, panels, grain]);
+  }, [cabinets, settings, panels, grain, rotation]);
 
   const exportCsv = () => {
-    const h = "Category,Item,Qty,Unit,Note";
-    const l = bom.map((r) => `${r.category},${r.item},${r.qty},${r.unit},${r.note??""}`);
+    const h = `Category,Item,Net qty,Order qty (+${wastePct}% waste),Unit,Note`;
+    const l = bom.map((r) => `${r.category},${r.item},${r.qty},${applyWaste(r.qty, r.unit, wastePct)},${r.unit},${r.note??""}`);
     download("bom.csv", [h,...l].join("\n"), "text/csv");
   };
   const exportHtml = () => {
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>BOM</title><style>body{font-family:Arial,sans-serif;padding:20px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:6px 10px;text-align:left}th{background:#eee}</style></head><body><h1>Bill of Materials</h1><table><thead><tr><th>Category</th><th>Item</th><th>Qty</th><th>Unit</th><th>Note</th></tr></thead><tbody>${bom.map((r)=>`<tr><td>${r.category}</td><td>${r.item}</td><td>${r.qty}</td><td>${r.unit}</td><td>${r.note??""}</td></tr>`).join("")}</tbody></table></body></html>`;
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>BOM</title><style>body{font-family:Arial,sans-serif;padding:20px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:6px 10px;text-align:left}th{background:#eee}</style></head><body><h1>Bill of Materials</h1><p>Net = real quantity · Order = net + ${wastePct}% waste/loss allowance (what to buy).</p><table><thead><tr><th>Category</th><th>Item</th><th>Net</th><th>Order (+${wastePct}%)</th><th>Unit</th><th>Note</th></tr></thead><tbody>${bom.map((r)=>`<tr><td>${r.category}</td><td>${r.item}</td><td>${r.qty}</td><td><b>${applyWaste(r.qty, r.unit, wastePct)}</b></td><td>${r.unit}</td><td>${r.note??""}</td></tr>`).join("")}</tbody></table></body></html>`;
     download("bom.html", html, "text/html");
   };
 
@@ -178,14 +185,17 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, project = 
       const s = localStorage.getItem("cnc-last-3d-png");
       if (s) shot = s;
     } catch {}
-    const html = bomReportHtml(cabinets, settings, panels, grain, project, customers ?? undefined, { screenshotDataUrl: shot });
+    const html = bomReportHtml(cabinets, settings, panels, grain, project, customers ?? undefined, { screenshotDataUrl: shot }, rotation);
     if (print) openPrintWindow(html);
     else download(`BOM-Report-${(project?.name || "project").replace(/[^\w\-]+/g, "_")}.html`, html, "text/html");
   };
 
   /** New O - exploded per-cabinet report: each cabinet gets its own pages
-   *  (exploded schematic, open-door view, drilling map, panel size table, hardware) */
-  const explodedReport = (print = false) => {
+   *  (exploded schematic, open-door view, drilling map, panel size table, hardware).
+   *  With “auto photos” on, ISO/front/left pictures of every cabinet are
+   *  captured headlessly first — no user screenshots needed. */
+  const explodedReport = async (print = false) => {
+    if (capturing) return;
     let shot: string | null = lastScreenshot;
     const exp: Record<string, string> = { ...explodedShots };
     const per: Record<string, string> = { ...perCabShots };
@@ -202,11 +212,26 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, project = 
         if (k.startsWith("cnc-cab-iso-")) per[k.replace("cnc-cab-iso-", "")] = v;
       }
     } catch {}
+    let auto: Record<string, CabShots> | undefined;
+    if (autoPhotos && cabinets.length > 0) {
+      try {
+        setCapturing({ done: 0, total: cabinets.length });
+        auto = await captureAllCabinetShots(cabinets, settings, {
+          panels,
+          onProgress: (done, total) => setCapturing({ done, total }),
+        });
+      } catch {
+        auto = undefined;
+      } finally {
+        setCapturing(null);
+      }
+    }
     const html = explodedReportHtml(cabinets, settings, panels, grain, project, customers ?? undefined, {
       screenshotDataUrl: shot,
       perCabinetScreenshots: per,
       explodedScreenshots: exp,
-    });
+      autoShots: auto,
+    }, rotation);
     if (print) openPrintWindow(html);
     else download(`Exploded-Report-${(project?.name || "project").replace(/[^\w\-]+/g, "_")}.html`, html, "text/html");
   };
@@ -217,15 +242,23 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, project = 
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
             <h2 className="card-h"><FileText size={17} className="text-amber-400" /> Bill of Materials & Hardware</h2>
-            <p className="hint mt-1">Sheet counts from nesting output (M) · slides by real depth pairs/drawer · hinges from the new rule &lt;900→2 … ≥3000→6 incl. glass/full doors (U) · handles removed (L) · glass doors listed HERE only — purchased, never in the DXF. Full multi-page report includes 3D PNG (E1) + dimensioned elevation (D2) for customer approval (O).</p>
+            <p className="hint mt-1">Sheet counts from nesting output (M) · slides by real depth pairs/drawer · hinges from the new rule &lt;900→2 … ≥3000→6 incl. glass/full doors (U) · handles removed (L) · glass doors listed HERE only — purchased, never in the DXF. Full multi-page report includes 3D PNG (E1) + dimensioned elevation (D2) for customer approval (O). <span className="text-amber-300">Net</span> = real quantity · <span className="text-emerald-300">Order</span> = net + {wastePct}% waste/loss (Settings → BOM) — what to actually buy.</p>
           </div>
           <div className="flex gap-2 flex-wrap">
             <Btn size="sm" onClick={exportCsv}><FileSpreadsheet size={14} /> CSV</Btn>
             <Btn size="sm" variant="ok" onClick={exportHtml}><Printer size={14} /> Simple HTML</Btn>
             <Btn size="sm" variant="warn" onClick={() => fullReport(true)} title="Multi-page customer report — cover, 3D screenshot (E1), front elevation D2, cabinets, BOM, cut list by material, nesting, banding"><FileText size={14} /> Full Report (print)</Btn>
             <Btn size="sm" onClick={() => fullReport(false)} title="Save multi-page BOM report as HTML file"><FileText size={14} /> Save Full Report</Btn>
-            <Btn size="sm" variant="ok" onClick={() => explodedReport(true)} title="Exploded per-cabinet report - each cabinet gets its own pages: exploded view, open-door view, drilling map, panel size table and hardware"><Layers size={14} /> Exploded Per-Cab (print)</Btn>
-            <Btn size="sm" onClick={() => explodedReport(false)} title="Save the exploded per-cabinet report as one offline HTML file"><PackageOpen size={14} /> Save Exploded Report</Btn>
+            <Btn size="sm" variant="ok" onClick={() => void explodedReport(true)} title="Exploded per-cabinet report - each cabinet gets its own pages: exploded view, open-door view, drilling map, panel size table and hardware">
+              {capturing ? <Loader2 size={14} className="animate-spin" /> : <Layers size={14} />} {capturing ? `Capturing ${capturing.done}/${capturing.total}…` : "Exploded Per-Cab (print)"}
+            </Btn>
+            <Btn size="sm" onClick={() => void explodedReport(false)} title="Save the exploded per-cabinet report as one offline HTML file">
+              {capturing ? <Loader2 size={14} className="animate-spin" /> : <PackageOpen size={14} />} {capturing ? `Capturing ${capturing.done}/${capturing.total}…` : "Save Exploded Report"}
+            </Btn>
+            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-white/10 px-2 py-1 text-[11.5px] text-ink-300" title="Capture ISO / front / left photos of every cabinet automatically (no screenshots needed) and embed them in the Exploded Report">
+              <input type="checkbox" className="chk" checked={autoPhotos} onChange={(e) => setAutoPhotos(e.target.checked)} />
+              <Camera size={13} className="text-cyan-300" /> Auto ISO / front / left photos
+            </label>
           </div>
         </div>
         {lastScreenshot && (
@@ -263,8 +296,8 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, project = 
 
       <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
         <table className="tbl w-full">
-          <thead className="bg-ink-900/80 text-ink-300"><tr><th>Category</th><th>Item</th><th className="!text-right">Qty</th><th>Unit</th><th>Note</th></tr></thead>
-          <tbody>{bom.map((r,i) => (<tr key={i} className="border-t border-white/[0.04] hover:bg-ink-900/40"><td className="text-ink-400">{r.category}</td><td>{r.item}</td><td className="!text-right font-mono">{r.qty}</td><td className="text-ink-400">{r.unit}</td><td className="text-ink-500 text-[11px]">{r.note??""}</td></tr>))}</tbody>
+          <thead className="bg-ink-900/80 text-ink-300"><tr><th>Category</th><th>Item</th><th className="!text-right" title="Real (net) quantity">Net</th><th className="!text-right" title={`Order quantity = net + ${wastePct}% waste/loss — what to buy (Settings → BOM)`}>Order (+{wastePct}%)</th><th>Unit</th><th>Note</th></tr></thead>
+          <tbody>{bom.map((r,i) => (<tr key={i} className="border-t border-white/[0.04] hover:bg-ink-900/40"><td className="text-ink-400">{r.category}</td><td>{r.item}</td><td className="!text-right font-mono text-ink-300">{r.qty}</td><td className="!text-right font-mono font-semibold text-emerald-300">{applyWaste(r.qty, r.unit, wastePct)}</td><td className="text-ink-400">{r.unit}</td><td className="text-ink-500 text-[11px]">{r.note??""}</td></tr>))}</tbody>
         </table>
       </div>
     </div>

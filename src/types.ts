@@ -420,6 +420,9 @@ export interface Settings {
   drawerBoxHiddenExtra: number;
   /** drawer box depth = slide length − this offset */
   drawerBoxDepthFix: number;
+  /* ---- BOM waste / loss allowance ---- */
+  /** waste % added on TOP of every net BOM quantity (edge banding, sheets, hardware) → the "order" qty */
+  bomWastePct: number;
 }
 
 /* ---------- parts ---------- */

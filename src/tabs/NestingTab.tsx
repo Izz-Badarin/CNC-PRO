@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { CircleStop, FileSpreadsheet, Package, PackageOpen, Play, TriangleAlert } from "lucide-react";
 import type { Cabinet, PanelItem, Settings } from "../types";
 import { MATERIAL_LABEL } from "../types";
-import { allPartsMerged, type GrainOverrides } from "../lib/model";
+import { allPartsMerged, type GrainOverrides, type RotationOverrides } from "../lib/model";
 import { partMatName, plyMaterialById } from "../lib/defaults";
 import { runNesting, partColor, placedOutline, rotPoint, type NestGroup, type NestRunProgress, type PlacedPart, type Sheet } from "../lib/nesting";
 import NestWorker from "../lib/nesting.worker?worker&inline";
@@ -16,14 +16,21 @@ export function NestingTab({
   grain = {},
   setSettings,
   panels = [],
+  rotation = {},
 }: {
   cabinets: Cabinet[];
   settings: Settings;
   grain?: GrainOverrides;
   setSettings?: (s: Settings) => void;
   panels?: PanelItem[];
+  rotation?: RotationOverrides;
 }) {
-  const parts = useMemo(() => allPartsMerged(cabinets, settings, grain, panels), [cabinets, settings, grain, panels]);
+  // cut-list manual 90° rotations are part of the input — nesting packs the
+  // rotated pieces exactly as the cut list shows them
+  const parts = useMemo(
+    () => allPartsMerged(cabinets, settings, grain, panels, rotation),
+    [cabinets, settings, grain, panels, rotation],
+  );
   const partsSig = useMemo(() => parts.map((p) => `${p.name}:${p.w}x${p.h}:${p.qty}`).join("|"), [parts]);
   const [prog, setProg] = useState<NestRunProgress>({ running: false, phase: "Idle", done: 0, total: 0, groups: [] });
   const stopRef = useRef(false);
@@ -75,7 +82,7 @@ export function NestingTab({
             return true;
           });
     defsToExport.forEach((d) => {
-      const dxf = buildDxf(cabinets, settings, d.material, labels, grain, d.matId, panels);
+      const dxf = buildDxf(cabinets, settings, d.material, labels, grain, d.matId, panels, rotation);
       if (dxf.includes("LINE")) {
         downloadRaw(`${d.filename}${labels ? "" : "_nolabel"}.dxf`, dxf);
         n++;
@@ -195,6 +202,7 @@ export function NestingTab({
             52 layouts tried: shelf packing · MaxRects (BAF/BSSF/BLSF) · guillotine saw patterns with offcut merging · every layout overlap-verified · clearance {settings.partClearance}mm · margin{" "}
             {settings.sheetMargin}mm · budget {settings.timeBudget}s/material · from "{settings.nestFrom}" · direction {settings.nestDirection}
             {settings.grainLock ? " · grain locked (no rotation)" : ""}
+            {parts.some((p) => p.note.includes("manual 90°")) ? " · cut-list 90° rotations applied" : ""}
           </p>
         </div>
         <div className="flex gap-2">
@@ -227,7 +235,7 @@ export function NestingTab({
               <Btn size="sm" onClick={() => start("none")}>Optimize only</Btn>
             </>
           )}
-          <Btn size="sm" onClick={() => download("nesting.csv", nestingCsv(cabinets, settings, panels), "text/csv")}>
+          <Btn size="sm" onClick={() => download("nesting.csv", nestingCsv(cabinets, settings, panels, grain, rotation), "text/csv")}>
             <FileSpreadsheet size={14} /> Nesting CSV
           </Btn>
         </div>

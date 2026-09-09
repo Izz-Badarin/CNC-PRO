@@ -71,6 +71,18 @@ export function partId(p: Part): string {
   return `${p.cabId}|${p.name}|${Math.round(p.w * 10)}x${Math.round(p.h * 10)}|${p.material}|${p.thickness}`;
 }
 
+/**
+ * Rotation-invariant per-part key (length/width sorted, hole/groove counts
+ * instead of coordinates): the SAME part keeps the same key whether or not the
+ * user manually rotated it 90° in the cut list — so grain-lock and rotation
+ * toggles never lose track of their row when the dimensions swap.
+ */
+export function canonicalPartId(p: Part): string {
+  const a = Math.round(Math.min(p.w, p.h) * 10);
+  const b = Math.round(Math.max(p.w, p.h) * 10);
+  return `${p.cabId}|${p.name}|${a}x${b}|${p.material}|${p.thickness}|h${p.holes.length}g${p.grooves.length}`;
+}
+
 /* ================= side panel outline (L / C notches) ================= */
 
 /** Side panel polygon. x = 0 (back) … depth (front), y = 0 (bottom) … BH (top). */
@@ -950,7 +962,7 @@ function buildColumn(
         drillRight(xL, y, S.slideHoleDiameter, "slide");
       });
       if (cab.isKitchen) genKitchenDrawer(S, mk, dr, faceW, tag, i);
-      else genStandardDrawer(S, mk, dr, faceW, tag, i, cab.width, lay.w);
+      else genStandardDrawer(S, mk, dr, faceW, tag, i, cab.width, lay.w, cab);
     });
   }
 
@@ -964,7 +976,7 @@ function buildColumn(
         sub.drawers.forEach((dr, di) => {
           const d2 = cab.isKitchen ? { ...dr, hidden: false } : dr;
           if (cab.isKitchen) genKitchenDrawer(S, mk, d2, lay.w, stag, di);
-          else genStandardDrawer(S, mk, d2, lay.w, stag, di);
+          else genStandardDrawer(S, mk, d2, lay.w, stag, di, undefined, undefined, cab);
         });
       } else if (sub.fixed) {
         mk({
@@ -1076,9 +1088,10 @@ function buildColumn(
   }
 
   /* ---- shelves above the hanging rail (real shelf parts + pin holes) ----
-   * AUTO mode (default): the max shelf count that keeps EVERY gap ≥
-   * Settings.railShelfMinGap (250mm default) is placed evenly in the space
-   * above the rail. MANUAL mode: exact Y positions from the section bottom
+   * AUTO mode (default): the FIRST shelf goes right above the rail — at the
+   * railShelfGap offset (60mm default) — and extra shelves fill the remaining
+   * space only when it is big enough to keep railShelfMinGap (250mm default)
+   * between the rest. MANUAL mode: exact Y positions from the section bottom
    * via shelfPositions (one per shelf). */
   if (rail !== "off" && col.railShelf) {
     const ys = railShelfYs(col, S, rowH);
@@ -1095,7 +1108,7 @@ function buildColumn(
         note:
           mode === "manual"
             ? `above ${rail} rail · manual Y: ${ys.map((y) => Math.round(y)).join(", ")}mm · banding: front`
-            : `above ${rail} rail · auto ${ys.length} shelf${ys.length > 1 ? "s" : ""} (gap ≥ ${Math.max(50, S.railShelfMinGap || 250)}mm) · banding: front`,
+            : `above ${rail} rail · auto ${ys.length} shelf${ys.length > 1 ? "s" : ""} (first @ rail +${Math.round(Math.max(10, Math.min(150, S.railShelfGap || 60)))}mm, rest ≥ ${Math.max(50, S.railShelfMinGap || 250)}mm) · banding: front`,
         grain: true,
         noRotate: true,
       });
@@ -1118,7 +1131,11 @@ function buildColumn(
  * (rule D). Shared by the part generator, the 2D front view and the 3D scene
  * so previews always match the cut list.
  *  · manual — exact `shelfPositions` (clamped into the space above the rail)
- *  · auto   — max count with all gaps ≥ Settings.railShelfMinGap, evenly spaced
+ *  · auto   — the FIRST shelf goes right above the rail at the railShelfGap
+ *    offset (60mm default) WITH its pin holes, then extra shelves are added
+ *    only when the REMAINING space is big enough to keep railShelfMinGap
+ *    (250mm default) between them. The leftovers spread evenly, so every gap
+ *    except the fixed 60mm one still respects the minimum.
  */
 export function railShelfYs(col: ColumnSpec, S: Settings, rowH: number): number[] {
   const rail = col.rail ?? "off";
@@ -1131,11 +1148,20 @@ export function railShelfYs(col: ColumnSpec, S: Settings, rowH: number): number[
     const count = Math.max(1, Math.round(col.railShelfCount ?? (col.shelfPositions?.length ?? 1)));
     return (col.shelfPositions ?? []).slice(0, count).map((y) => clamp(y, lo, hi));
   }
+  // 60mm-first rule: pin the first shelf just above the rail, then fill the
+  // rest only if the space is big enough for the minimum gap
+  const firstGap = Math.max(10, Math.min(150, S.railShelfGap || 60));
+  if (space < firstGap + 40) return [];
+  const firstY = Math.min(rh + firstGap, hi);
+  const rest = Math.max(0, rowH - firstY);
   const minGap = Math.max(50, S.railShelfMinGap || 250);
-  let n = Math.max(0, Math.floor(space / minGap) - 1);
-  if (n === 0 && space >= 120) n = 1; // small leftover — one middle shelf
-  if (n <= 0) return [];
-  return Array.from({ length: n }, (_, k) => rh + (space * (k + 1)) / (n + 1));
+  // gaps needed between firstY and the section top: k shelves → k+1 gaps
+  let extras = Math.max(0, Math.floor(rest / minGap) - 1);
+  if (extras === 0 && rest >= minGap * 1.5) extras = 1;
+  const n = 1 + extras;
+  if (n === 1) return [firstY];
+  // extras spread evenly over the remaining height (first shelf stays pinned)
+  return Array.from({ length: n }, (_, k) => (k === 0 ? firstY : firstY + (rest * k) / n));
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), Math.max(lo, hi));
@@ -1152,6 +1178,7 @@ function genStandardDrawer(
   i: number,
   cabOuterW?: number,
   sectionW?: number,
+  cab?: Cabinet,
 ) {
   const { boxD, sideH, fbH, slideMm } = drawerBoxDims(faceW, dr, S);
   const dt = S.drawerThk;
@@ -1228,8 +1255,21 @@ function genStandardDrawer(
     thickness: dt,
     note: `outer width − 33 − 49${dr.hidden ? " − 50 (hidden)" : ""}`,
   });
+  // drawer bottom = veneer that FOLLOWS the cabinet's plywood material (an oak
+  // cabinet gets oak drawer bottoms, a white cabinet white ones) — exactly
+  // like the cabinet back panel, so nesting groups and 3D color match.
+  const cabinetPly = cab ? plyMaterialOf(S, cab) : plyMaterialById(S, null);
   const botW = fbW + 18;
-  mk({ name: `${label} bottom${tag} #${i + 1}`, w: botW, h: boxD, material: "back", thickness: S.backThk, grain: false });
+  mk({
+    name: `${label} bottom${tag} #${i + 1}`,
+    w: botW,
+    h: boxD,
+    material: "back",
+    thickness: S.backThk,
+    matId: cabinetPly.id,
+    grain: cabinetPly.solid !== true,
+    note: `veneer drawer bottom · follows ${cabinetPly.name}${cabinetPly.solid !== true ? " · grain locked" : ""}`,
+  });
 }
 
 /* ---- kitchen drawer ---- */
@@ -1525,7 +1565,7 @@ function buildCorner(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
       sh.outline = pentagonOutline(sh.w, sh.h, K);
     }
     if (col.door) genDoor(S, mk, col.door, Ld, row.h, ` R${ri + 1}`);
-    if (columnHasDrawers(col)) col.drawers.forEach((dr, i) => genStandardDrawer(S, mk, dr, Ld, ` R${ri + 1}`, i));
+    if (columnHasDrawers(col)) col.drawers.forEach((dr, i) => genStandardDrawer(S, mk, dr, Ld, ` R${ri + 1}`, i, undefined, undefined, cab));
   });
 }
 
@@ -1551,8 +1591,37 @@ export function mergePieces(parts: Part[]): Part[] {
   return [...map.values()];
 }
 
-/** grain overrides: partId -> locked(true = no rotation) */
-export type GrainOverrides = Record<string, boolean>;
+/**
+ * 90° clockwise rotation of ONE part: length and width are swapped, and holes,
+ * grooves, outlines and band edges are transformed through the SAME map
+ * ((x,y) → (y,w−x)) so every feature stays glued to its physical edge:
+ * a point on the old TOP edge (y=h) lands on x′=h=new width, i.e. the new
+ * RIGHT edge — so Top→Right, Right→Bottom, Bottom→Left, Left→Top.
+ * (The inverse map put every banding marker on the OPPOSITE edge — visible on
+ * drawer cabinets where the slide holes expose the true front edge, and it
+ * made the linear slot look rear-mounted.)
+ */
+function rotate90(p: Part, noteSuffix: string): Part {
+  const w = p.w;
+  const rot = ([x, y]: [number, number]): [number, number] => [y, w - x];
+  return {
+    ...p,
+    w: p.h,
+    h: p.w,
+    band: { top: p.band.left, right: p.band.top, bottom: p.band.right, left: p.band.bottom },
+    holes: p.holes.map((h) => {
+      const [x, y] = rot([h.x, h.y]);
+      return { ...h, x, y };
+    }),
+    grooves: p.grooves.map((g) => {
+      const [x1, y1] = rot([g.x1, g.y1]);
+      const [x2, y2] = rot([g.x2, g.y2]);
+      return { ...g, x1: Math.min(x1, x2), y1: Math.min(y1, y2), x2: Math.max(x1, x2), y2: Math.max(y1, y2) };
+    }),
+    outline: p.outline.length > 2 ? p.outline.map(rot) : p.outline,
+    note: p.note ? `${p.note} · ${noteSuffix}` : noteSuffix,
+  };
+}
 
 /**
  * Every piece is rotated ONCE automatically for the cut list: length and width are
@@ -1565,40 +1634,42 @@ export type GrainOverrides = Record<string, boolean>;
  */
 export function rotatePartOnce(p: Part): Part {
   if (p.noRotate) return p;
-  const w = p.w;
-  const rot = ([x, y]: [number, number]): [number, number] => [y, w - x];
-  return {
-    ...p,
-    w: p.h,
-    h: p.w,
-    // band edges are physical — remap them through the SAME 90° rotation the
-    // geometry uses ((x,y) → (y,w−x)): a point on the old TOP edge (y=h) lands
-    // on x′=h=new width, i.e. the new RIGHT edge — so Top→Right, Right→Bottom,
-    // Bottom→Left, Left→Top. (The inverse map put every banding marker on the
-    // OPPOSITE edge — visible on drawer cabinets where the slide holes expose
-    // the true front edge, and it made the linear slot look rear-mounted.)
-    band: { top: p.band.left, right: p.band.top, bottom: p.band.right, left: p.band.bottom },
-    holes: p.holes.map((h) => {
-      const [x, y] = rot([h.x, h.y]);
-      return { ...h, x, y };
-    }),
-    grooves: p.grooves.map((g) => {
-      const [x1, y1] = rot([g.x1, g.y1]);
-      const [x2, y2] = rot([g.x2, g.y2]);
-      return { ...g, x1: Math.min(x1, x2), y1: Math.min(y1, y2), x2: Math.max(x1, x2), y2: Math.max(y1, y2) };
-    }),
-    outline: p.outline.length > 2 ? p.outline.map(rot) : p.outline,
-    note: p.note ? `${p.note} · rotated 90°` : "rotated 90°",
-  };
+  return rotate90(p, "rotated 90°");
 }
+
+/**
+ * The user's MANUAL 90° rotation from the cut list (any piece, on top of the
+ * automatic rotation). Applied BEFORE grain lock and merging, so nesting, DXF,
+ * drilling and the reports all see the rotated piece — exactly what the
+ * cut list shows. Unlike the automatic pass it honors no `noRotate` flag:
+ * an explicit user rotation always wins.
+ */
+export function rotatePartManual(p: Part): Part {
+  return rotate90(p, "manual 90°");
+}
+
+/** grain overrides: partId -> locked(true = no rotation) */
+export type GrainOverrides = Record<string, boolean>;
+
+/** manual 90° rotation overrides from the cut list: canonicalPartId -> rotated */
+export type RotationOverrides = Record<string, boolean>;
 
 /** apply the system grain-lock plus any manual per-piece overrides */
 export function applyGrain(parts: Part[], S: Settings, ov: GrainOverrides = {}): Part[] {
   return parts.map((p) => {
+    // new keys are rotation-invariant (canonical); the oriented partId is still
+    // honored so overrides saved by older versions keep working
     const id = partId(p);
-    const locked = id in ov ? ov[id] : S.grainLock ? true : p.grain;
+    const cid = canonicalPartId(p);
+    const locked = id in ov ? ov[id] : cid in ov ? ov[cid] : S.grainLock ? true : p.grain;
     return { ...p, grain: locked };
   });
+}
+
+/** apply the cut-list manual 90° rotation overrides (keyed by canonical id) */
+export function applyManualRotation(parts: Part[], rot: RotationOverrides = {}): Part[] {
+  if (!rot || Object.keys(rot).length === 0) return parts;
+  return parts.map((p) => (rot[canonicalPartId(p)] ? rotatePartManual(p) : p));
 }
 
 /**
@@ -1650,15 +1721,30 @@ export function generatePanelParts(panels: PanelItem[], S: Settings): Part[] {
   return out;
 }
 
-export function allParts(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = []): Part[] {
+export function allParts(
+  cabs: Cabinet[],
+  S: Settings,
+  ov: GrainOverrides = {},
+  panels: PanelItem[] = [],
+  rot: RotationOverrides = {},
+): Part[] {
   // panels are top-level project parts (oak MDF panel, plyboard panel, etc.) that sit
   // outside any cabinet — they flow through cut list / nesting / DXF / BOM like cabinet parts.
   const panelParts = generatePanelParts(panels, S).map(rotatePartOnce);
   const rotated = cabs.flatMap((c) => generateCabinetParts(c, S)).map(rotatePartOnce);
-  return applyGrain([...panelParts, ...rotated], S, ov);
+  // manual cut-list 90° rotation goes BEFORE grain lock and merging, so every
+  // downstream consumer (cut list merge, nesting, DXF, drilling, reports)
+  // sees the rotated piece exactly as the user chose it
+  return applyGrain(applyManualRotation([...panelParts, ...rotated], rot), S, ov);
 }
-export function allPartsMerged(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = []): Part[] {
-  return mergePieces(allParts(cabs, S, ov, panels));
+export function allPartsMerged(
+  cabs: Cabinet[],
+  S: Settings,
+  ov: GrainOverrides = {},
+  panels: PanelItem[] = [],
+  rot: RotationOverrides = {},
+): Part[] {
+  return mergePieces(allParts(cabs, S, ov, panels, rot));
 }
 
 /* ================= drilling ================= */
@@ -1675,9 +1761,15 @@ export interface DrillOp {
   type: string;
 }
 
-export function drillOps(cabs: Cabinet[], S: Settings): DrillOp[] {
+export function drillOps(
+  cabs: Cabinet[],
+  S: Settings,
+  ov: GrainOverrides = {},
+  panels: PanelItem[] = [],
+  rot: RotationOverrides = {},
+): DrillOp[] {
   const ops: DrillOp[] = [];
-  allParts(cabs, S).forEach((p) => {
+  allParts(cabs, S, ov, panels, rot).forEach((p) => {
     for (let i = 0; i < p.qty; i++) {
       p.holes.forEach((h) =>
         ops.push({ cabName: p.cabName, part: p.name, material: p.material, instance: i + 1, x: h.x, y: h.y, dia: h.dia, depth: h.depth, type: h.kind }),
@@ -1690,9 +1782,15 @@ export function drillOps(cabs: Cabinet[], S: Settings): DrillOp[] {
   return ops;
 }
 
-export function totalBandingM(cabs: Cabinet[], S: Settings): number {
+export function totalBandingM(
+  cabs: Cabinet[],
+  S: Settings,
+  ov: GrainOverrides = {},
+  panels: PanelItem[] = [],
+  rot: RotationOverrides = {},
+): number {
   let band = 0;
-  allParts(cabs, S).forEach((p) => {
+  allParts(cabs, S, ov, panels, rot).forEach((p) => {
     band += ((p.band.top ? p.w : 0) + (p.band.bottom ? p.w : 0) + (p.band.left ? p.h : 0) + (p.band.right ? p.h : 0)) * p.qty;
   });
   return band / 1000;
@@ -1712,9 +1810,15 @@ export interface BandingByMaterialRow {
  * plywood rows use the plywood material's user name; MDF rows are split by
  * finish — "MDF Oak" (banded) only, since white MDF is never banded.
  */
-export function bandingByMaterial(cabs: Cabinet[], S: Settings): BandingByMaterialRow[] {
+export function bandingByMaterial(
+  cabs: Cabinet[],
+  S: Settings,
+  ov: GrainOverrides = {},
+  panels: PanelItem[] = [],
+  rot: RotationOverrides = {},
+): BandingByMaterialRow[] {
   const agg = new Map<string, { mm: number; matId: string | null; isPlywood: boolean }>();
-  allParts(cabs, S).forEach((p) => {
+  allParts(cabs, S, ov, panels, rot).forEach((p) => {
     const mm = ((p.band.top ? p.w : 0) + (p.band.bottom ? p.w : 0) + (p.band.left ? p.h : 0) + (p.band.right ? p.h : 0)) * p.qty;
     if (mm <= 0) return;
     let key: string;

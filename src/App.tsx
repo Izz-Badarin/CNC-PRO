@@ -31,7 +31,7 @@ import {
   nextCopyName,
   type LibraryItem,
 } from "./lib/defaults";
-import { allParts, drillOps, type GrainOverrides } from "./lib/model";
+import { allParts, drillOps, type GrainOverrides, type RotationOverrides } from "./lib/model";
 import { download, readProjectFile } from "./lib/export";
 import { buildShareUrl, clearShareParam, decodeProject, shareParamFromUrl } from "./lib/share";
 import { findLatestPersistedKey, loadRaw, saveRaw, rotateBackups, idbSet, storageInfo, safeParse, listBackups } from "./lib/storage";
@@ -74,6 +74,7 @@ interface PersistState {
   customers: Customer[];
   library: LibraryItem[];
   grain: GrainOverrides;
+  rotation: RotationOverrides;
 }
 
 const defaultProject = (): ProjectInfo => ({
@@ -118,13 +119,14 @@ function loadPersisted(): PersistState {
           customers: Array.isArray(data.customers) ? data.customers : [],
           library: [...builtinLibrary(), ...saved],
           grain: data.grain && typeof data.grain === "object" ? data.grain : {},
+          rotation: data.rotation && typeof data.rotation === "object" ? data.rotation : {},
         };
       }
     }
   } catch {
     /* fresh start */
   }
-  return { settings: { ...DEFAULT_SETTINGS }, cabinets: demoCabinets(), project: defaultProject(), customers: [], library: builtinLibrary(), grain: {} };
+  return { settings: { ...DEFAULT_SETTINGS }, cabinets: demoCabinets(), project: defaultProject(), customers: [], library: builtinLibrary(), grain: {}, rotation: {} };
 }
 
 export default function App() {
@@ -135,6 +137,7 @@ export default function App() {
   const [customers, setCustomersState] = useState<Customer[]>(persisted.customers);
   const [library, setLibraryState] = useState<LibraryItem[]>(persisted.library);
   const [grain, setGrainState] = useState<GrainOverrides>(persisted.grain);
+  const [rotation, setRotationState] = useState<RotationOverrides>(persisted.rotation);
   const panels = project.panels ?? [];
   const setPanels = useCallback((fn: (p: PanelItem[]) => PanelItem[]) => {
     setProjectState((p) => ({ ...p, panels: fn(p.panels ?? []) }));
@@ -174,6 +177,7 @@ export default function App() {
       if (Array.isArray(data.library))
         setLibraryState([...builtinLibrary(), ...(data.library as LibraryItem[]).filter((l) => !l.builtin)]);
       if (data.grain && typeof data.grain === "object") setGrainState(data.grain as GrainOverrides);
+      if (data.rotation && typeof data.rotation === "object") setRotationState(data.rotation as RotationOverrides);
       clearShareParam();
       alert("Shared project loaded from the link.");
     });
@@ -184,7 +188,7 @@ export default function App() {
     dirtyRef.current = true;
     const t = setTimeout(() => {
       try {
-        const payload = JSON.stringify({ settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain });
+        const payload = JSON.stringify({ settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain, rotation });
         const res = saveRaw(LS_KEY, payload);
         if (!res.ok) {
           if (res.quota) {
@@ -222,12 +226,12 @@ export default function App() {
       } catch (e: any) {
         setQuotaWarn(`Autosave error: ${String(e?.message || e).slice(0, 200)}`);
         try {
-          void idbSet(LS_KEY, JSON.stringify({ settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain }));
+          void idbSet(LS_KEY, JSON.stringify({ settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain, rotation }));
         } catch {}
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [settings, cabinets, project, customers, library, grain]);
+  }, [settings, cabinets, project, customers, library, grain, rotation]);
 
   // beforeunload warning if dirty and no file saved
   useEffect(() => {
@@ -267,7 +271,7 @@ export default function App() {
       }
     }
     const fname = `${name}.json`;
-    download(fname, JSON.stringify({ version: SETTINGS_VERSION, settings, cabinets, project: { ...project, name }, customers, library: library.filter((l) => !l.builtin), grain }, null, 2), "application/json");
+    download(fname, JSON.stringify({ version: SETTINGS_VERSION, settings, cabinets, project: { ...project, name }, customers, library: library.filter((l) => !l.builtin), grain, rotation }, null, 2), "application/json");
     lastFileRef.current = fname;
     dirtyRef.current = false;
     setSaveFlash(true);
@@ -282,6 +286,7 @@ export default function App() {
       customers,
       library: library.filter((l) => !l.builtin),
       grain,
+      rotation,
     });
     try {
       await navigator.clipboard.writeText(url);
@@ -299,12 +304,13 @@ export default function App() {
 
   const loadProject = async (f: File) => {
     try {
-      const data = (await readProjectFile(f)) as { cabinets: Cabinet[]; settings?: Settings; project?: ProjectInfo; customers?: Customer[]; grain?: GrainOverrides; library?: LibraryItem[] };
+      const data = (await readProjectFile(f)) as { cabinets: Cabinet[]; settings?: Settings; project?: ProjectInfo; customers?: Customer[]; grain?: GrainOverrides; rotation?: RotationOverrides; library?: LibraryItem[] };
       setCabinetsState((data.cabinets ?? []).map(migrateCabinet));
       if (data.settings) setSettingsState(migrateSettings(data.settings));
       if (data.project) setProjectState(sanitizeProject({ ...defaultProject(), ...data.project }));
       if (data.customers) setCustomersState(data.customers);
       if (data.grain) setGrainState(data.grain as GrainOverrides);
+      if (data.rotation) setRotationState(data.rotation as RotationOverrides);
       if (data.library) setLibraryState([...builtinLibrary(), ...(data.library as LibraryItem[]).filter((l) => !l.builtin)]);
       setSelectedId(data.cabinets?.[0]?.id ?? null);
       dirtyRef.current = false;
@@ -489,11 +495,11 @@ export default function App() {
         {tab === "view3d" && <View3DTab cabinets={cabinets} settings={settings} setSettings={setSettingsState} panels={panels} />}
         {tab === "view2d" && <View2DTab cabinets={cabinets} settings={settings} setCabinets={setCabinets} panels={panels} setPanels={setPanels} />}
         {tab === "plan" && <PlanTab cabinets={cabinets} settings={settings} setCabinets={setCabinets} panels={panels} setPanels={setPanels} />}
-        {tab === "cut" && <CutListTab cabinets={cabinets} settings={settings} grain={grain} setGrain={setGrainState} panels={panels} />}
-        {tab === "nest" && <NestingTab cabinets={cabinets} settings={settings} grain={grain} setSettings={setSettingsState} panels={panels} />}
-        {tab === "drill" && <DrillTab cabinets={cabinets} settings={settings} />}
-        {tab === "dxf" && <DxfTab cabinets={cabinets} settings={settings} grain={grain} panels={panels} />}
-        {tab === "bom" && <BomTab cabinets={cabinets} settings={settings} panels={panels} grain={grain} project={project} customers={customers} />}
+        {tab === "cut" && <CutListTab cabinets={cabinets} settings={settings} grain={grain} setGrain={setGrainState} panels={panels} rotation={rotation} setRotation={setRotationState} />}
+        {tab === "nest" && <NestingTab cabinets={cabinets} settings={settings} grain={grain} setSettings={setSettingsState} panels={panels} rotation={rotation} />}
+        {tab === "drill" && <DrillTab cabinets={cabinets} settings={settings} grain={grain} panels={panels} rotation={rotation} />}
+        {tab === "dxf" && <DxfTab cabinets={cabinets} settings={settings} grain={grain} panels={panels} rotation={rotation} />}
+        {tab === "bom" && <BomTab cabinets={cabinets} settings={settings} panels={panels} grain={grain} rotation={rotation} project={project} customers={customers} />}
         {tab === "settings" && <SettingsTab settings={settings} setSettings={setSettingsState} />}
       </main>
 

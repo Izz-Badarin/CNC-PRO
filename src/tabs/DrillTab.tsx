@@ -1,25 +1,38 @@
 import { useMemo, useRef, useState } from "react";
 import { CornerUpRight, Crosshair, FileSpreadsheet, Move, Plus, Minus, RotateCcw, RotateCw } from "lucide-react";
-import type { Cabinet, HoleKind, Part, Settings } from "../types";
+import type { Cabinet, HoleKind, PanelItem, Part, Settings } from "../types";
 import { HOLE_COLOR, MATERIAL_LABEL } from "../types";
-import { allParts, drillOps, glassDoorRefs } from "../lib/model";
+import { allParts, drillOps, glassDoorRefs, type GrainOverrides, type RotationOverrides } from "../lib/model";
 import { download, drillingCsv } from "../lib/export";
 import { Btn, Chip, Empty, Stat } from "../components/ui";
 import { useDebounced } from "../lib/useDebounced";
 
-export function DrillTab({ cabinets, settings }: { cabinets: Cabinet[]; settings: Settings }) {
+export function DrillTab({
+  cabinets,
+  settings,
+  grain = {},
+  panels = [],
+  rotation = {},
+}: {
+  cabinets: Cabinet[];
+  settings: Settings;
+  grain?: GrainOverrides;
+  panels?: PanelItem[];
+  rotation?: RotationOverrides;
+}) {
   const dCabinets = useDebounced(cabinets, 180);
   const dSettings = useDebounced(settings, 180);
   // cut parts with holes/grooves + glass-door REFERENCE entries (rule H —
-  // dashed "not drilled"; never in the CSV)
+  // dashed "not drilled"; never in the CSV). Cut-list manual 90° rotations
+  // are included, so the coordinates match the nested DXF exactly.
   const parts = useMemo(
     () =>
-      allParts(dCabinets, dSettings)
+      allParts(dCabinets, dSettings, grain, panels, rotation)
         .filter((p) => p.holes.length > 0 || p.grooves.length > 0)
         .concat(glassDoorRefs(dCabinets, dSettings).filter((p) => p.holes.length > 0)),
-    [dCabinets, dSettings]
+    [dCabinets, dSettings, grain, panels, rotation]
   );
-  const ops = useMemo(() => drillOps(dCabinets, dSettings), [dCabinets, dSettings]);
+  const ops = useMemo(() => drillOps(dCabinets, dSettings, grain, panels, rotation), [dCabinets, dSettings, grain, panels, rotation]);
   const [sel, setSel] = useState(0);
   /** cabinet filter (rule G) — "all" or a single cabinet id */
   const [cabSel, setCabSel] = useState("all");
@@ -88,7 +101,7 @@ export function DrillTab({ cabinets, settings }: { cabinets: Cabinet[]; settings
             (not drilled). Datum dimensions measure every hole from the panel edges — hover a hole for its exact position.
           </p>
         </div>
-        <Btn size="sm" onClick={() => download("drilling.csv", drillingCsv(cabinets, settings), "text/csv")}>
+        <Btn size="sm" onClick={() => download("drilling.csv", drillingCsv(cabinets, settings, grain, panels, rotation), "text/csv")}>
           <FileSpreadsheet size={14} /> Drilling CSV ({holeOps.length} rows)
         </Btn>
       </div>
