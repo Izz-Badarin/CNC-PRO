@@ -3,6 +3,7 @@ import {
   Box,
   Crosshair,
   FileDown,
+  FilePlus2,
   FolderDown,
   FolderOpen,
   Layers2,
@@ -258,6 +259,28 @@ export default function App() {
     return { cabs: cabinets.length, parts: parts.reduce((a, p) => a + p.qty, 0), holes, units: cabinets.reduce((a, c) => a + Math.max(1, c.qty), 0) };
   }, [cabinets, settings]);
 
+  const newProject = () => {
+    const hasWork = cabinets.length > 0 || (project.name && project.name !== "Untitled Project") || panels.length > 0;
+    if (hasWork && !window.confirm("Start a new project? Unsaved editor changes will be cleared. The current project will be kept in the browser backup history.")) return;
+    // Keep a recoverable snapshot before autosave replaces the active project with
+    // the blank one. This makes New safe without forcing an unexpected download.
+    if (hasWork) {
+      try {
+        rotateBackups(SETTINGS_VERSION, JSON.stringify({ version: SETTINGS_VERSION, settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain, rotation }));
+      } catch {}
+    }
+    setCabinetsState([]);
+    setProjectState(defaultProject());
+    // Customers, materials/settings, and the cabinet library are shared resources;
+    // keep them available in the new project.
+    setGrainState({});
+    setRotationState({});
+    setSelectedId(null);
+    setTab("project");
+    lastFileRef.current = null;
+    dirtyRef.current = false;
+  };
+
   const saveProject = (asNew = false) => {
     let name = (lastFileRef.current ?? project.name ?? "cabinet-project").replace(/[^\w\- ]+/g, "").trim() || "cabinet-project";
     const untitled = !project.name || project.name.trim() === "Untitled Project";
@@ -306,13 +329,14 @@ export default function App() {
     try {
       const data = (await readProjectFile(f)) as { cabinets: Cabinet[]; settings?: Settings; project?: ProjectInfo; customers?: Customer[]; grain?: GrainOverrides; rotation?: RotationOverrides; library?: LibraryItem[] };
       setCabinetsState((data.cabinets ?? []).map(migrateCabinet));
-      if (data.settings) setSettingsState(migrateSettings(data.settings));
-      if (data.project) setProjectState(sanitizeProject({ ...defaultProject(), ...data.project }));
-      if (data.customers) setCustomersState(data.customers);
-      if (data.grain) setGrainState(data.grain as GrainOverrides);
-      if (data.rotation) setRotationState(data.rotation as RotationOverrides);
-      if (data.library) setLibraryState([...builtinLibrary(), ...(data.library as LibraryItem[]).filter((l) => !l.builtin)]);
+      setSettingsState(migrateSettings(data.settings ?? DEFAULT_SETTINGS));
+      setProjectState(sanitizeProject({ ...defaultProject(), ...(data.project ?? {}) }));
+      setCustomersState(data.customers ?? []);
+      setGrainState((data.grain ?? {}) as GrainOverrides);
+      setRotationState((data.rotation ?? {}) as RotationOverrides);
+      setLibraryState([...builtinLibrary(), ...((data.library ?? []) as LibraryItem[]).filter((l) => !l.builtin)]);
       setSelectedId(data.cabinets?.[0]?.id ?? null);
+      lastFileRef.current = f.name;
       dirtyRef.current = false;
     } catch (e) {
       alert("Could not load project file: " + (e as Error).message);
@@ -391,14 +415,17 @@ export default function App() {
                 <span><b className="text-amber-300">{stats.parts}</b> parts</span>
                 <span><b className="text-cyan-300">{stats.holes}</b> holes</span>
               </div>
+              <Btn size="sm" onClick={newProject} title="Close the current project and start with a blank cabinet list">
+                <FilePlus2 size={14} /> New
+              </Btn>
               <Btn size="sm" variant="ok" onClick={() => saveProject(false)} title="Instant save to the same file — asks for a name first only while the project is still “Untitled Project”">
                 <Save size={14} /> {saveFlash ? "Saved!" : "Save"}
               </Btn>
               <Btn size="sm" onClick={() => saveProject(true)} title="Save as a new file (asks for a name)">
                 <Save size={14} /> Save As
               </Btn>
-              <Btn size="sm" onClick={() => fileRef.current?.click()}>
-                <FolderOpen size={14} /> Load
+              <Btn size="sm" onClick={() => fileRef.current?.click()} title="Open a saved CNC-PRO project JSON file">
+                <FolderOpen size={14} /> Open
               </Btn>
               <Btn size="sm" onClick={() => void shareLink()} title="Copy a link that opens this exact project — works offline (hash)">
                 <Link2 size={14} /> {shareFlash ? "Copied!" : "Share link"}
