@@ -1,6 +1,6 @@
 import type { Cabinet, PanelItem, PartMaterial, Settings } from "../types";
 import { nestParts, placedOutline, rotPoint, type Sheet } from "./nesting";
-import { allParts, glassDoorRefs, type GrainOverrides } from "./model";
+import { allParts, type GrainOverrides } from "./model";
 import { partMatName, plyMaterialsOf } from "./defaults";
 
 const LAYERS: [string, number][] = [
@@ -238,15 +238,9 @@ export function buildDxf(cabs: Cabinet[], S: Settings, material: PartMaterial | 
   );
   const sel: DxfSheetRef[] = [];
   groups.forEach((g) => g.sheets.forEach((sheet) => sel.push({ key: g.key, sheet })));
-  // rule H — glass-door reference notes: TEXT on the LABEL layer only (no
-  // geometry — the O35 cups stay excluded from the DXF), offset left of the
-  // sheet grid so they never overlap a sheet.
-  let extra = "";
-  glassDoorRefs(cabs, S).forEach((g, i) => {
-    const cups = g.holes.map((h) => `(${r(h.x)},${r(h.y)})`).join(" ");
-    extra += text("LABEL", -3200, 400 - i * 50, 35, `GLASS DOOR REF ${r(g.w)}x${r(g.h)} - ${g.holes.length} x O${S.hingeCupDiameter} cups @ ${cups} - NOT DRILLED (drill the glass at these positions)`);
-  });
-  return buildDxfFromSheets(sel, S, labels, extra);
+  // Glass doors are purchased hardware — they belong in the BOM only, never
+  // in the CNC DXF (no REF text, no cup geometry).
+  return buildDxfFromSheets(sel, S, labels, "");
 }
 
 /**

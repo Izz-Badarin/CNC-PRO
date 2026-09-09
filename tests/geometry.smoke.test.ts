@@ -1,6 +1,6 @@
 import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, doorHingeCount, makeCabinet } from "../src/lib/defaults";
 import { buildDxf } from "../src/lib/dxf";
-import { layoutCabs, panelPositions } from "../src/tabs/View2DTab";
+import { layoutCabs, overlapBoxes, panelPositions } from "../src/tabs/View2DTab";
 import { bomReportHtml, frontElevationHtml, frontElevationDxf, frontElevationSvg } from "../src/lib/export";
 import { explodedReportHtml } from "../src/lib/explodedReport";
 import * as THREE from "three";
@@ -323,8 +323,7 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   const panel: import("../src/types").PanelItem = { id: "p1", name: "RawPanel", w: 400, h: 300, thk: 0, material: "plywood" };
   const dxfDef = buildDxf([c], S, "plywood", true, {}, DEFAULT_PLY_ID, [panel]);
   check("dxf J: default-matId panel kept in the DEFAULT plywood export", dxfDef.includes("RawPanel"));
-  check("dxf H: GLASS DOOR REF label text present", dxfDef.includes("GLASS DOOR REF"));
-  check("dxf H: NOT DRILLED marker present", dxfDef.includes("NOT DRILLED"));
+  check("dxf: no GLASS DOOR REF (BOM only)", !dxfDef.includes("GLASS DOOR") && !dxfDef.includes("NOT DRILLED"));
   check("dxf: Ø35 cup CIRCLEs still excluded", !/0\nCIRCLE\n8\nHINGE_HOLES/.test(dxfDef));
 }
 

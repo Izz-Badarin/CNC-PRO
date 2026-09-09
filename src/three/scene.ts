@@ -1196,6 +1196,7 @@ export class CabinetViewer {
   }
 
   private panelGroups: THREE.Group[] = [];
+  private isolateId: string | null = null;
 
   setData(cabs: Cabinet[], S: Settings, opts: ViewerOptions) {
     woodOpacity = clampOp(S.opacityPlywood); // carcass panels use the plywood texture
@@ -1258,11 +1259,14 @@ export class CabinetViewer {
           grp.position.x = px / 1000;
           px += Math.max(50, pn.w) + 60;
         }
+        const pz = pn.plan && Number.isFinite(pn.plan.z) ? pn.plan.z : 0;
+        grp.position.z = pz / 1000;
         this.builtWrap.add(grp);
         this.panelGroups.push(grp);
         this.setVis(grp);
       });
     }
+    if (this.isolateId) this.isolateCabinet(this.isolateId);
 
     const bbox = new THREE.Box3().setFromObject(this.builtWrap);
     // a NaN in ANY mesh position yields a NaN bbox — framing the camera from it
@@ -1573,6 +1577,34 @@ export class CabinetViewer {
     this.layerVis[tag as Tag] = vis;
     this.built.forEach((b) => this.applyLayers(b));
     this.panelGroups.forEach((g) => this.setVis(g));
+  }
+
+  setAutoRotate(v: boolean) {
+    this.controls.autoRotate = v;
+    this.controls.autoRotateSpeed = 4.5;
+  }
+
+  /** Hide every cabinet except `cabId` (null = show all). Frames the camera on the isolate. */
+  isolateCabinet(cabId: string | null) {
+    this.isolateId = cabId;
+    this.built.forEach((b) => {
+      const id = (b.group.userData as { cabId?: string })?.cabId;
+      b.group.visible = !cabId || id === cabId;
+    });
+    this.panelGroups.forEach((g) => (g.visible = !cabId));
+    const target = cabId ? this.built.find((b) => (b.group.userData as { cabId?: string })?.cabId === cabId) : null;
+    if (target) {
+      const c = new THREE.Vector3();
+      const box = new THREE.Box3().setFromObject(target.group);
+      box.getCenter(c);
+      const size = box.getSize(new THREE.Vector3());
+      const r = Math.max(size.x, size.y, size.z, 0.4) / 2;
+      this.center.copy(c);
+      this.radius = r;
+      this.controls.target.copy(c);
+      this.camera.position.copy(c.clone().add(new THREE.Vector3(r * 2.2, r * 1.4, r * 2.4)));
+      this.controls.update();
+    }
   }
 
   setView(preset: "iso" | "top" | "front" | "side" | "reset") {
