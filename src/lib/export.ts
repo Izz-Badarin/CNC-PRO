@@ -713,7 +713,7 @@ export function bomReportHtml(
 
   <div class="page" id="p5">
     <h2>Cut List by Material - Bend length (I) + Grain lock (R)</h2>
-    <p class="small">Every part rotated once (L-W) then grain lock applies. Bend = total banded-edge length per row (incl. qty) - edge-banding tape to buy.</p>
+    <p class="small">Span panels (tops, bottoms, shelves, sections) and backs keep grain along the length; every other part rotated once (L-W) then grain lock applies. Bend = total banded-edge length per row (incl. qty) - edge-banding tape to buy.</p>
     ${cutByMat || '<div class="card">No parts</div>'}
     <div class="footer"><span>${escH(projName)} - Cut list - ${totalParts} parts - ${totalArea.toFixed(2)} m2</span><span>Page 5 / 7</span></div>
   </div>

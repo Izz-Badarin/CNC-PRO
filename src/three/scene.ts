@@ -418,7 +418,8 @@ function buildWing3D(
   const slotV = cab.slot ?? "none";
   if (slotV !== "none" && !isNotched(cab.type)) {
     const sw = Math.max(6, S.slotWidth);
-    const zc = d - Math.max(sw, S.slotFromFront);
+    const slotFromFront = cab.slotFromFront != null && cab.slotFromFront > 0 ? cab.slotFromFront : S.slotFromFront;
+    const zc = d - Math.max(sw, slotFromFront);
     if (slotV === "left" || slotV === "both") {
       const st = box(3, BH, sw, mats.slot, "carcass");
       st.position.set(T + 1.5, BH / 2, zc);
@@ -854,6 +855,32 @@ function buildFullDoors3D(
 ) {
   const gap = S.doorGap;
   const ply = plyMaterialOf(S, cab);
+  // cabinet-level full door (Boxes control) — one door/pair covering whole width,
+  // with left/right/double support
+  if (cab.fullDoor && cab.fullDoor !== "off") {
+    const fd = cab.fullDoor as string;
+    const isGlass = fd.startsWith("glass");
+    const suffix = fd.includes("-") ? fd.split("-")[1] : "";
+    const type: DoorSpec["type"] = suffix === "double" ? "double" : suffix === "left" || suffix === "right" ? "single" : (cab.width > 620 ? "double" : "single");
+    const swing: DoorSpec["swing"] = suffix === "right" ? "right" : "left";
+    const door: DoorSpec = {
+      type,
+      style: "overlay",
+      swing,
+      material: isGlass ? "glass" : "mdf",
+      finish: S.mdfFinish,
+      mdfThk: S.mdfThk,
+      hingeBrand: "Universal 35mm",
+      hasHandle: true,
+      handlePos: "center",
+      full: true,
+      hingeCount: cab.fullDoorHinges,
+      hOverride: cab.fullDoorHOverride != null && cab.fullDoorHOverride > 0 ? cab.fullDoorHOverride : undefined,
+      wOverride: cab.fullDoorWOverride != null && cab.fullDoorWOverride > 0 ? cab.fullDoorWOverride : undefined,
+    };
+    buildDoor3D(S, w, w / 2, d, 0, fullH, door, wg, doors, T, gap, ply);
+    return;
+  }
   cab.rows.forEach((r) => {
     const lays = columnLayout(cab, r, S);
     lays.forEach((lay) => {
@@ -1082,9 +1109,11 @@ export class CabinetViewer {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color("#0a0f18");
-    this.scene.fog = new THREE.Fog("#0a0f18", 26, 70);
+    // long runs / 2D layouts with large X coords must stay on the floor, in
+    // view and out of the fog — same OLD disc+grid look, just bigger
+    this.scene.fog = new THREE.Fog("#0a0f18", 80, 240);
 
-    this.camera = new THREE.PerspectiveCamera(42, w / h, 0.02, 200);
+    this.camera = new THREE.PerspectiveCamera(42, w / h, 0.02, 400);
     this.camera.position.set(2.6, 1.6, 3.4);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -1092,7 +1121,7 @@ export class CabinetViewer {
     this.controls.dampingFactor = 0.08;
     this.controls.maxPolarAngle = Math.PI / 2 - 0.015;
     this.controls.minDistance = 0.25;
-    this.controls.maxDistance = 55;
+    this.controls.maxDistance = 140;
     this.controls.target.set(0.8, 0.45, 0);
 
     const hemi = new THREE.HemisphereLight("#dfe9ff", "#1b1409", 1.05);
@@ -1106,11 +1135,11 @@ export class CabinetViewer {
     fill.position.set(-4, 3, -5);
     this.scene.add(fill);
 
-    const ground = new THREE.Mesh(new THREE.CircleGeometry(45, 64), new THREE.MeshStandardMaterial({ color: "#0c1320", roughness: 1 }));
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(140, 64), new THREE.MeshStandardMaterial({ color: "#0c1320", roughness: 1 }));
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
     this.scene.add(ground);
-    const grid = new THREE.GridHelper(45, 90, "#1c2940", "#131e30");
+    const grid = new THREE.GridHelper(140, 140, "#1c2940", "#131e30");
     (grid.material as THREE.Material).transparent = true;
     (grid.material as THREE.Material).opacity = 0.55;
     grid.position.y = 0.002;
@@ -1246,7 +1275,8 @@ export class CabinetViewer {
       sc.right = this.radius * 1.7;
       sc.top = this.radius * 1.7;
       sc.bottom = -this.radius * 1.7;
-      sc.far = 60;
+      // long runs sit far from the light — keep the shadow frustum deeper than the scene
+      sc.far = Math.max(60, this.radius * 8);
       sc.updateProjectionMatrix();
     }
   }

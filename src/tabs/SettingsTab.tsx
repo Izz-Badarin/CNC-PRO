@@ -413,7 +413,7 @@ export function SettingsTab({ settings, setSettings }: { settings: Settings; set
           <li>• Hinge auto: <span className="text-amber-300">&lt;900→2 · 900-1799→3 · 1800-2399→4 · 2400-2999→5 · ≥3000→6</span> · cups 140mm from top &amp; bottom</li>
           <li>• Cover thickness: <span className="text-amber-300">0 = auto</span> (plywood {settings.bodyThk}mm / MDF {settings.mdfThk}mm)</li>
           <li>• New cabinets: <span className="text-amber-300">600 × 720 × 560</span>, toe kick OFF, MDF fronts OFF</li>
-          <li>• Cut list: every piece is <span className="text-amber-300">rotated once (L↔W)</span>, then grain lock applies</li>
+          <li>• Cut list: span panels + backs keep <span className="text-amber-300">grain along the length</span>, every other piece is <span className="text-amber-300">rotated once (L↔W)</span>, then grain lock applies</li>
         </ul>
       </div>
 

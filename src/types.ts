@@ -464,6 +464,13 @@ export interface Part {
   thickness: number;
   /** for plywood parts: the id of the user plywood material (matches `Settings.plyMaterials[].id`) */
   matId?: string;
+  /**
+   * true = skip the automatic 90° cut-list rotation for this part.
+   * Span panels (tops, bottoms, shelves, row sections, splitters) and backs are
+   * generated grain-along-Length already, so rotating them would turn their
+   * locked grain 90° off and waste sheets in nesting.
+   */
+  noRotate?: boolean;
   band: Banding;
   holes: Hole[];
   grooves: Groove[];
