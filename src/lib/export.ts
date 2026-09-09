@@ -1,10 +1,11 @@
-import type { Cabinet, Settings } from "../types";
-import { allPartsMerged, bandStr, drillOps, type GrainOverrides } from "./model";
+import type { Cabinet, PanelItem, Settings } from "../types";
+import { allPartsMerged, bandLengthMm, bandStr, drillOps, type GrainOverrides } from "./model";
 import { nestParts } from "./nesting";
+import { layoutCabs, panelPositions } from "./layout2d";
 import { MATERIAL_LABEL } from "../types";
 import { plyMaterialById } from "./defaults";
 
-const allParts = (c: Cabinet[], S: Settings, ov: GrainOverrides = {}) => allPartsMerged(c, S, ov);
+const allParts = (c: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = []) => allPartsMerged(c, S, ov, panels);
 
 /** human material label honoring per-cabinet plywood materials */
 const matLabel = (S: Settings, p: { material: string; matId?: string }) =>
@@ -39,12 +40,196 @@ export function downloadRaw(filename: string, content: string, mime = "applicati
 const csv = (rows: (string | number)[][]) =>
   rows.map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\r\n");
 
+/* ================= dimensioned front elevation (rule D2) ================= */
+
+interface ElevItem {
+  x: number;
+  w: number;
+  h: number;
+  lift: number;
+  label: string;
+  sub: string;
+  dashed: boolean;
+}
+
+/** elevation items = cabinets (their run) + raw panels, sorted left → right */
+function elevationItems(cabs: Cabinet[], panels: PanelItem[]): ElevItem[] {
+  const pos = layoutCabs(cabs);
+  const ppos = panelPositions(cabs, panels);
+  return [
+    ...pos.map((p) => ({
+      x: p.x,
+      w: p.cab.width,
+      h: p.cab.height,
+      lift: p.y,
+      label: p.cab.name + (p.cab.qty > 1 ? ` x${p.cab.qty}` : ""),
+      sub: `${p.cab.width}x${p.cab.height}x${p.cab.depth}`,
+      dashed: false,
+    })),
+    ...ppos.map((p) => ({
+      x: p.x,
+      w: p.pn.w,
+      h: (p.y ?? 0) + p.pn.h,
+      lift: p.y ?? 0,
+      label: p.pn.name,
+      sub: `panel ${Math.round(p.pn.w)}x${Math.round(p.pn.h)}`,
+      dashed: true,
+    })),
+  ].sort((a, b) => a.x - b.x);
+}
+
+const eF = (n: number) => Math.round(n * 100) / 100;
+const eEsc = (s: string) => s.replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c]!));
+
+/** one horizontal chain-dimension run: extension lines at every point,
+ *  dimension segments between consecutive points, each segment labelled */
+function chainDimSvg(pts: number[], X: (mm: number) => number, y: number): string {
+  let s = "";
+  pts.forEach((p) => {
+    s += `<line x1="${eF(X(p))}" y1="${eF(y - 14)}" x2="${eF(X(p))}" y2="${eF(y + 10)}" stroke="#111" stroke-width="0.9"/>`;
+  });
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const xa = X(pts[i]), xb = X(pts[i + 1]);
+    s += `<line x1="${eF(xa)}" y1="${eF(y)}" x2="${eF(xb)}" y2="${eF(y)}" stroke="#111" stroke-width="0.9"/>`;
+    s += `<path d="M ${eF(xa)} ${eF(y)} l 6 -3 M ${eF(xa)} ${eF(y)} l 6 3" stroke="#111" stroke-width="0.9" fill="none"/>`;
+    s += `<path d="M ${eF(xb)} ${eF(y)} l -6 -3 M ${eF(xb)} ${eF(y)} l -6 3" stroke="#111" stroke-width="0.9" fill="none"/>`;
+    const lbl = `${Math.round(pts[i + 1] - pts[i])}`;
+    if (xb - xa > 30) s += `<text x="${eF((xa + xb) / 2)}" y="${eF(y - 5)}" font-size="11" text-anchor="middle" fill="#111">${lbl}</text>`;
+    else s += `<text x="${eF(xb + 4)}" y="${eF(y - 5)}" font-size="10" text-anchor="start" fill="#111">${lbl}</text>`;
+  }
+  return s;
+}
+
+/** SVG of the dimensioned front elevation: floor line + hatching, per-cabinet
+ *  W×H outlines with labels, chain dimension along the floor, overall
+ *  dimension and a per-item height dimension (rule D2) */
+export function frontElevationSvg(cabs: Cabinet[], panels: PanelItem[] = []): string {
+  const items = elevationItems(cabs, panels);
+  if (items.length === 0) return "";
+  const minX = Math.min(...items.map((i) => i.x));
+  const maxX = Math.max(...items.map((i) => i.x + i.w));
+  const maxH = Math.max(...items.map((i) => i.h));
+  const W = 1560, H = 880;
+  const padL = 80, padR = 110, padT = 130, padB = 200;
+  const sc = Math.min((W - padL - padR) / Math.max(maxX - minX, 1), (H - padT - padB) / Math.max(maxH, 1));
+  const base = H - padB; // svg y of the floor line
+  const ox = padL + (W - padL - padR - (maxX - minX) * sc) / 2;
+  const X = (mm: number) => ox + (mm - minX) * sc;
+  const Y = (mm: number) => base - mm * sc;
+
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="Arial, Helvetica, sans-serif">`;
+  out += `<rect width="${W}" height="${H}" fill="#ffffff"/>`;
+  out += `<text x="${W / 2}" y="36" font-size="20" font-weight="700" text-anchor="middle" fill="#111">Front Elevation — Dimensioned</text>`;
+  out += `<text x="${W / 2}" y="56" font-size="12" text-anchor="middle" fill="#555">${new Date().toLocaleString()} · all dimensions in mm</text>`;
+
+  // floor line + hatching
+  const fx1 = X(minX - 80), fx2 = X(maxX + 80);
+  out += `<line x1="${eF(fx1)}" y1="${eF(base)}" x2="${eF(fx2)}" y2="${eF(base)}" stroke="#111" stroke-width="3"/>`;
+  for (let tx = fx1 + 8; tx < fx2 - 6; tx += 22) out += `<line x1="${eF(tx)}" y1="${eF(base)}" x2="${eF(tx - 12)}" y2="${eF(base + 12)}" stroke="#111" stroke-width="1"/>`;
+
+  // outlines + labels (panels dashed)
+  items.forEach((it) => {
+    const x1 = X(it.x), x2 = X(it.x + it.w), yTop = Y(it.lift + it.h);
+    const dash = it.dashed ? ` stroke-dasharray="8 5"` : "";
+    out += `<rect x="${eF(x1)}" y="${eF(yTop)}" width="${eF(x2 - x1)}" height="${eF(base - yTop)}" fill="none" stroke="#111" stroke-width="1.8"${dash}/>`;
+    out += `<text x="${eF((x1 + x2) / 2)}" y="${eF(yTop - 34)}" font-size="14" font-weight="700" text-anchor="middle" fill="#111">${eEsc(it.label)}</text>`;
+    out += `<text x="${eF((x1 + x2) / 2)}" y="${eF(yTop - 16)}" font-size="11" text-anchor="middle" fill="#444">${eEsc(it.sub)}</text>`;
+  });
+
+  // chain dimension along the floor (every item edge) + overall
+  const edges = [...new Set(items.flatMap((i) => [i.x, i.x + i.w]).map((e) => Math.round(e)))].sort((a, b) => a - b);
+  out += chainDimSvg(edges, X, base + 38);
+  out += chainDimSvg([minX, maxX], X, base + 92);
+
+  // per-item height dimension on the left edge
+  items.forEach((it) => {
+    const hx = X(it.x) - 22;
+    const yA = Y(it.lift), yB = Y(it.lift + it.h);
+    out += `<line x1="${eF(hx + 8)}" y1="${eF(yA)}" x2="${eF(hx)}" y2="${eF(yA)}" stroke="#111" stroke-width="0.9"/>`;
+    out += `<line x1="${eF(hx + 8)}" y1="${eF(yB)}" x2="${eF(hx)}" y2="${eF(yB)}" stroke="#111" stroke-width="0.9"/>`;
+    out += `<line x1="${eF(hx)}" y1="${eF(yA)}" x2="${eF(hx)}" y2="${eF(yB)}" stroke="#111" stroke-width="0.9"/>`;
+    out += `<path d="M ${eF(hx)} ${eF(yA)} l -3 -5 M ${eF(hx)} ${eF(yA)} l 3 -5" stroke="#111" stroke-width="0.9" fill="none"/>`;
+    out += `<path d="M ${eF(hx)} ${eF(yB)} l -3 5 M ${eF(hx)} ${eF(yB)} l 3 5" stroke="#111" stroke-width="0.9" fill="none"/>`;
+    out += `<text x="${eF(hx - 6)}" y="${eF((yA + yB) / 2 + 4)}" font-size="11" text-anchor="end" fill="#111">${Math.round(it.lift + it.h)}</text>`;
+  });
+  out += `</svg>`;
+  return out;
+}
+
+/** print/HTML wrapper around the dimensioned elevation SVG */
+export function frontElevationHtml(cabs: Cabinet[], panels: PanelItem[] = []): string {
+  const svg = frontElevationSvg(cabs, panels);
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Front elevation</title>
+  <style>body{margin:0;padding:16px;background:#fff}</style></head>
+  <body>${svg}<script>window.onload=()=>window.print()</script></body></html>`;
+}
+
+/** DXF of the dimensioned front elevation (real mm, floor at y=0, layers
+ *  FLOOR / ELEVATION / DIMENSION / LABEL — for plot or CAM reference) */
+export function frontElevationDxf(cabs: Cabinet[], panels: PanelItem[] = []): string {
+  const items = elevationItems(cabs, panels);
+  if (items.length === 0) return "";
+  const minX = Math.min(...items.map((i) => i.x));
+  const maxX = Math.max(...items.map((i) => i.x + i.w));
+  const r = (n: number) => (Math.round(n * 1000) / 1000).toString();
+  const ascii = (s: string) => s.replace(/[^ -~]/g, "?");
+  const line = (l: string, x1: number, y1: number, x2: number, y2: number) =>
+    `0\nLINE\n8\n${l}\n10\n${r(x1)}\n20\n${r(y1)}\n30\n0\n11\n${r(x2)}\n21\n${r(y2)}\n31\n0\n`;
+  const text = (l: string, x: number, y: number, h: number, t: string) =>
+    `0\nTEXT\n8\n${l}\n10\n${r(x)}\n20\n${r(y)}\n30\n0\n40\n${r(h)}\n1\n${ascii(t)}\n`;
+
+  let out = `0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n`;
+  out += `0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n`;
+  for (const [name, color] of [
+    ["FLOOR", 7],
+    ["ELEVATION", 7],
+    ["DIMENSION", 3],
+    ["LABEL", 1],
+  ])
+    out += `0\nLAYER\n2\n${name}\n70\n0\n62\n${color}\n6\nCONTINUOUS\n`;
+  out += `0\nENDTAB\n0\nENDSEC\n`;
+  out += `0\nSECTION\n2\nENTITIES\n`;
+
+  // floor line + hatching
+  out += line("FLOOR", minX - 80, 0, maxX + 80, 0);
+  for (let tx = minX - 70; tx < maxX + 80; tx += 22) out += line("FLOOR", tx, 0, tx - 12, -12);
+
+  // outlines + labels + height dimensions
+  items.forEach((it) => {
+    out += line("ELEVATION", it.x, it.lift, it.x, it.lift + it.h);
+    out += line("ELEVATION", it.x + it.w, it.lift, it.x + it.w, it.lift + it.h);
+    out += line("ELEVATION", it.x, it.lift + it.h, it.x + it.w, it.lift + it.h);
+    out += line("ELEVATION", it.x, it.lift, it.x + it.w, it.lift);
+    out += text("LABEL", it.x + it.w / 2, it.lift + it.h + 60, 40, it.label);
+    out += text("LABEL", it.x + it.w / 2, it.lift + it.h + 10, 24, it.sub);
+    out += line("DIMENSION", it.x - 40, it.lift, it.x - 40, it.lift + it.h);
+    out += text("DIMENSION", it.x - 48, it.lift + it.h / 2 - 12, 24, `${Math.round(it.lift + it.h)}`);
+  });
+
+  // chain dimension + overall
+  const edges = [...new Set(items.flatMap((i) => [i.x, i.x + i.w]).map((e) => Math.round(e)))].sort((a, b) => a - b);
+  const y1 = -60;
+  edges.forEach((e) => (out += line("DIMENSION", e, -16, e, y1 - 14)));
+  for (let i = 0; i + 1 < edges.length; i++) {
+    out += line("DIMENSION", edges[i], y1, edges[i + 1], y1);
+    out += text("DIMENSION", (edges[i] + edges[i + 1]) / 2, y1 + 8, 24, `${edges[i + 1] - edges[i]}`);
+  }
+  const y2 = -130;
+  out += line("DIMENSION", minX, -16, minX, y2 - 14);
+  out += line("DIMENSION", maxX, -16, maxX, y2 - 14);
+  out += line("DIMENSION", minX, y2, maxX, y2);
+  out += text("DIMENSION", (minX + maxX) / 2, y2 + 8, 30, `${Math.round(maxX - minX)} OVERALL`);
+
+  out += `0\nENDSEC\n0\nEOF\n`;
+  return out;
+}
+
 /* ---------------- cut list csv ---------------- */
-export function cutListCsv(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}): string {
+export function cutListCsv(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = []): string {
   const rows: (string | number)[][] = [
-    ["Cabinet", "Part", "Material", "Grain locked", "Length mm", "Width mm", "Qty", "Edge banding", "Holes", "Shape"],
+    ["Cabinet", "Part", "Material", "Grain locked", "Length mm", "Width mm", "Qty", "Edge banding", "Bend length m", "Holes", "Shape"],
   ];
-  allParts(cabs, S, ov).forEach((p) => {
+  allParts(cabs, S, ov, panels).forEach((p) => {
   rows.push([
     p.cabName,
     p.name,
@@ -54,6 +239,7 @@ export function cutListCsv(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}
     p.h,
     p.qty,
     bandStr(p.band),
+    Math.round(bandLengthMm(p) * p.qty) / 1000,
     p.holes.length * p.qty,
     p.shape === "poly" ? `polygon ${p.outline.length}pts` : "rect",
   ]);
@@ -73,9 +259,9 @@ export function drillingCsv(cabs: Cabinet[], S: Settings): string {
 
 
 /* ---------------- nesting csv ---------------- */
-export function nestingCsv(cabs: Cabinet[], S: Settings): string {
+export function nestingCsv(cabs: Cabinet[], S: Settings, panels: PanelItem[] = []): string {
   const rows: (string | number)[][] = [["Sheet group", "Sheet #", "Cabinet", "Part", "X mm", "Y mm", "W mm", "H mm", "Rotated"]];
-  nestParts(allParts(cabs, S), S).forEach((g) =>
+  nestParts(allParts(cabs, S, {}, panels), S).forEach((g) =>
     g.sheets.forEach((s) =>
       s.placed.forEach((pp) =>
         rows.push([g.key, s.index + 1, pp.part.cabName, pp.part.name, pp.x, pp.y, pp.w, pp.h, pp.rotated ? "yes" : "no"]),
@@ -86,12 +272,12 @@ export function nestingCsv(cabs: Cabinet[], S: Settings): string {
 }
 
 /* ---------------- HTML / print ---------------- */
-export function cutListHtml(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}): string {
-  const parts = allParts(cabs, S, ov);
+export function cutListHtml(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = []): string {
+  const parts = allParts(cabs, S, ov, panels);
   const trs = parts
     .map(
       (p, i) => `<tr><td>${i + 1}</td><td>${p.cabName}</td><td>${p.name}</td><td>${matLabel(S, p)}</td>
-      <td>${p.thickness}</td><td>${p.w}</td><td>${p.h}</td><td>${p.qty}</td><td>${bandStr(p.band)}</td><td>${p.holes.length * p.qty}</td></tr>`,
+      <td>${p.thickness}</td><td>${p.w}</td><td>${p.h}</td><td>${p.qty}</td><td>${bandStr(p.band)}</td><td>${((bandLengthMm(p) * p.qty) / 1000).toFixed(2)}</td><td>${p.holes.length * p.qty}</td></tr>`,
     )
     .join("");
   return `<!doctype html><html><head><meta charset="utf-8"><title>Cut list</title>
@@ -100,13 +286,13 @@ export function cutListHtml(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {
   th,td{border:1px solid #999;padding:4px 8px;text-align:left} th{background:#eee}</style></head>
   <body><h1>CNC Cabinet Generator — Cut List</h1>
   <p>Generated ${new Date().toLocaleString()} · ${cabs.length} cabinets · ${parts.reduce((a, p) => a + p.qty, 0)} parts</p>
-  <table><thead><tr><th>#</th><th>Cabinet</th><th>Part</th><th>Material</th><th>Thk</th><th>Length</th><th>Width</th><th>Qty</th><th>Banding</th><th>Holes</th></tr></thead>
+  <table><thead><tr><th>#</th><th>Cabinet</th><th>Part</th><th>Material</th><th>Thk</th><th>Length</th><th>Width</th><th>Qty</th><th>Banding</th><th>Bend (m)</th><th>Holes</th></tr></thead>
   <tbody>${trs}</tbody></table><script>window.onload=()=>window.print()</script></body></html>`;
 }
 
-export function labelsHtml(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}): string {
+export function labelsHtml(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = []): string {
   const cards: string[] = [];
-  allParts(cabs, S, ov).forEach((p) => {
+  allParts(cabs, S, ov, panels).forEach((p) => {
     for (let i = 0; i < p.qty; i++) {
       const edges = [
         p.band.top ? `<span class="e">TOP</span>` : "",

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { Cabinet, Settings } from "../types";
+import type { Cabinet, PanelItem, Settings } from "../types";
 import { CabinetViewer } from "../three/scene";
 import { useDebounced } from "../lib/useDebounced";
 import * as THREE from "three";
@@ -12,6 +12,7 @@ export function ThreeCanvas({
   doorsOpen = false,
   drawersOpen = false,
   followLayout = false,
+  panels = [],
   onReady,
   onCabinetClick,
   className,
@@ -23,6 +24,7 @@ export function ThreeCanvas({
   doorsOpen?: boolean;
   drawersOpen?: boolean;
   followLayout?: boolean;
+  panels?: PanelItem[];
   onReady?: (v: CabinetViewer) => void;
   onCabinetClick?: (cab: Cabinet | null) => void;
   className?: string;
@@ -73,18 +75,19 @@ export function ThreeCanvas({
   const dSettings = useDebounced(settings, 200);
   const dSpacing = useDebounced(spacing, 200);
   const dFollow = useDebounced(followLayout, 200);
+  const dPanels = useDebounced(panels, 200);
 
   useEffect(() => {
-    viewerRef.current?.setData(dCabinets, dSettings, { spacing: dSpacing, showDims, followLayout: dFollow });
+    viewerRef.current?.setData(dCabinets, dSettings, { spacing: dSpacing, showDims, followLayout: dFollow, panels: dPanels });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dCabinets, dSettings, dSpacing, dFollow]);
+  }, [dCabinets, dSettings, dSpacing, dFollow, dPanels]);
 
   useEffect(() => {
     viewerRef.current?.setShowDims(showDims);
   }, [showDims]);
 
   useEffect(() => {
-    if (viewerRef.current) viewerRef.current.doorsOpen = doorsOpen;
+    if (viewerRef.current) viewerRef.current.setDoorOpen(doorsOpen ? 1 : 0);
   }, [doorsOpen]);
 
   useEffect(() => {

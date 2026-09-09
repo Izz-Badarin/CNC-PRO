@@ -137,6 +137,7 @@ export const DEFAULT_SETTINGS: Settings = {
   railDouble1: 1000,
   railDouble2: 2000,
   railShelfGap: 60,
+  railShelfMinGap: 250,
   /* ---- hinge boring (universal 35mm hinge — cups bored in the DOOR) ---- */
   hingeCupDiameter: 35, // universal hinge — 35mm cup bored in the DOOR (never the side panels)
   hingeCupDepth: 12.5, // standard cup depth
@@ -224,10 +225,16 @@ export const KITCHEN_LAST_DRAWER_OFFSET = 55;
 
 export const DOOR_GAP_BETWEEN_DOUBLE = 3;
 export const DOOR_OVERLAY_AMOUNT = 16;
-export const DOOR_THIRD_HINGE_THRESHOLD = 900;
 export const GLASS_RAIL = 60;
 export const HINGE_BRANDS = ["Blum Clip Top", "Blum Clip Top Blumotion", "Universal 35mm"];
-export const doorHingeCount = (doorH: number) => (doorH >= DOOR_THIRD_HINGE_THRESHOLD ? 3 : 2);
+/**
+ * Auto hinge count by LEAF HEIGHT (universal 35mm hinges):
+ *   ≤1000 → 2 · ≤1500 → 3 · ≤2000 → 4 · ≤2400 → 5 · >2400 → 6
+ * Hinge cups sit 140mm from the top and bottom of the door; extras spread
+ * evenly in between (see genDoor in model.ts).
+ */
+export const doorHingeCount = (doorH: number) =>
+  doorH <= 1000 ? 2 : doorH <= 1500 ? 3 : doorH <= 2000 ? 4 : doorH <= 2400 ? 5 : 6;
 
 /** doors & drawer fronts default to MDF */
 export const mkDoor = (type: DoorSpec["type"] = "single", p?: Partial<DoorSpec>): DoorSpec => ({

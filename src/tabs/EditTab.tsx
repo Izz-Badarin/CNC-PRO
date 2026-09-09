@@ -6,6 +6,7 @@ import {
   DoorClosed,
   DoorOpen,
   Layers,
+  Library,
   PencilRuler,
   Plus,
   Rows3,
@@ -16,8 +17,8 @@ import {
   Copy,
 } from "lucide-react";
 import type { Cabinet, ColumnSpec, CoverPanel, DrawerSpec, DoorSpec, RowSpec, Settings } from "../types";
-import { AVAILABLE_DRAWER_DEPTHS, HINGE_BRANDS, mkColumn, mkDoor, mkDrawer, nextCopyName, plyMaterialById, plyMaterialsOf, recommendedShelves, shelfGap, TYPE_META, uid } from "../lib/defaults";
-import { boxHeight, carcassDepth, columnHasDrawers, columnLayout, drawerBank, generateCabinetParts, isCorner, isNotched, kickH, stackOn, stackedHeights, validateCabinet } from "../lib/model";
+import { AVAILABLE_DRAWER_DEPTHS, duplicateCabinet, HINGE_BRANDS, mkColumn, mkDoor, mkDrawer, nextCopyName, plyMaterialById, plyMaterialsOf, recommendedShelves, shelfGap, TYPE_META, uid, type LibraryItem } from "../lib/defaults";
+import { boxHeight, carcassDepth, columnFaceWidth, columnHasDrawers, columnLayout, doorDims, drawerBank, effectiveHingeCount, generateCabinetParts, isCorner, isNotched, kickH, railShelfYs, stackOn, stackedHeights, validateCabinet } from "../lib/model";
 /* English-only labels */
 const L: Record<string, string> = {
   noCabinets: "No cabinets yet",
@@ -63,8 +64,9 @@ import type { CabinetViewer } from "../three/scene";
 
 const FRONTS = [
   { v: "open", l: "No door" },
-  { v: "single", l: "1 Door" },
-  { v: "double", l: "2 Doors" },
+  { v: "left", l: "Left" },
+  { v: "right", l: "Right" },
+  { v: "double", l: "Double" },
   { v: "sliding", l: "Sliding" },
   { v: "drawers", l: "Drawers" },
   { v: "fixed", l: "Fixed panel" },
@@ -73,13 +75,32 @@ const FRONTS = [
 /** door choices available as a cover over hidden drawers */
 const HIDDEN_DOORS = [
   { v: "open", l: "No door" },
-  { v: "single", l: "1 Door" },
-  { v: "double", l: "2 Doors" },
+  { v: "left", l: "Left" },
+  { v: "right", l: "Right" },
+  { v: "double", l: "Double" },
   { v: "sliding", l: "Sliding" },
 ];
 
+/** map a column back to the picker value — single doors split by swing side (rule C) */
 const frontOf = (c: ColumnSpec) =>
-  c.fixed ? "fixed" : c.drawers.length > 0 ? "drawers" : c.door ? c.door.type : "open";
+  c.fixed
+    ? "fixed"
+    : c.drawers.length > 0
+      ? "drawers"
+      : c.door
+        ? c.door.type === "single"
+          ? c.door.swing === "left"
+            ? "left"
+            : "right"
+          : c.door.type
+        : "open";
+
+/** build a door spec from a picker value (left/right = single + swing) */
+const doorFromFront = (v: string, S: Settings): DoorSpec =>
+  mkDoor(v === "left" || v === "right" ? "single" : (v as DoorSpec["type"]), {
+    swing: v === "right" ? "right" : "left",
+    mdfThk: S.mdfThk,
+  });
 
 /** divide the row height equally between n drawers (auto split until edited manually) */
 function splitDrawers(n: number, rowH: number, keep: DrawerSpec[] = []): DrawerSpec[] {
@@ -117,6 +138,7 @@ export function EditTab({
   clipboard,
   setClipboard,
   onDuplicate,
+  setLibrary,
 }: {
   cabinets: Cabinet[];
   settings: Settings;
@@ -126,6 +148,8 @@ export function EditTab({
   clipboard: { kind: "column"; col: ColumnSpec } | null;
   setClipboard: (v: { kind: "column"; col: ColumnSpec } | null) => void;
   onDuplicate?: (id: string) => void;
+  /** rule C2 — "Save as template" writes the cabinet into the project library */
+  setLibrary?: (fn: (l: LibraryItem[]) => LibraryItem[]) => void;
 }) {
   const cab = cabinets.find((c) => c.id === selectedId) ?? cabinets[0] ?? null;
   const viewer = useRef<CabinetViewer | null>(null);
@@ -215,6 +239,18 @@ export function EditTab({
                   onClick={() => onDuplicate(cab.id)}
                 >
                   <Copy size={14} /> Duplicate
+                </Btn>
+              )}
+              {setLibrary && (
+                <Btn
+                  title="Save this cabinet as a reusable template — it goes to the Project tab library, where it can be added to any project"
+                  onClick={() => {
+                    const name = window.prompt("Template name…", `${cab.name} template`);
+                    if (!name || !name.trim()) return; // cancelled
+                    setLibrary((l) => [...l, { id: uid(), name: name.trim(), cabinet: duplicateCabinet(cab, cab.name) }]);
+                  }}
+                >
+                  <Library size={14} /> Save as template
                 </Btn>
               )}
             </div>
@@ -472,7 +508,7 @@ export function EditTab({
                         side,
                         w: side === "T" || side === "B" ? cab.width : cab.depth,
                         h: side === "T" || side === "B" ? cab.depth : cab.height,
-                        thk: settings.mdfThk,
+                        thk: 0, // 0 = auto (ply 16.5 / MDF 19)
                         mat: "mdf",
                       },
                     ])
@@ -491,20 +527,23 @@ export function EditTab({
                   <Num
                     className="!w-[74px] !py-1 !px-2"
                     value={cv.w}
-                    onChange={(v) => patchCovers((cs) => cs.map((x) => (x.id === cv.id ? { ...x, w: Math.max(5, Math.round(v)) } : x)))}
+                    onChange={(v) => patchCovers((cs) => cs.map((x) => (x.id === cv.id ? { ...x, w: Math.round(v) } : x)))}
                   />
                   <span className="text-[10.5px] text-ink-500">× </span>
                   <Num
                     className="!w-[74px] !py-1 !px-2"
                     value={cv.h}
-                    onChange={(v) => patchCovers((cs) => cs.map((x) => (x.id === cv.id ? { ...x, h: Math.max(5, Math.round(v)) } : x)))}
+                    onChange={(v) => patchCovers((cs) => cs.map((x) => (x.id === cv.id ? { ...x, h: Math.round(v) } : x)))}
                   />
                   <Num
                     className="!w-[64px] !py-1 !px-2"
-                    value={cv.thk || settings.mdfThk}
-                    onChange={(v) => patchCovers((cs) => cs.map((x) => (x.id === cv.id ? { ...x, thk: Math.max(6, Math.round(v)) } : x)))}
+                    value={cv.thk ?? 0}
+                    onChange={(v) => patchCovers((cs) => cs.map((x) => (x.id === cv.id ? { ...x, thk: Math.round(v) } : x)))}
+                    min={0}
                   />
-                  <span className="text-[10.5px] text-ink-500">mm</span>
+                  <span className="text-[10.5px] text-ink-500" title={cv.thk > 0 ? "mm" : "0 = auto — plywood 16.5mm / MDF 19mm"}>
+                    {cv.thk > 0 ? "mm" : "auto"}
+                  </span>
                   <Seg
                     options={[{ v: "mdf", l: "MDF" }, { v: "plywood", l: "Plywood" }]}
                     value={cv.mat ?? "mdf"}
@@ -540,7 +579,7 @@ export function EditTab({
                         : "white MDF · no banding"}
                   </Chip>
                   <Chip tone="amber">
-                    {Math.round(cv.w * 10) / 10} × {Math.round(cv.h * 10) / 10} × {cv.thk || settings.mdfThk}mm
+                    {Math.round(cv.w * 10) / 10} × {Math.round(cv.h * 10) / 10} × {cv.thk > 0 ? `${cv.thk}mm` : `auto (${cv.mat === "plywood" ? settings.bodyThk : settings.mdfThk}mm)`}
                   </Chip>
                   <Btn
                     size="sm"
@@ -817,6 +856,18 @@ function ColumnEditor({
   const aboveBank = col.drawerAlign !== "top";
   const shelfZoneH = Math.max(0, aboveBank ? r.h - bank.y - bank.h : bank.y);
   const shelfGapNow = col.shelves > 0 ? Math.round(shelfGap(shelfZoneH, col.shelves, settings)) : 0;
+  // door W×H (rule F) + auto hinge count (rule E) — same math as the model
+  const BH = boxHeight(cab, settings);
+  const faceW = !lay || r.columns.length === 1 ? cab.width : columnFaceWidth(cab, lay, settings);
+  const leafH = col.door ? (col.door.full ? BH : r.h) : 0;
+  const doorDim = col.door ? doorDims(faceW, leafH, col.door, settings) : null;
+  const autoHinges = col.door ? effectiveHingeCount(col.door, leafH) : 0;
+  // shelves above the rail (rule D) — auto preview count / manual Y list
+  const railH = col.railHeight ?? (col.rail === "suits" ? settings.railSuitsH : col.rail === "dresses" ? settings.railDressesH : settings.railDouble1);
+  const railMode = col.railShelfMode ?? "auto";
+  const autoRailYs = col.railShelf ? railShelfYs({ ...col, railShelfMode: "auto" }, settings, r.h) : [];
+  const manualRailCount = Math.max(1, Math.round(col.railShelfCount ?? (col.shelfPositions?.length || 1)));
+  const manualRailYs = (col.shelfPositions ?? []).slice(0, manualRailCount);
   return (
     <div className="rounded-lg border border-white/[0.06] bg-ink-850/70 p-2.5">
       <div className="flex items-center gap-2 flex-wrap">
@@ -836,7 +887,8 @@ function ColumnEditor({
             else if (v === "open") patchCol(r.id, col.id, { fixed: false, door: null, drawers: [] });
             else {
               // adding a door explicitly enables MDF fronts on this cabinet
-              patchCol(r.id, col.id, { fixed: false, door: mkDoor(v as DoorSpec["type"], { mdfThk: settings.mdfThk }), drawers: [] });
+              // (rule C — Left / Right / Double / Sliding, material picked below)
+              patchCol(r.id, col.id, { fixed: false, door: doorFromFront(v, settings), drawers: [] });
               updateCabinet(cab.id, (c) => ({ ...c, hasFronts: true }));
             }
           }}>
@@ -1069,21 +1121,69 @@ function ColumnEditor({
                 onChange={(v) => patchCol(r.id, col.id, { railHeight: Math.max(0, Math.round(v)) })}
               />
               <span className="text-[10.5px] text-ink-400">mm height</span>
-              <label className="flex items-center gap-1.5 cursor-pointer rounded-md border border-white/10 px-2 py-1 text-[11px]" title={`Add a shelf directly above the rail (${settings.railShelfGap || 60}mm above the rail center — configurable in Settings)`}>
+              <label className="flex items-center gap-1.5 cursor-pointer rounded-md border border-white/10 px-2 py-1 text-[11px]" title="Add shelves directly above the rail — Auto: max count with every gap ≥ the min gap from Settings; Manual: exact Y positions">
                 <input type="checkbox" className="chk !h-3 !w-3" checked={!!col.railShelf} onChange={(e) => patchCol(r.id, col.id, { railShelf: e.target.checked })} />
                 <span className={col.railShelf ? "text-amber-200" : "text-ink-300"}>Shelf above</span>
               </label>
               {!!col.railShelf && (
                 <>
-                  <span title="Number of shelves above the rail — #1 at rail + gap, the rest divide the remaining space" className="inline-flex">
-                    <Num
-                      className="!w-[58px] !py-1 !px-2"
-                      value={col.railShelfCount ?? 1}
-                      onChange={(v) => patchCol(r.id, col.id, { railShelfCount: Math.max(1, Math.round(v)) })}
-                    />
-                  </span>
-                  <span className="text-[10.5px] text-ink-400">shelves (1st at rail+{settings.railShelfGap || 60}mm)</span>
+                  <Seg
+                    options={[{ v: "auto", l: "Auto" }, { v: "manual", l: "Manual Y" }]}
+                    value={railMode}
+                    onChange={(v) => patchCol(r.id, col.id, { railShelfMode: v as "auto" | "manual" })}
+                  />
+                  {railMode === "auto" ? (
+                    <Chip tone="green">
+                      auto: {autoRailYs.length} shelf{autoRailYs.length === 1 ? "" : "s"} · gaps ≥ {settings.railShelfMinGap}mm
+                    </Chip>
+                  ) : (
+                    <>
+                      <span title="Number of shelves above the rail (manual mode)" className="inline-flex">
+                        <Num
+                          className="!w-[58px] !py-1 !px-2"
+                          min={1}
+                          max={10}
+                          value={manualRailCount}
+                          onChange={(v) => {
+                            const n = Math.max(1, Math.round(v));
+                            const prev = (col.shelfPositions ?? []).slice(0, manualRailCount);
+                            const space = Math.max(0, r.h - railH);
+                            patchCol(r.id, col.id, {
+                              railShelfCount: n,
+                              shelfPositions: Array.from({ length: n }, (_, k) => prev[k] ?? railH + (space * (k + 1)) / (n + 1)),
+                            });
+                          }}
+                        />
+                      </span>
+                      <span className="text-[10.5px] text-ink-400">shelves</span>
+                    </>
+                  )}
                 </>
+              )}
+              {railMode === "manual" && !!col.railShelf && (
+                <div className="w-full pl-5 space-y-1">
+                  {manualRailYs.map((y, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <span className="text-[10px] font-mono text-ink-500 w-8">Y{i + 1}</span>
+                      <Num
+                        className="!w-[74px] !py-0.5 !px-2"
+                        min={0}
+                        value={Math.round(y)}
+                        onChange={(v) =>
+                          patchCol(r.id, col.id, {
+                            shelfPositions: manualRailYs.map((yy, k) => (k === i ? Math.max(0, Math.round(v)) : yy)),
+                          })
+                        }
+                      />
+                      <span className="text-[10px] text-ink-400">
+                        mm from bottom · gap {Math.round(y - (i === 0 ? railH : manualRailYs[i - 1]))}mm
+                        {Math.round(y - (i === 0 ? railH : manualRailYs[i - 1])) < settings.railShelfMinGap ? (
+                          <span className="text-red-300/90"> (tight)</span>
+                        ) : null}
+                      </span>
+                    </div>
+                  ))}
+                </div>
               )}
             </>
           )}
@@ -1120,10 +1220,24 @@ function ColumnEditor({
             )}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10.5px] text-ink-400">W×H:</span>
+            <span title="Computed door size — width from the column opening, height from the section (or the manual override below)">
+              <Chip tone="cyan">{doorDim ? `${doorDim.count === 2 ? `2× ` : ""}${Math.round(doorDim.w)} × ${Math.round(doorDim.h)}mm` : "—"}</Chip>
+            </span>
+            <span className="text-[10.5px] text-ink-400">Manual H:</span>
+            <Num
+              className="!w-[74px] !py-1 !px-2"
+              min={0}
+              value={col.door.hOverride ?? 0}
+              onChange={(v) => patchDoor(r.id, col.id, { hOverride: v > 0 ? Math.round(v) : undefined })}
+            />
+            <span className="text-[10px] text-ink-500">mm · 0 = auto from section</span>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[10.5px] text-ink-400">Hinges:</span>
             <select
               className="inp !w-[86px] !py-1 !px-1.5 text-[11px]"
-              title="Number of universal 35mm hinges — Auto = 2 under 900mm, 3 above. Cups are bored in the door (never the plywood, never the DXF)."
+              title="Number of universal 35mm hinges — Auto: ≤1000→2 · ≤1500→3 · ≤2000→4 · ≤2400→5 · >2400→6. Cups 140mm from top & bottom. Cups are bored in the door (never the plywood, never the DXF)."
               value={col.door.hingeCount ?? ""}
               onChange={(e) => patchDoor(r.id, col.id, { hingeCount: e.target.value ? Number(e.target.value) : undefined })}
             >
@@ -1132,6 +1246,9 @@ function ColumnEditor({
                 <option key={n} value={n}>{n}</option>
               ))}
             </select>
+            <Chip tone={col.door.hingeCount ? "cyan" : "green"}>
+              {col.door.hingeCount ? `${col.door.hingeCount} hinges · manual` : `Auto — ${autoHinges} hinges`}
+            </Chip>
             {col.door.material === "mdf" && (
               <Chip tone={(col.door.finish ?? settings.mdfFinish ?? "white") === "oak" ? "amber" : "slate"}>
                 {(col.door.finish ?? settings.mdfFinish ?? "white") === "oak" ? "oak · banded" : "white · no banding"}
@@ -1272,10 +1389,10 @@ function ColumnEditor({
           <span className="text-[10.5px] text-amber-200/90">{t(lang, "hidden")} → {t(lang, "door")}</span>
           <select
             className="inp !w-[128px] !py-1 !px-1.5 text-[11px]"
-            value={col.door ? col.door.type : "open"}
+            value={col.door ? frontOf(col) : "open"}
             onChange={(e) => {
               const v = e.target.value;
-              patchCol(r.id, col.id, { door: v === "open" ? null : mkDoor(v as DoorSpec["type"], { material: "mdf", mdfThk: settings.mdfThk }) });
+              patchCol(r.id, col.id, { door: v === "open" ? null : { ...doorFromFront(v, settings), material: "mdf" } });
             }}
           >
             {HIDDEN_DOORS.map((o) => (

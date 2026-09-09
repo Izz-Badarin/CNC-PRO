@@ -53,11 +53,16 @@ export interface DoorSpec {
   full?: boolean;
   /**
    * Hinge count override for this door (universal 35mm hinges). undefined =
-   * auto by height (2 doors ≤900mm, 3 above). The hinge-cup hole (Ø35mm) is
-   * drilled in the DOOR at each hinge position — never in the side panels,
-   * and never exported to DXF.
+   * auto by height (≤1000→2 · ≤1500→3 · ≤2000→4 · ≤2400→5 · >2400→6). The
+   * hinge-cup hole (Ø35mm) is drilled in the DOOR at each hinge position —
+   * never in the side panels, and never exported to DXF.
    */
   hingeCount?: number;
+  /**
+   * Manual door HEIGHT override (mm, rule F). 0/undefined = auto from the
+   * section height. Width is always computed from the column opening.
+   */
+  hOverride?: number;
 }
 
 /**
@@ -135,10 +140,19 @@ export interface ColumnSpec {
    * use the global Settings value (railSuitsH / railDressesH / railDouble1).
    */
   railHeight?: number | null;
-  /** when a rail is on, add shelves directly above it: #1 at rail + railShelfGap, the rest divide the remaining space */
+  /** when a rail is on, add shelves directly above it (auto = max count with gaps ≥ Settings.railShelfMinGap; manual = shelfPositions Ys) */
   railShelf?: boolean;
-  /** number of shelves placed above the hanging rail when `railShelf` is on (default 1) */
+  /** number of shelves placed above the hanging rail (used in manual mode) */
   railShelfCount?: number;
+  /**
+   * Placement mode for shelves above the rail:
+   * "auto" (default) — the nester picks the max shelf count so every gap
+   * (rail → shelf, shelf → shelf, shelf → top) is ≥ Settings.railShelfMinGap,
+   * then spaces them evenly;
+   * "manual" — exact Y positions from the section bottom via `shelfPositions`
+   * (one per shelf, like the regular manual shelves).
+   */
+  railShelfMode?: "auto" | "manual";
   /**
    * Decorative MDF back panel for this column (e.g. a slat/feature panel behind an
    * open vanity niche). Generated as a real MDF part sized to the column opening ×
@@ -326,8 +340,10 @@ export interface Settings {
   railDressesH: number;
   railDouble1: number;
   railDouble2: number;
-  /** gap (mm) between the hanging rail and a shelf placed directly above it */
+  /** gap (mm) between the hanging rail and a shelf placed directly above it (legacy fixed-gap placement) */
   railShelfGap: number;
+  /** minimum gap (mm) for AUTO shelf-above-rail mode — all gaps must stay ≥ this */
+  railShelfMinGap: number;
   /* ---- hinge boring (universal 35mm hinge — cups bored in the DOOR) ---- */
   /** hinge cup hole diameter (universal 35mm hinge cup) */
   hingeCupDiameter: number;
@@ -393,7 +409,7 @@ export interface Settings {
 
 /* ---------- parts ---------- */
 
-export type PartMaterial = "plywood" | "mdf" | "back";
+export type PartMaterial = "plywood" | "mdf" | "back" | "glass";
 
 export type HoleKind = "shelf" | "slide" | "hinge";
 
@@ -440,12 +456,19 @@ export interface Part {
   outline: [number, number][];
   grain: boolean;
   note: string;
+  /**
+   * reference part (rule H) — e.g. a glass door's hinge-cup positions.
+   * Rendered DASHED everywhere, labelled "not drilled", and excluded from
+   * drilling CSVs and DXF output.
+   */
+  reference?: boolean;
 }
 
 export const MATERIAL_LABEL: Record<PartMaterial, string> = {
   plywood: "Plywood",
   mdf: "MDF",
   back: "Veneer back",
+  glass: "Glass (ref)",
 };
 
 export const HOLE_COLOR: Record<HoleKind, string> = {
