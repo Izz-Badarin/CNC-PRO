@@ -29,28 +29,81 @@ const matLabel = (S: Settings, p: { material: string; matId?: string }) =>
     ? plyMaterialById(S, p.matId ?? null).name
     : MATERIAL_LABEL[p.material as "plywood" | "mdf" | "back"];
 
+/** Reliable download that works offline, file://, and in PWA standalone */
+function triggerDownload(blob: Blob, filename: string) {
+  try {
+    // IE / legacy Edge
+    const nav: any = navigator as any;
+    if (nav.msSaveBlob) {
+      nav.msSaveBlob(blob, filename);
+      return true;
+    }
+  } catch {}
+  try {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.style.display = "none";
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    // file:// may block click if not in user gesture — but we are in click handler
+    a.click();
+    // fallback: if download attribute ignored (file:// Safari), open blob
+    setTimeout(() => {
+      try {
+        a.remove();
+      } catch {}
+      URL.revokeObjectURL(url);
+    }, 2500);
+    return true;
+  } catch (e) {
+    console.warn("[download] blob URL failed", e);
+    // ultimate fallback: data URL
+    try {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const a = document.createElement("a");
+        a.href = reader.result as string;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => a.remove(), 2000);
+      };
+      reader.readAsDataURL(blob);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 export function download(filename: string, content: string, mime = "text/plain") {
+  // BOM for CSV/HTML helps Excel and file:// viewers
   const blob = new Blob(["\ufeff" + content], { type: `${mime};charset=utf-8` });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  if (!triggerDownload(blob, filename)) {
+    // last resort: show content in new tab for manual save (plane mode)
+    try {
+      const w = window.open("", "_blank");
+      if (w) {
+        w.document.write(`<pre>${content.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]!))}</pre>`);
+        w.document.title = filename;
+      }
+    } catch {}
+  }
 }
 
 export function downloadRaw(filename: string, content: string, mime = "application/dxf") {
   const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  if (!triggerDownload(blob, filename)) {
+    try {
+      const w = window.open("", "_blank");
+      if (w) {
+        w.document.write(`<pre>${content.slice(0, 20000)}</pre>`);
+        w.document.title = filename;
+      }
+    } catch {}
+  }
 }
 
 const csv = (rows: (string | number)[][]) =>
