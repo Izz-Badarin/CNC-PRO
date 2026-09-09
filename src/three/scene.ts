@@ -1,7 +1,5 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
-import { OBJExporter } from "three/examples/jsm/exporters/OBJExporter.js";
 import type { Cabinet, ColumnSpec, CoverPanel, DoorSpec, PanelItem, PlywoodMaterial, Settings } from "../types";
 import {
   boxHeight,
@@ -15,7 +13,6 @@ import {
   isCorner,
   isNotched,
   kickH,
-  railShelfYs,
   sidePanelOutline,
   stackOn,
   stackedHeights,
@@ -119,11 +116,8 @@ let woodOpacity = 1;
 const OAK_MDF_PLY: PlywoodMaterial = { id: "mdf-oak", name: "MDF oak", color: "#a9805a", opacity: 1, grainRot: 0, solid: false };
 /** wood-textured plywood material, optionally tinted with a plywood material's color/opacity.
  *  A `solid` material skips the grain texture entirely — flat laminated-board look.
- *  `vert` = rotate the grain texture 90° so the grain runs along the panel's
- *  SECOND dimension instead of its first:
- *    · H×D panels (sides, dividers, doors, L/R covers)  → grain along H
- *    · W×D panels (tops, bottoms, sections, shelves)   → grain along D
- *  (rule T — the grain never runs along the width of a horizontal panel). */
+ *  `vert` = grain runs VERTICALLY (along the panel height) — used for every H×D
+ *  panel (sides, dividers, doors, L/R covers) so the grain follows H, never D. */
 function woodMat(w: number, h: number, ply?: PlywoodMaterial, vert = false): THREE.MeshStandardMaterial {
   const op = ply ? Math.min(1, Math.max(0.05, ply.opacity)) : woodOpacity;
   if (ply?.solid) {
@@ -169,19 +163,13 @@ function plyBoxMat(ply: PlywoodMaterial): THREE.MeshStandardMaterial {
   });
 }
 
-type Tag = "carcass" | "door" | "drawer" | "shelf" | "back" | "kick" | "panel" | "handle";
+type Tag = "carcass" | "door" | "drawer" | "shelf" | "back" | "handle" | "kick" | "panel";
 
-/**
- * `name` = semantic part name (Phase 9) — used by setExploded() for
- * DETERMINISTIC explode offsets (side L −X · side R +X · top +Y · …)
- * instead of guessing from position.
- */
-function box(w: number, h: number, d: number, mat: THREE.Material, tag: Tag, cast = true, name?: string): THREE.Mesh {
+function box(w: number, h: number, d: number, mat: THREE.Material, tag: Tag, cast = true): THREE.Mesh {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
   m.castShadow = cast;
   m.receiveShadow = true;
   m.userData.tag = tag;
-  if (name) m.userData.partName = name;
   return m;
 }
 
@@ -270,37 +258,6 @@ const OPEN_ANGLE = (108 * Math.PI) / 180;
 
 /* ================= cabinet builder (mm space) ================= */
 
-/** raw project panel — a standing W×H×thk box (grain vertical on the face) */
-function buildPanel3D(pn: PanelItem, S: Settings): THREE.Group {
-  const g = new THREE.Group();
-  // clamp non-finite values (NaN geometry would poison the scene bounding box)
-  const w = Number.isFinite(pn.w) ? pn.w : 5;
-  const h = Number.isFinite(pn.h) ? pn.h : 5;
-  const t = Number.isFinite(pn.thk) ? pn.thk : 0;
-  const thk = t > 0 ? t : pn.material === "plywood" ? S.bodyThk : pn.material === "back" ? S.backThk : S.mdfThk;
-  const W = Math.max(5, w);
-  const H = Math.max(5, h);
-  let mat: THREE.Material;
-  if (pn.material === "plywood") {
-    const ply = plyMaterialById(S, pn.matId ?? null);
-    mat = ply && ply.solid ? plyBoxMat(ply) : woodMat(W, H, ply, true);
-  } else if (pn.material === "back") {
-    mat = new THREE.MeshStandardMaterial({ color: "#5d6b52", roughness: 0.9, metalness: 0.02 });
-  } else {
-    const finish = pn.finish ?? S.mdfFinish ?? "white";
-    mat =
-      finish === "oak"
-        ? woodMat(W, H, OAK_MDF_PLY, true)
-        : new THREE.MeshStandardMaterial({ color: S.colorMdf, roughness: 0.55, metalness: 0.02 });
-  }
-  const m = box(W, H, thk, mat, "panel");
-  // stands on the floor, floating 60mm in front of the cabinet wall plane so
-  // it reads as a separate object
-  m.position.set(W / 2, H / 2, thk / 2 + 60);
-  g.add(m);
-  return g;
-}
-
 export function buildCabinetGroup(cab: Cabinet, S: Settings): BuiltCabinet {
   const T = S.bodyThk;
   const kick = kickH(cab, S);
@@ -368,35 +325,32 @@ function buildCover3D(cab: Cabinet, S: Settings, cv: CoverPanel, grp: THREE.Grou
   // pick a finish — white = flat laminated · oak = oak-tinted grain texture.
   const finish = cv.finish ?? "white";
   const ply = cv.mat === "plywood" ? plyMaterialById(S, cv.matId ?? cab.matId) : OAK_MDF_PLY;
-  // thickness 0 = AUTO (rule P): plywood → bodyThk (16.5) · MDF → mdfThk (19)
-  const thk = cv.thk > 0 ? cv.thk : cv.mat === "plywood" ? S.bodyThk : S.mdfThk;
-  // grain direction (rule T):
+  // grain always follows the cabinet W or H — never D:
   //   L/R covers are H×D panels → grain VERTICAL along the height
-  //   T/B covers are W×D panels → grain along the DEPTH
-  // both need the 90° texture rotation, with different base dims
+  //   T/B covers are W×D panels → grain HORIZONTAL along the width
   const vert = cv.side === "L" || cv.side === "R";
   const mat =
     cv.mat === "plywood"
-      ? woodMat(vert ? cv.h : cv.w, vert ? cv.w : cv.h, ply, true)
+      ? woodMat(vert ? cv.h : cv.w, vert ? cv.w : cv.h, ply, vert)
       : finish === "oak"
-        ? woodMat(vert ? cv.h : cv.w, vert ? cv.w : cv.h, ply, true)
+        ? woodMat(vert ? cv.h : cv.w, vert ? cv.w : cv.h, ply, vert)
         : new THREE.MeshStandardMaterial({ color: S.colorMdf, roughness: 0.55, metalness: 0.02 });
   let mesh: THREE.Mesh;
   if (cv.side === "L") {
     // vertical panel on the left face: thk(x) × h(y) × w(z, =depth)
-    mesh = box(thk, cv.h, cv.w, mat, "carcass");
-    mesh.position.set(-thk / 2, cv.h / 2, -cv.w / 2);
+    mesh = box(cv.thk, cv.h, cv.w, mat, "carcass");
+    mesh.position.set(-cv.thk / 2, cv.h / 2, -cv.w / 2);
   } else if (cv.side === "R") {
-    mesh = box(thk, cv.h, cv.w, mat, "carcass");
-    mesh.position.set(cab.width + thk / 2, cv.h / 2, -cv.w / 2);
+    mesh = box(cv.thk, cv.h, cv.w, mat, "carcass");
+    mesh.position.set(cab.width + cv.thk / 2, cv.h / 2, -cv.w / 2);
   } else if (cv.side === "T") {
     // horizontal panel on top: w(x) × thk(y) × depth(z)
-    mesh = box(cv.w, thk, cv.h, mat, "carcass");
-    mesh.position.set(cv.w / 2, cab.height + thk / 2, -cv.h / 2);
+    mesh = box(cv.w, cv.thk, cv.h, mat, "carcass");
+    mesh.position.set(cv.w / 2, cab.height + cv.thk / 2, -cv.h / 2);
   } else {
     // bottom panel: w(x) × thk(y) × depth(z), below the kick
-    mesh = box(cv.w, thk, cv.h, mat, "carcass");
-    mesh.position.set(cv.w / 2, -kick - thk / 2, -cv.h / 2);
+    mesh = box(cv.w, cv.thk, cv.h, mat, "carcass");
+    mesh.position.set(cv.w / 2, -kick - cv.thk / 2, -cv.h / 2);
   }
   mesh.castShadow = true;
   mesh.receiveShadow = true;
@@ -457,40 +411,34 @@ function buildWing3D(
     wg.add(s);
     return s;
   };
-  mkSide(0).userData.partName = "side L";
-  mkSide(w - T).userData.partName = "side R";
+  mkSide(0);
+  mkSide(w - T);
 
   // linear slot — dark groove strip on the inner face of the chosen side panel(s)
   const slotV = cab.slot ?? "none";
-  const slotFromFront = cab.slotFromFront != null && cab.slotFromFront > 0 ? cab.slotFromFront : S.slotFromFront;
   if (slotV !== "none" && !isNotched(cab.type)) {
     const sw = Math.max(6, S.slotWidth);
-    const zc = d - Math.max(sw, slotFromFront);
-    // the strip visually belongs to its side panel — named so it explodes
-    // with the panel instead of hitting the position fallback
+    const zc = d - Math.max(sw, S.slotFromFront);
     if (slotV === "left" || slotV === "both") {
-      const st = box(3, BH, sw, mats.slot, "carcass", false, "side L");
+      const st = box(3, BH, sw, mats.slot, "carcass");
       st.position.set(T + 1.5, BH / 2, zc);
       wg.add(st);
     }
     if (slotV === "right" || slotV === "both") {
-      const st = box(3, BH, sw, mats.slot, "carcass", false, "side R");
+      const st = box(3, BH, sw, mats.slot, "carcass");
       st.position.set(w - T - 1.5, BH / 2, zc);
       wg.add(st);
     }
   }
 
-  const bottom = box(w - 2 * T, T, d, woodMat(w, d, ply, true), "carcass", true, "bottom");
+  const bottom = box(w - 2 * T, T, d, woodMat(w, d, ply), "carcass");
   bottom.position.set(w / 2, T / 2, d / 2);
   wg.add(bottom);
   const top = bottom.clone();
-  top.userData.partName = "top";
   top.position.y = BH - T / 2;
   wg.add(top);
   if (cab.hasBack !== false) {
-    // back panel takes the CABINET'S plywood color (rule Q) — a grain material
-    // shows the wood texture, a solid/laminated board renders flat
-    const back = box(w - 2, BH - 2, S.backThk, ply.solid ? plyBoxMat(ply) : woodMat(w, BH, ply), "back", false, "back");
+    const back = box(w - 2, BH - 2, S.backThk, mats.back, "back", false);
     back.position.set(w / 2, BH / 2, -S.backThk / 2);
     wg.add(back);
   }
@@ -499,12 +447,12 @@ function buildWing3D(
   // FULL carcass depth (back → recess line) to match the cut-list parts exactly.
   const kick = kickH(cab, S);
   if (kick > 0 && !o?.skipKick) {
-    const front = box(w - 2 * T, kick - 4, T, mats.kick, "kick", false, "kick");
+    const front = box(w - 2 * T, kick - 4, T, mats.kick, "kick", false);
     front.position.set(w / 2, -kick / 2 - 1, d - S.kickDepth - T / 2);
     wg.add(front);
     const sideDepth = Math.max(20, d - S.kickDepth);
     [-1, 1].forEach((s) => {
-      const side = box(T, kick - 4, sideDepth, mats.kick, "kick", false, "kick");
+      const side = box(T, kick - 4, sideDepth, mats.kick, "kick", false);
       side.position.set(w / 2 + s * (w / 2 - T * 1.5), -kick / 2 - 1, sideDepth / 2);
       wg.add(side);
     });
@@ -519,7 +467,7 @@ function buildWing3D(
     const lays = columnLayout(cab, r, S);
     // row section (horizontal divider) — same size as top/bottom, always present
     if (rowIdx++ > 0) {
-      const sec = box(w - 2 * T, T, d, woodMat(w, d, ply, true), "carcass", true, "row section");
+      const sec = box(w - 2 * T, T, d, woodMat(w, d, ply), "carcass");
       sec.position.set(w / 2, y0 - T / 2, d / 2);
       wg.add(sec);
     }
@@ -533,7 +481,7 @@ function buildWing3D(
       // vertical divider on the right of this column (height − deduction)
       if (!lay.last) {
         const dh = Math.max(20, r.h - S.dividerDeduct);
-        const dv = box(T, dh, d, woodMat(T, dh, ply, true), "carcass", true, "divider");
+        const dv = box(T, dh, d, woodMat(T, dh, ply), "carcass");
         dv.position.set(colX + cw + T / 2, y0 + dh / 2, d / 2);
         wg.add(dv);
       }
@@ -575,7 +523,7 @@ function buildColumn3D(
     nested.forEach((sub, si) => {
       const subH = (sub.h / total) * rowH;
       if (si > 0) {
-        const hd = box(clearW, T, d, woodMat(clearW, d, ply, true), "carcass");
+        const hd = box(clearW, T, d, woodMat(clearW, d, ply), "carcass");
         hd.position.set(faceCx, sy, d / 2);
         wg.add(hd);
       }
@@ -613,7 +561,7 @@ function buildColumn3D(
       for (let k = 0; k < shelvesAbove; k++) {
         const sy2 = shY + positions[k];
         const sd = d - S.shelfFrontSetback - 6;
-        const sh = box(clearW - 6, T, sd, woodMat(clearW, d, ply, true), "shelf", true, "shelf");
+        const sh = box(clearW - 6, T, sd, woodMat(clearW, d, ply), "shelf");
         sh.position.set(faceCx, sy2, sd / 2 + 2);
         wg.add(sh);
       }
@@ -621,7 +569,7 @@ function buildColumn3D(
     // splitter panel at the bank edge — always drawn when requested
     if (dz > 0 && shH > 20 && (col.shelves > 0 || col.splitter)) {
       const splitY = aboveBank ? y0 + bank.y + bank.h : y0 + bank.y;
-      const sp = box(clearW, T, d, woodMat(clearW, d, ply, true), "carcass", true, "splitter");
+      const sp = box(clearW, T, d, woodMat(clearW, d, ply), "carcass");
       sp.position.set(faceCx, splitY, d / 2);
       wg.add(sp);
     }
@@ -630,7 +578,7 @@ function buildColumn3D(
     // veneer back, inside the carcass (z: 0 → thk)
     if (col.mdfBack) {
       const thk = Math.max(6, col.mdfBackThk || S.mdfThk);
-      const mb = box(clearW - 2, rowH - 2, thk, mats.mdf, "carcass", true, "mdf back");
+      const mb = box(clearW - 2, rowH - 2, thk, mats.mdf, "carcass");
       mb.position.set(faceCx, y0 + rowH / 2, thk / 2);
       wg.add(mb);
     }
@@ -660,15 +608,21 @@ function buildColumn3D(
       else if (rail === "dresses") drawRail(rh);
       else if (rail === "double") { drawRail(rh); drawRail(S.railDouble2); }
 
-      // shelves above the rail — auto (max count, gaps ≥ railShelfMinGap) or
-      // manual Y positions (same math as buildColumn in model.ts via railShelfYs)
+      // shelf(es) above the rail — #1 sits railShelfGap above the rail center,
+      // any extra shelves divide the remaining space above #1 evenly
+      // (same math as buildColumn in model.ts)
       if (col.railShelf) {
-        railShelfYs(col, S, rowH).forEach((shelfY) => {
+        const count = Math.max(1, Math.round(col.railShelfCount ?? 1));
+        const firstY = rh + (S.railShelfGap || 60);
+        const above = Math.max(0, rowH - firstY);
+        for (let k = 0; k < count; k++) {
+          const shelfY = firstY + (count > 1 ? (above * k) / count : 0);
+          if (shelfY >= rowH - 10) continue;
           const sd = d - S.shelfFrontSetback - 6;
-          const sh = box(clearW - 6, T, sd, woodMat(clearW, d, ply, true), "shelf");
+          const sh = box(clearW - 6, T, sd, woodMat(clearW, d, ply), "shelf");
           sh.position.set(faceCx, y0 + shelfY, sd / 2 + 2);
           wg.add(sh);
-        });
+        }
       }
     }
   }
@@ -681,7 +635,7 @@ function buildColumn3D(
       subs.forEach((sub, si) => {
         const baseY = y0 + si * subH;
         if (si > 0) {
-          const sd2 = box(clearW, T, d, woodMat(clearW, d, ply, true), "carcass");
+          const sd2 = box(clearW, T, d, woodMat(clearW, d, ply), "carcass");
           sd2.position.set(faceCx, baseY, d / 2);
           wg.add(sd2);
         }
@@ -689,7 +643,7 @@ function buildColumn3D(
           for (let k = 0; k < sub.shelves; k++) {
             const sy2 = baseY + (subH * (k + 1)) / (sub.shelves + 1);
             const sd3 = d - S.shelfFrontSetback - 6;
-            const sh = box(clearW - 6, T, sd3, woodMat(clearW, d, ply, true), "shelf");
+            const sh = box(clearW - 6, T, sd3, woodMat(clearW, d, ply), "shelf");
             sh.position.set(faceCx, sy2, sd3 / 2 + 2);
             wg.add(sh);
           }
@@ -730,12 +684,6 @@ function buildColumn3D(
         const mf = box(fwMdf, fh, S.mdfThk, mats.mdf, "drawer");
         mf.position.z = -inset;
         dg.add(mf);
-        // bar handle on visible MDF fronts (OLD app look — hidden fronts stay clean)
-        if (!dr.hidden) {
-          const hb = handle(fw * 0.5, "h");
-          hb.position.set(0, fh / 2 - 42, S.mdfThk / 2 + 10);
-          dg.add(hb);
-        }
       }
       if (cab.isKitchen) {
         const bd = Math.min(495, d - 60);
@@ -768,7 +716,12 @@ function buildColumn3D(
         dg.add(bBot);
         drawersAcc.push({ node: dg, baseZ: frontZ, dist: sd * 0.62, cur: 0 });
       }
-      dg.userData.partName = "drawer"; // whole drawer slides out on explode
+      // handles only exist on a visible MDF front; hidden drawers never get one
+      if (!dr.hidden && dr.frontMdf) {
+        const hb = handle(fw * 0.5, "h");
+        hb.position.set(0, fh / 2 - 42, S.mdfThk / 2 + 10);
+        dg.add(hb);
+      }
       wg.add(dg);
       dy += dr.frontHeight;
     });
@@ -795,34 +748,6 @@ function buildColumn3D(
     }
     void clearW;
   }
-}
-
-/**
- * Bar handle (grip + two posts) — ported from the OLD app (Izz-Badarin/OLD):
- * the 3D view shows handles the way the 2D front view shows their dots.
- * Handles are display-only hardware: never in the cut list / DXF / BOM.
- */
-function handle(len: number, orient: "h" | "v"): THREE.Group {
-  const g = new THREE.Group();
-  const r = 6;
-  const grip = new THREE.Mesh(new THREE.CylinderGeometry(r, r, Math.max(30, len), 14), mats.metal);
-  grip.castShadow = true;
-  grip.userData.tag = "handle";
-  if (orient === "h") grip.rotation.z = Math.PI / 2;
-  const p1 = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.72, r * 0.72, 18, 10), mats.metal);
-  p1.rotation.x = Math.PI / 2;
-  p1.userData.tag = "handle";
-  const p2 = p1.clone();
-  const off = Math.max(30, len) / 2 - 12;
-  if (orient === "h") {
-    p1.position.set(-off, 0, -8);
-    p2.position.set(off, 0, -8);
-  } else {
-    p1.position.set(0, -off, -8);
-    p2.position.set(0, off, -8);
-  }
-  g.add(p1, p2, grip);
-  return g;
 }
 
 function buildDoor3D(
@@ -877,7 +802,7 @@ function buildDoor3D(
       const cx = baseX + (j === 0 ? gap + dw / 2 : w - gap - dw / 2);
       const panel = new THREE.Group();
       panel.position.set(cx, y0 + gap, d + thk / 2 + gap + (j === 1 ? thk + 5 : 0));
-      const p = box(dw, dh, thk, doorMat, "door", true, "door");
+      const p = box(dw, dh, thk, doorMat, "door");
       p.position.set(0, dh / 2, 0);
       if (door.material === "glass") addGlassFrame(p);
       panel.add(p);
@@ -898,7 +823,7 @@ function buildDoor3D(
     const zFront = door.style === "inset" ? d - thk / 2 - 2 : d + thk / 2 + gap;
     const pivot = new THREE.Group();
     pivot.position.set(baseX + (hingeLeft ? x1 : x1 + dw), y0 + (door.style === "inset" ? S.bodyThk + gap : gap), zFront);
-    const dp = box(dw, dh, thk, doorMat, "door", true, "door");
+    const dp = box(dw, dh, thk, doorMat, "door");
     dp.position.set(hingeLeft ? dw / 2 : -dw / 2, dh / 2, 0);
     if (door.material === "glass") addGlassFrame(dp);
     pivot.add(dp);
@@ -916,7 +841,6 @@ function buildDoor3D(
 /**
  * Full-height doors on a STACKED cabinet — drawn once at cabinet level so one
  * door spans all boxes (y=0 → fullH in carcass space).
- * Also handles cabinet-level fullDoor (off/mdf/glass) that covers the WHOLE cabinet.
  */
 function buildFullDoors3D(
   cab: Cabinet,
@@ -930,31 +854,6 @@ function buildFullDoors3D(
 ) {
   const gap = S.doorGap;
   const ply = plyMaterialOf(S, cab);
-  // cabinet-level full door (Boxes control) — one door/pair covering whole width, with left/right/double support
-  if (cab.fullDoor && cab.fullDoor !== "off") {
-    const fd = cab.fullDoor as string;
-    const isGlass = fd.startsWith("glass");
-    const suffix = fd.includes("-") ? fd.split("-")[1] : "";
-    const type: DoorSpec["type"] = suffix === "double" ? "double" : suffix === "left" || suffix === "right" ? "single" : (cab.width > 620 ? "double" : "single");
-    const swing: DoorSpec["swing"] = suffix === "right" ? "right" : "left";
-    const door: DoorSpec = {
-      type,
-      style: "overlay",
-      swing,
-      material: isGlass ? "glass" : "mdf",
-      finish: S.mdfFinish,
-      mdfThk: S.mdfThk,
-      hingeBrand: "Universal 35mm",
-      hasHandle: true,
-      handlePos: "center",
-      full: true,
-      hingeCount: cab.fullDoorHinges,
-      hOverride: cab.fullDoorHOverride != null && cab.fullDoorHOverride > 0 ? cab.fullDoorHOverride : undefined,
-      wOverride: cab.fullDoorWOverride != null && cab.fullDoorWOverride > 0 ? cab.fullDoorWOverride : undefined,
-    };
-    buildDoor3D(S, w, w/2, d, 0, fullH, door, wg, doors, T, gap, ply);
-    return;
-  }
   cab.rows.forEach((r) => {
     const lays = columnLayout(cab, r, S);
     lays.forEach((lay) => {
@@ -971,6 +870,29 @@ function buildFullDoors3D(
 
 
 
+
+function handle(len: number, orient: "h" | "v"): THREE.Group {
+  const g = new THREE.Group();
+  const r = 6;
+  const grip = new THREE.Mesh(new THREE.CylinderGeometry(r, r, Math.max(30, len), 14), mats.metal);
+  grip.castShadow = true;
+  grip.userData.tag = "handle";
+  if (orient === "h") grip.rotation.z = Math.PI / 2;
+  const p1 = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.72, r * 0.72, 18, 10), mats.metal);
+  p1.rotation.x = Math.PI / 2;
+  p1.userData.tag = "handle";
+  const p2 = p1.clone();
+  const off = Math.max(30, len) / 2 - 12;
+  if (orient === "h") {
+    p1.position.set(-off, 0, -8);
+    p2.position.set(off, 0, -8);
+  } else {
+    p1.position.set(0, -off, -8);
+    p2.position.set(0, off, -8);
+  }
+  g.add(p1, p2, grip);
+  return g;
+}
 
 /* ---- corner ---- */
 function buildCorner3D(cab: Cabinet, S: Settings, grp: THREE.Group, doors: DoorAnim[], ply: PlywoodMaterial) {
@@ -1002,7 +924,7 @@ function buildCorner3D(cab: Cabinet, S: Settings, grp: THREE.Group, doors: DoorA
   const plate = (y: number, th: number, tag: Tag, inset = 0) => {
     const sh = inset ? insetPoly(inset) : pts;
     const geo = new THREE.ExtrudeGeometry(new THREE.Shape(sh.map(([x, z]) => new THREE.Vector2(x, -z))), { depth: th, bevelEnabled: false });
-    const m = new THREE.Mesh(geo, woodMat(W, D, ply, true));
+    const m = new THREE.Mesh(geo, woodMat(W, D, ply));
     m.rotation.x = -Math.PI / 2;
     m.position.y = y + th;
     m.userData.tag = tag;
@@ -1033,7 +955,7 @@ function buildCorner3D(cab: Cabinet, S: Settings, grp: THREE.Group, doors: DoorA
       const sy = kick + (r.h * (k + 1)) / (col.shelves + 1);
       const sh = new THREE.Mesh(
         new THREE.ExtrudeGeometry(new THREE.Shape(insetPoly(T + 4).map(([x, z]) => new THREE.Vector2(x, -z))), { depth: T, bevelEnabled: false }),
-        woodMat(W - 2 * T, D - 2 * T, ply, true),
+        woodMat(W - 2 * T, D - 2 * T, ply),
       );
       sh.rotation.x = -Math.PI / 2;
       sh.position.y = sy + T;
@@ -1058,11 +980,9 @@ function buildCorner3D(cab: Cabinet, S: Settings, grp: THREE.Group, doors: DoorA
     const door = box(dw, dh, thk, col.door.material === "glass" ? mats.glass : col.door.material === "mdf" ? mats.mdf : woodMat(dw, dh, ply), "door");
     door.position.set(dw / 2, dh / 2, 0);
     pivot.add(door);
-    if (col.door.hasHandle !== false) {
-      const hb = handle(Math.min(220, dh * 0.4), "v");
-      hb.position.set(dw - 34, dh - 130, thk / 2 + 10);
-      pivot.add(hb);
-    }
+    const hb = handle(Math.min(220, dh * 0.4), "v");
+    hb.position.set(dw - 34, dh - 130, thk / 2 + 10);
+    pivot.add(hb);
     grp.add(pivot);
     doors.push({ node: pivot, base: ang, sign: -1, cur: 0, mode: "swing", dist: 0 });
   });
@@ -1084,13 +1004,44 @@ function buildDims(cab: Cabinet, S: Settings, dims: THREE.Group) {
   }
 }
 
+/** raw project panel — a standing W×H×thk box (grain vertical on the face) */
+function buildPanel3D(pn: PanelItem, S: Settings): THREE.Group {
+  const g = new THREE.Group();
+  // clamp non-finite values (NaN geometry would poison the scene bounding box)
+  const w = Number.isFinite(pn.w) ? pn.w : 5;
+  const h = Number.isFinite(pn.h) ? pn.h : 5;
+  const t = Number.isFinite(pn.thk) ? pn.thk : 0;
+  const thk = t > 0 ? t : pn.material === "plywood" ? S.bodyThk : pn.material === "back" ? S.backThk : S.mdfThk;
+  const W = Math.max(5, w);
+  const H = Math.max(5, h);
+  let mat: THREE.Material;
+  if (pn.material === "plywood") {
+    const ply = plyMaterialById(S, pn.matId ?? null);
+    mat = ply && ply.solid ? plyBoxMat(ply) : woodMat(W, H, ply, true);
+  } else if (pn.material === "back") {
+    mat = new THREE.MeshStandardMaterial({ color: "#5d6b52", roughness: 0.9, metalness: 0.02 });
+  } else {
+    const finish = pn.finish ?? S.mdfFinish ?? "white";
+    mat =
+      finish === "oak"
+        ? woodMat(W, H, OAK_MDF_PLY, true)
+        : new THREE.MeshStandardMaterial({ color: S.colorMdf, roughness: 0.55, metalness: 0.02 });
+  }
+  const m = box(W, H, thk, mat, "panel");
+  // stands on the floor, floating 60mm in front of the cabinet wall plane so
+  // it reads as a separate object
+  m.position.set(W / 2, H / 2, thk / 2 + 60);
+  g.add(m);
+  return g;
+}
+
 /* ================= viewer ================= */
 
 export interface ViewerOptions {
   spacing: number;
   showDims: boolean;
   followLayout?: boolean;
-  /** raw project panels — floating standing panels on the floor (Phase 8) */
+  /** raw project panels — standing boxes on the floor (auto-flow after the row) */
   panels?: PanelItem[];
 }
 
@@ -1104,18 +1055,14 @@ export class CabinetViewer {
   private container: HTMLElement;
   private built: BuiltCabinet[] = [];
   private builtWrap = new THREE.Group();
+  /** raw project panels — floating standing panels on the floor */
+  private panelGroups: THREE.Group[] = [];
   private center = new THREE.Vector3(1.5, 0.45, 0);
   private radius = 2.2;
   private dirLight: THREE.DirectionalLight;
-  private rimLight: THREE.DirectionalLight;
-  private warmLight: THREE.PointLight;
-  private room: THREE.Group;
-  private wall: THREE.Mesh;
-  private baseboard: THREE.Mesh;
-  /** E2: door openness 0..1 (doors pivot on their hinge edges) */
-  doorFrac = 0;
+  doorsOpen = false;
   drawersOpen = false;
-  layerVis: Record<Tag, boolean> = { carcass: true, door: true, drawer: true, shelf: true, back: true, kick: true, panel: true, handle: true };
+  layerVis: Record<Tag, boolean> = { carcass: true, door: true, drawer: true, shelf: true, back: true, handle: true, kick: true, panel: true };
   private disposed = false;
   private visible = true;
   private io: IntersectionObserver | null = null;
@@ -1152,51 +1099,22 @@ export class CabinetViewer {
     this.scene.add(hemi);
     this.dirLight = new THREE.DirectionalLight("#fff1da", 2.1);
     this.dirLight.castShadow = true;
-    this.dirLight.shadow.mapSize.set(4096, 4096);
+    this.dirLight.shadow.mapSize.set(2048, 2048);
     this.dirLight.shadow.bias = -0.0004;
-    this.dirLight.shadow.normalBias = 0.0015;
     this.scene.add(this.dirLight, this.dirLight.target);
     const fill = new THREE.DirectionalLight("#9db4ff", 0.5);
     fill.position.set(-4, 3, -5);
     this.scene.add(fill);
-    // E3 lighting: cool rim from behind (edges read against the wall) + a warm
-    // accent point light high in front (softens the top faces)
-    this.rimLight = new THREE.DirectionalLight("#7fa8ff", 0.55);
-    this.rimLight.position.set(-2, 3, -8);
-    this.scene.add(this.rimLight);
-    this.warmLight = new THREE.PointLight("#ffd9a6", 6, 0, 2);
-    this.warmLight.position.set(0, 2.6, 2.5);
-    this.scene.add(this.warmLight);
 
-    // E3 room backdrop — floor + wall + baseboard (replaces the bare grid disc);
-    // the wall slides behind the deepest cabinet whenever the layout changes
-    this.room = new THREE.Group();
-    const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(140, 80),
-      new THREE.MeshStandardMaterial({ color: "#0d1420", roughness: 0.96 }),
-    );
-    floor.rotation.x = -Math.PI / 2;
-    floor.receiveShadow = true;
-    this.room.add(floor);
-    this.wall = new THREE.Mesh(
-      new THREE.PlaneGeometry(140, 26),
-      new THREE.MeshStandardMaterial({ color: "#152034", roughness: 0.95 }),
-    );
-    this.wall.position.set(0, 13, -8);
-    this.wall.receiveShadow = true;
-    this.room.add(this.wall);
-    this.baseboard = new THREE.Mesh(
-      new THREE.BoxGeometry(140, 0.09, 0.03),
-      new THREE.MeshStandardMaterial({ color: "#243350", roughness: 0.8 }),
-    );
-    this.baseboard.position.set(0, 0.045, -8 + 0.02);
-    this.room.add(this.baseboard);
-    const grid = new THREE.GridHelper(140, 140, "#1c2940", "#131e30");
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(45, 64), new THREE.MeshStandardMaterial({ color: "#0c1320", roughness: 1 }));
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    this.scene.add(ground);
+    const grid = new THREE.GridHelper(45, 90, "#1c2940", "#131e30");
     (grid.material as THREE.Material).transparent = true;
-    (grid.material as THREE.Material).opacity = 0.4;
+    (grid.material as THREE.Material).opacity = 0.55;
     grid.position.y = 0.002;
-    this.room.add(grid);
-    this.scene.add(this.room);
+    this.scene.add(grid);
 
     this.scene.add(this.builtWrap);
 
@@ -1221,7 +1139,7 @@ export class CabinetViewer {
     const speed = 0.11;
     this.built.forEach((b) => {
       b.doors.forEach((d) => {
-        const target = this.doorFrac;
+        const target = this.doorsOpen ? 1 : 0;
         d.cur += (target - d.cur) * speed;
         if (d.mode === "swing") d.node.rotation.y = d.base + d.sign * d.cur * OPEN_ANGLE;
         else d.node.position.x = d.base + d.sign * d.cur * d.dist;
@@ -1243,9 +1161,6 @@ export class CabinetViewer {
     this.renderer.setSize(w, h);
   }
 
-  private panelGroups: THREE.Group[] = [];
-  private isolateId: string | null = null;
-
   setData(cabs: Cabinet[], S: Settings, opts: ViewerOptions) {
     woodOpacity = clampOp(S.opacityPlywood); // carcass panels use the plywood texture
     mats = m(S);
@@ -1260,10 +1175,9 @@ export class CabinetViewer {
     const okLayout = (l: { x: number; y: number } | null | undefined) => !!l && Number.isFinite(l.x) && Number.isFinite(l.y);
     cabs.forEach((cab) => {
       // a cabinet with corrupt (NaN/missing) dimensions would create NaN
-      // geometry → NaN bounding box → NaN camera → the WHOLE scene goes blank.
-      // Skip it here instead (the storage layer also sanitizes on load).
+      // geometry → NaN bounding box → NaN camera → the WHOLE scene goes blank
       if (!Number.isFinite(cab.width) || !Number.isFinite(cab.height) || !Number.isFinite(cab.depth)) return;
-      const q = Math.max(1, Math.round(cab.qty) || 1);
+      const q = Math.max(1, cab.qty || 1);
       for (let i = 0; i < q; i++) {
         const bc = buildCabinetGroup(cab, S);
         bc.group.scale.setScalar(0.001);
@@ -1292,7 +1206,7 @@ export class CabinetViewer {
     });
 
     // ---- raw project panels — floating standing panels on the floor ----
-    // (same auto-flow as the front view: after the rightmost cabinet)
+    // (same auto-flow as the cabinet row: after the rightmost cabinet)
     if (opts.panels && opts.panels.length) {
       let px = x + 80;
       opts.panels.forEach((pn) => {
@@ -1314,7 +1228,6 @@ export class CabinetViewer {
         this.setVis(grp);
       });
     }
-    if (this.isolateId) this.isolateCabinet(this.isolateId);
 
     const bbox = new THREE.Box3().setFromObject(this.builtWrap);
     // a NaN in ANY mesh position yields a NaN bbox — framing the camera from it
@@ -1335,276 +1248,7 @@ export class CabinetViewer {
       sc.bottom = -this.radius * 1.7;
       sc.far = 60;
       sc.updateProjectionMatrix();
-      // E3: slide the wall just behind the deepest cabinet and re-aim the accents
-      const wallZ = Math.min(bbox.min.z, 0) - 0.18;
-      this.wall.position.set(this.center.x, 13, wallZ);
-      this.baseboard.position.set(this.center.x, 0.045, wallZ + 0.02);
-      this.rimLight.position.set(this.center.x - this.radius * 0.6, this.radius * 2.2 + 1, wallZ - this.radius * 1.4);
-      this.warmLight.position.set(this.center.x, this.radius * 1.6 + 1.4, this.center.z + this.radius * 1.5);
     }
-  }
-
-  /** E3: show/hide the room backdrop (floor + wall + baseboard + grid) */
-  setRoom(v: boolean) {
-    this.room.visible = v;
-  }
-
-  /** E2: set door openness (0 = shut … 1 = fully open, 108° swing) */
-  setDoorOpen(frac: number) {
-    this.doorFrac = Math.min(1, Math.max(0, frac));
-  }
-
-  private exploded = false;
-  private explodedBackup = new Map<THREE.Object3D, THREE.Vector3>();
-  private explodedBackupRot = new Map<THREE.Object3D, THREE.Euler>();
-
-  /**
-   * Exploded view — DETERMINISTIC per-part offsets (Phase 9). Every mesh is
-   * tagged with a semantic `partName` at build time, so the explode no longer
-   * guesses from coordinates:
-   *   side L −150 X · side R +150 X · top +120 Y · bottom −40 Y · back −120 Z
-   *   kick −40 Y · row section +80 Y · shelf +40 Y · splitter +60 Y
-   *   mdf back −60 Z · drawer +300 Z (whole drawer group) · door +250 Z
-   * Untagged parts (corner cabinets, covers) fall back to a tag-based rule.
-   */
-  setExploded(v: boolean) {
-    if (v === this.exploded) return;
-    if (v) {
-      this.explodedBackup.clear();
-      this.explodedBackupRot.clear();
-      this.built.forEach((bc) => {
-        const W = bc.width;
-        let shelfIdx = 0;
-        // Walk the tree parent-first. A named object (mesh OR group, e.g. a
-        // drawer group) gets its deterministic offset ONCE; its descendants
-        // move with it and must never be offset again (no double-move).
-        const visit = (o: any, namedAncestor: boolean) => {
-          const name = o.userData?.partName as string | undefined;
-          const tag = o.userData?.tag as string | undefined;
-          let dx = 0, dy = 0, dz = 0;
-          if (name) {
-            switch (name) {
-              case "side L": dx = -150; break;
-              case "side R": dx = 150; break;
-              case "top": dy = 120; break;
-              case "bottom": dy = -40; break;
-              case "back": dz = -120; break;
-              case "kick": dy = -40; break;
-              case "row section": dy = 80; break;
-              case "shelf": dy = 40 + shelfIdx++ * 10; break;
-              case "splitter": dy = 60; break;
-              case "mdf back": dz = -60; break;
-              case "drawer": dz = 300; break;
-              case "door": dz = 250; break;
-              default: break; // dividers / slot strips stay in place
-            }
-          } else if (!namedAncestor && o.isMesh && tag) {
-            // fallback for parts built without a partName (corner cabinets, covers)
-            if (tag === "back") dz = -120;
-            else if (tag === "door") dz = 250;
-            else if (tag === "handle") dz = 250; // door handles explode with the door leaf
-            else if (tag === "drawer") dz = 300;
-            else if (tag === "shelf") dy = 40;
-            else if (tag === "carcass" && o.position.y < 25) dy = -40; // thin bottom plate
-            else if (tag === "carcass") {
-              // position heuristic only as a last resort
-              const h = (o.geometry as any)?.parameters?.height ?? 0;
-              const horizontal = h > 0 && h < 30;
-              if (horizontal && o.position.y < 60) dy = -40;
-              else if (horizontal) dy = 120;
-              else if (o.position.x < 25 && o.position.y > 20) dx = -150;
-              else if (o.position.x > W - 25) dx = 150;
-            }
-          }
-          if (dx !== 0 || dy !== 0 || dz !== 0) {
-            this.explodedBackup.set(o, o.position.clone());
-            this.explodedBackupRot.set(o, o.rotation.clone() as any);
-            o.position.x += dx;
-            o.position.y += dy;
-            o.position.z += dz;
-          }
-          (o.children ?? []).forEach((c: any) => visit(c, namedAncestor || !!name));
-        };
-        visit(bc.group, false);
-      });
-      this.exploded = true;
-    } else {
-      this.explodedBackup.forEach((p, o) => {
-        o.position.copy(p);
-      });
-      this.explodedBackupRot.forEach((r, o: any) => {
-        o.rotation.copy(r);
-      });
-      this.explodedBackup.clear();
-      this.explodedBackupRot.clear();
-      this.exploded = false;
-    }
-  }
-
-  /** snapshot with exploded offsets applied temporarily */
-  snapshotExploded(): string {
-    const prevDoor = this.doorFrac;
-    const prevDraw = this.drawersOpen;
-    this.setExploded(true);
-    this.doorFrac = 0.42; // 45°
-    this.drawersOpen = true;
-    // force a few ticks to update door/drawer animations
-    for(let i=0;i<10;i++){
-      this.built.forEach(b=>{
-        b.doors.forEach(d=>{
-          const target = this.doorFrac;
-          d.cur += (target - d.cur) * 0.5;
-          if (d.mode==='swing') d.node.rotation.y = d.base + d.sign * d.cur * OPEN_ANGLE;
-          else d.node.position.x = d.base + d.sign * d.cur * d.dist;
-        });
-        b.drawers.forEach(dr=>{
-          const target = this.drawersOpen ? 1 : 0;
-          dr.cur += (target - dr.cur) * 0.5;
-          dr.node.position.z = dr.baseZ + dr.cur * dr.dist;
-        });
-      });
-    }
-    this.controls.update();
-    this.renderer.render(this.scene, this.camera);
-    const url = this.renderer.domElement.toDataURL("image/png");
-    this.setExploded(false);
-    this.doorFrac = prevDoor;
-    this.drawersOpen = prevDraw;
-    // reset door/drawer anim to previous
-    this.built.forEach(b=>{
-      b.doors.forEach(d=>{ d.cur = prevDoor; });
-      b.drawers.forEach(dr=>{ dr.cur = prevDraw?1:0; });
-    });
-    return url;
-  }
-
-  /** snapshot iso for a single cabinet (hides others) */
-  snapshotCabinet(cabId: string): string | null {
-    const target = this.built.find(b=> (b.group.userData as any)?.cabId===cabId);
-    if (!target) return null;
-    const prevVis = this.built.map(b=> b.group.visible);
-    this.built.forEach(b=> b.group.visible = b===target);
-    this.controls.target.copy(target.group.position.clone().add(new THREE.Vector3(target.width/2000, 0.5, 0)));
-    this.controls.update();
-    this.renderer.render(this.scene, this.camera);
-    const url = this.renderer.domElement.toDataURL("image/png");
-    this.built.forEach((b,i)=> b.group.visible = prevVis[i]);
-    return url;
-  }
-
-  /** exploded snapshot for a single cabinet */
-  snapshotExplodedCabinet(cabId: string): string | null {
-    const target = this.built.find(b=> (b.group.userData as any)?.cabId===cabId);
-    if (!target) return null;
-    const prevVis = this.built.map(b=> b.group.visible);
-    this.built.forEach(b=> b.group.visible = b===target);
-    const prevDoor = this.doorFrac;
-    const prevDraw = this.drawersOpen;
-    this.setExploded(true);
-    this.doorFrac = 1; // open door view for exploded
-    this.drawersOpen = true;
-    for(let i=0;i<12;i++){
-      this.built.forEach(b=>{
-        b.doors.forEach(d=>{
-          const t = this.doorFrac;
-          d.cur += (t - d.cur)*0.5;
-          if (d.mode==='swing') d.node.rotation.y = d.base + d.sign * d.cur * OPEN_ANGLE;
-          else d.node.position.x = d.base + d.sign * d.cur * d.dist;
-        });
-        b.drawers.forEach(dr=>{
-          const t = this.drawersOpen?1:0;
-          dr.cur += (t-dr.cur)*0.5;
-          dr.node.position.z = dr.baseZ + dr.cur * dr.dist;
-        });
-      });
-    }
-    this.controls.target.copy(target.group.position.clone().add(new THREE.Vector3(target.width/2000, 0.6, 0)));
-    this.controls.update();
-    this.renderer.render(this.scene, this.camera);
-    const url = this.renderer.domElement.toDataURL("image/png");
-    this.setExploded(false);
-    this.doorFrac = prevDoor;
-    this.drawersOpen = prevDraw;
-    this.built.forEach((b,i)=> b.group.visible = prevVis[i]);
-    return url;
-  }
-
-  /** E1: PNG snapshot of the current 3D view (fresh render, device pixels) */
-  snapshot(): string {
-    this.controls.update();
-    this.renderer.render(this.scene, this.camera);
-    return this.renderer.domElement.toDataURL("image/png");
-  }
-
-  /**
-   * E4: flat mesh copy of the current model with BAKED world matrices,
-   * scaled ×1000 so the export is in millimetres (the scene works in metres).
-   */
-  private exportRoot(): THREE.Group {
-    this.builtWrap.updateWorldMatrix(true, true);
-    const g = new THREE.Group();
-    g.name = "cabinets_mm";
-    g.scale.setScalar(1000);
-    this.builtWrap.traverse((o) => {
-      const mesh = o as THREE.Mesh;
-      if (mesh.isMesh && mesh.geometry) {
-        const c = mesh.clone();
-        c.matrixAutoUpdate = false;
-        c.matrix.copy(mesh.matrixWorld);
-        g.add(c);
-      }
-    });
-    return g;
-  }
-
-  /** E4: GLB (binary glTF) of the current model, in millimetres */
-  async exportGlb(): Promise<Blob> {
-    const g = this.exportRoot();
-    g.updateWorldMatrix(true, true); // compose the ×1000 root (children keep baked mm-space matrices)
-    const data = await new GLTFExporter().parseAsync(g, { binary: true });
-    return new Blob([data as ArrayBuffer], { type: "model/gltf-binary" });
-  }
-
-  /**
-   * Phase 9: GLB of a SINGLE cabinet (in millimetres, world position baked).
-   * The other cabinets/panels are hidden for the export and restored after.
-   * Returns null when the cabinet id is unknown.
-   */
-  async exportGlbCabinet(cabId: string, name?: string): Promise<Blob | null> {
-    const target = this.built.find((b) => (b.group.userData as any)?.cabId === cabId);
-    if (!target) return null;
-    const prevCab = this.built.map((b) => b.group.visible);
-    const prevPan = this.panelGroups.map((g) => g.visible);
-    this.built.forEach((b) => (b.group.visible = b === target));
-    this.panelGroups.forEach((g) => (g.visible = false));
-    try {
-      this.builtWrap.updateWorldMatrix(true, true);
-      const g = new THREE.Group();
-      g.name = (name || cabId).replace(/[^a-z0-9_\-]+/gi, "_") + "_mm";
-      g.scale.setScalar(1000); // mm (scene units are metres)
-      target.group.traverse((o) => {
-        const mesh = o as THREE.Mesh;
-        if (mesh.isMesh && mesh.geometry) {
-          const c = mesh.clone();
-          c.matrixAutoUpdate = false;
-          c.matrix.copy(mesh.matrixWorld);
-          g.add(c);
-        }
-      });
-      g.updateWorldMatrix(true, true);
-      const data = await new GLTFExporter().parseAsync(g, { binary: true });
-      return new Blob([data as ArrayBuffer], { type: "model/gltf-binary" });
-    } finally {
-      this.built.forEach((b, i) => (b.group.visible = prevCab[i] ?? true));
-      this.panelGroups.forEach((gp, i) => (gp.visible = prevPan[i] ?? true));
-    }
-  }
-
-  /** E4: OBJ text of the current model, in millimetres */
-  exportObj(): string {
-    const g = this.exportRoot();
-    g.updateWorldMatrix(true, true);
-    return new OBJExporter().parse(g);
   }
 
   setShowDims(v: boolean) {
@@ -1628,34 +1272,6 @@ export class CabinetViewer {
     this.panelGroups.forEach((g) => this.setVis(g));
   }
 
-  setAutoRotate(v: boolean) {
-    this.controls.autoRotate = v;
-    this.controls.autoRotateSpeed = 4.5;
-  }
-
-  /** Hide every cabinet except `cabId` (null = show all). Frames the camera on the isolate. */
-  isolateCabinet(cabId: string | null) {
-    this.isolateId = cabId;
-    this.built.forEach((b) => {
-      const id = (b.group.userData as { cabId?: string })?.cabId;
-      b.group.visible = !cabId || id === cabId;
-    });
-    this.panelGroups.forEach((g) => (g.visible = !cabId));
-    const target = cabId ? this.built.find((b) => (b.group.userData as { cabId?: string })?.cabId === cabId) : null;
-    if (target) {
-      const c = new THREE.Vector3();
-      const box = new THREE.Box3().setFromObject(target.group);
-      box.getCenter(c);
-      const size = box.getSize(new THREE.Vector3());
-      const r = Math.max(size.x, size.y, size.z, 0.4) / 2;
-      this.center.copy(c);
-      this.radius = r;
-      this.controls.target.copy(c);
-      this.camera.position.copy(c.clone().add(new THREE.Vector3(r * 2.2, r * 1.4, r * 2.4)));
-      this.controls.update();
-    }
-  }
-
   setView(preset: "iso" | "top" | "front" | "side" | "reset") {
     const dirs: Record<string, THREE.Vector3> = {
       iso: new THREE.Vector3(1.15, 0.8, 1.45),
@@ -1677,6 +1293,8 @@ export class CabinetViewer {
     this.io?.disconnect();
     this.ro.disconnect();
     this.built.forEach((b) => disposeObject(b.group));
+    this.panelGroups.forEach((g) => disposeObject(g));
+    this.panelGroups = [];
     this.controls.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
