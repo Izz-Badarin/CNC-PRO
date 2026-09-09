@@ -518,6 +518,57 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   check("exploded report: table names the plywood, not 'plywood'", html.includes("Plywood") , "");
 }
 
+/* 22 — 2D front view: Z is taken from the Plan View; DIFFERENT Z = no overlap */
+{
+  const a = makeCabinet("base", 600, 720, 560, "ZA");
+  const b = makeCabinet("base", 600, 720, 560, "ZB");
+  const box = (c: typeof a, x: number, y: number, z: number) => ({
+    id: c.id,
+    name: c.name,
+    x,
+    y,
+    w: c.width,
+    h: c.height,
+    z,
+  });
+  // same depth plane → the X/Y intersection is a real overlap
+  check("2D overlap: same Z → overlap flagged", overlapBoxes([box(a, 0, 0, 0), box(b, 200, 0, 0)]).length === 1);
+  // different plan Z → different depth planes → NO overlap in the 2D view
+  check("2D overlap: different Z (500mm) → NO overlap", overlapBoxes([box(a, 0, 0, 0), box(b, 200, 0, 500)]).length === 0);
+  // touching edges on the same plane are NOT overlap (unchanged rule)
+  check("2D overlap: touching edges (same Z) → NOT overlap", overlapBoxes([box(a, 0, 0, 0), box(b, 600, 0, 0)]).length === 0);
+  // a ≤1mm Z difference is the same plane (floating-point tolerance)
+  check("2D overlap: 1mm Z diff = same plane", overlapBoxes([box(a, 0, 0, 0), box(b, 200, 0, 1)]).length === 1);
+  // raw panels carry their plan Z through the same rule
+  check("2D overlap: panel with different Z → NO overlap", overlapBoxes([box(a, 0, 0, 0), { id: "p1", name: "P", x: 100, y: 0, w: 300, h: 400, z: 80 }]).length === 0);
+}
+
+/* 23 — glass doors live in the BOM only (table rows AND the full report),
+   while the CNC DXF stays completely glass-free */
+{
+  // neutral cabinet name — the word "glass" in the DXF is ONLY acceptable if
+  // the user named their own cabinet that way
+  const c = makeCabinet("tall", 600, 1000, 560, "GdCab");
+  c.rows[0].columns[0].door = {
+    type: "single",
+    style: "overlay",
+    swing: "left",
+    material: "glass",
+    mdfThk: S.mdfThk,
+    hingeBrand: "Universal 35mm",
+    hasHandle: false,
+    handlePos: "center",
+  };
+  c.qty = 2; // BOM counts both copies
+  const html = bomReportHtml([c], S);
+  check("bom report: glass door line present with size", /Glass door - \d+x\d+/.test(html), "no 'Glass door' BOM row");
+  check("bom report: glass door qty = cabinet qty (2)", /Glass door - \d+x\d+<\/td><td class="num">2<\/td><td>pcs<\/td>/.test(html), "qty 2 not found");
+  check("bom report: glass row notes NOT in DXF", html.includes("NOT in DXF"));
+  // and the DXF must not contain the word glass at all (no text, no layer, no label)
+  const dxfAll = buildDxf([c], S, null, true);
+  check("dxf: zero mentions of glass in every flat export", !/glass/i.test(dxfAll), dxfAll.match(/glass/gi)?.length?.toString() ?? "");
+}
+
 if (failures) {
   console.log(`\n${failures} test(s) FAILED`);
   process.exit(1);

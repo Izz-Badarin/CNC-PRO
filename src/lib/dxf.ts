@@ -47,6 +47,10 @@ export function buildDxfForSheet(sheet: Sheet, labels: boolean, opts?: { bandMar
   const ox = 0;
   sheet.placed.forEach((pp) => {
     const { x, y, part } = pp;
+    // HARD GUARD (rule H): glass doors are purchased hardware — BOM only.
+    // A glass/reference part must never reach a CNC DXF, not as geometry and
+    // not as label text, no matter which export path produced the sheet.
+    if (part.material === "glass" || part.reference) return;
     const pts = placedOutline(pp);
     for (let i = 0; i < pts.length; i++) {
       const a = pts[i];

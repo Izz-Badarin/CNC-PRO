@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { allParts, bandingByMaterial, columnFaceWidth, columnLayout, doorDims, drillOps, doorHingeCount, generatePanelParts, kickH, stackOn, stackedHeights } from "../lib/model";
+import { allParts, bandingByMaterial, columnFaceWidth, columnLayout, doorDims, drillOps, doorHingeCount, generatePanelParts, glassDoorRefs, kickH, stackOn, stackedHeights } from "../lib/model";
 import { nestParts } from "../lib/nesting";
 import { plyMaterialById } from "../lib/defaults";
 import type { Cabinet, Customer, PanelItem, ProjectInfo, Settings } from "../types";
@@ -132,6 +132,27 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, project = 
     bandingByMaterial(cabinets, settings).forEach((b) => {
       rows.push({category:"Materials",item:`Edge banding — ${b.material}`,qty:Math.round(b.meters*10)/10,unit:"m",note:`${b.mm.toFixed(0)} mm`});
     });
+    // Glass doors are PURCHASED hardware (aluminium + glass) — they are listed
+    // in the BOM ONLY. They never become a cut part, so the cut list, nesting
+    // and every DXF stay glass-free. One row per leaf (size included), counted
+    // from the same reference list the Drilling tab shows, × cabinet qty.
+    const cabQty = new Map(cabinets.map((c) => [c.id, c.qty ?? 1]));
+    const glassAgg: Record<string, { qty: number; w: number; h: number }> = {};
+    glassDoorRefs(cabinets, settings).forEach((g) => {
+      const key = g.name.replace(" (reference)", "");
+      const cur = (glassAgg[key] ??= { qty: 0, w: g.w, h: g.h });
+      cur.qty += cabQty.get(g.cabId) ?? 1;
+    });
+    Object.entries(glassAgg).forEach(([name, { qty, w, h }]) => {
+      // name already reads "Glass door" / "Glass full door L" etc.
+      rows.push({
+        category: "Hardware",
+        item: `${name} · ${w}×${h}`,
+        qty,
+        unit: "pcs",
+        note: "purchased (alu + glass) · NOT cut · NOT in DXF · Ø35 hinge cups are drilled in the glass at the positions shown in Drilling",
+      });
+    });
     if (hinges>0) rows.push({category:"Hardware",item:"Hinges — Universal 35mm",qty:hinges,unit:"pcs",note:"Ø35 cup bored in the door only · auto: <900→2 · 900-1799→3 · 1800-2399→4 · 2400-2999→5 · ≥3000→6 · 140mm from ends"});
     Object.keys(slides).map(Number).sort((a, b) => a - b).forEach((cm) => {
       if (slides[cm] > 0) rows.push({category:"Hardware",item:`Drawer slides ${cm}0mm`,qty:slides[cm],unit:"pairs",note:"1 pair per drawer, by real drawer depth"});
@@ -196,7 +217,7 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, project = 
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
             <h2 className="card-h"><FileText size={17} className="text-amber-400" /> Bill of Materials & Hardware</h2>
-            <p className="hint mt-1">Sheet counts from nesting output (M) · slides by real depth pairs/drawer · hinges from the new rule &lt;900→2 … ≥3000→6 incl. glass/full doors (U) · handles removed (L). Full multi-page report includes 3D PNG (E1) + dimensioned elevation (D2) for customer approval (O).</p>
+            <p className="hint mt-1">Sheet counts from nesting output (M) · slides by real depth pairs/drawer · hinges from the new rule &lt;900→2 … ≥3000→6 incl. glass/full doors (U) · handles removed (L) · glass doors listed HERE only — purchased, never in the DXF. Full multi-page report includes 3D PNG (E1) + dimensioned elevation (D2) for customer approval (O).</p>
           </div>
           <div className="flex gap-2 flex-wrap">
             <Btn size="sm" onClick={exportCsv}><FileSpreadsheet size={14} /> CSV</Btn>

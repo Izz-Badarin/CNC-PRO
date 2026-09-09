@@ -439,7 +439,7 @@ return (
             <AlertTriangle size={14} className="text-amber-300" />
             {preview
               ? "Overlapping — keep moving to a free spot or drop here to fix later"
-              : `${overlaps.length} overlap${overlaps.length > 1 ? "s" : ""} — you must change position or dimension:`}
+              : `${overlaps.length} overlap${overlaps.length > 1 ? "s" : ""} — you must change position or dimension (or set a DIFFERENT Z in Plan View):`}
           </div>
           {overlaps.map((o, i) => (
             <div key={i} className="text-[11px] font-mono text-ink-200 mt-1">
@@ -457,6 +457,13 @@ return (
               <span className="text-amber-300">{p.cab.name}</span>
               <PosInput label="X" value={p.x} onCommit={(n) => moveCab(p.cab.id, n, p.y)} />
               <PosInput label="Y" value={p.y} onCommit={(n) => moveCab(p.cab.id, p.x, n)} />
+              <span
+                className="inline-flex items-center gap-0.5"
+                title="Z (depth) — read-only, taken from the Plan View. Two items at DIFFERENT Z sit on different depth planes and do NOT count as overlapping in this 2D view."
+              >
+                <span className="text-ink-400">Z</span>
+                <span className="text-cyan-300">{p.cab.plan && Number.isFinite(p.cab.plan.z) ? p.cab.plan.z : 0}</span>
+              </span>
             </span>
           ))}
           {pposMemo.map((pp) => (
@@ -464,9 +471,18 @@ return (
               <span className="text-cyan-300">{pp.pn.name}</span>
               <PosInput label="X" value={pp.x} onCommit={(n) => movePanel(pp.pn.id, n, pp.y ?? 0)} />
               <PosInput label="Y" value={pp.y ?? 0} onCommit={(n) => movePanel(pp.pn.id, pp.x, n)} />
+              <span
+                className="inline-flex items-center gap-0.5"
+                title="Z (depth) — read-only, taken from the Plan View. Two items at DIFFERENT Z sit on different depth planes and do NOT count as overlapping in this 2D view."
+              >
+                <span className="text-ink-400">Z</span>
+                <span className="text-cyan-300">{pp.pn.plan && Number.isFinite(pp.pn.plan.z) ? pp.pn.plan.z : 0}</span>
+              </span>
             </span>
           ))}
-          <span className="text-[10.5px] text-ink-400">drag = move · snap 5 mm · arrows nudge (Shift = 50) · Esc clears</span>
+          <span className="text-[10.5px] text-ink-400">
+            drag = move · snap 5 mm · arrows nudge (Shift = 50) · <span className="text-cyan-300">Z comes from Plan View</span> — different Z = no overlap · Esc clears
+          </span>
         </div>
       )}
 
