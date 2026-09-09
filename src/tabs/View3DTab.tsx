@@ -57,6 +57,7 @@ export function View3DTab({
   };
   const [layers, setLayers] = useState<Record<string, boolean>>({});
   const [followLayout, setFollowLayout] = useState(true);
+  const [spinId, setSpinId] = useState<string | null>(null);
 
   const anyLaid = cabinets.some((c) => c.layout);
   // true run footprint when following the 2D arrangement (stacked units count
@@ -198,11 +199,21 @@ export function View3DTab({
             }}><Box size={13} /> Save All Cab PNGs</Btn>
           </div>
           {cabinets.length>0 && (
-            <div className="mt-2 max-h-[160px] overflow-auto rounded border border-white/[0.06] p-1 space-y-1">
+            <div className="mt-2 max-h-[200px] overflow-auto rounded border border-white/[0.06] p-1 space-y-1">
               {cabinets.map(c=>(
                 <div key={c.id} className="flex items-center justify-between gap-1 text-[10px]">
                   <span className="truncate text-ink-300">{c.name}</span>
                   <span className="flex gap-1">
+                    <button
+                      className={`px-1.5 py-0.5 rounded ${spinId===c.id ? "bg-amber-700 text-amber-100" : "bg-ink-800 hover:bg-ink-700 text-fuchsia-300"}`}
+                      title={`${c.name} — 360° orbit`}
+                      onClick={()=>{
+                        const next = spinId === c.id ? null : c.id;
+                        setSpinId(next);
+                        viewer.current?.isolateCabinet(next);
+                        viewer.current?.setAutoRotate(!!next);
+                      }}
+                    >360°</button>
                     <button className="px-1.5 py-0.5 rounded bg-ink-800 hover:bg-ink-700 text-cyan-300" onClick={()=>{
                       const url=(viewer.current as any)?.snapshotCabinet?.(c.id);
                       if(!url) return;
@@ -242,7 +253,7 @@ export function View3DTab({
 
       <div className="card p-4">
         <div className="flex items-center justify-between">
-          <h3 className="card-h text-[14px]">All cabinets — 360°</h3>
+          <h3 className="card-h text-[14px]">{spinId ? `${cabinets.find((c) => c.id === spinId)?.name ?? "Cabinet"} — 360°` : "All cabinets — 360°"}</h3>
           <span className="font-mono text-[11px] text-ink-400">
             run {totalRun}mm
             <span className={`ml-2 ${followLayout && anyLaid ? "text-cyan-300/90" : "text-ink-500"}`}>

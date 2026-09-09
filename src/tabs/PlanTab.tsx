@@ -58,16 +58,16 @@ export function PlanTab({
     });
   }, [cabinets]);
 
-  // raw project panels — standing w × thk footprints (auto-flow after the
-  // rightmost cabinet, or manual layout.x), against the front wall (z = 0)
+  // raw project panels — standing w × thk footprints; X from plan.x or layout.x
+  // (or auto-flow), Z from plan.z (0 = front wall)
   const panelPlan = useMemo(() => {
     const right = planPos.length ? Math.max(...planPos.map((p) => p.x + p.w)) : 0;
     let cursor = right + 40;
     return panels.map((pn) => {
-      const x = pn.layout ? pn.layout.x : cursor;
-      if (!pn.layout) cursor += Math.max(60, pn.w) + 40;
+      const x = pn.plan ? pn.plan.x : pn.layout ? pn.layout.x : cursor;
+      if (!pn.plan && !pn.layout) cursor += Math.max(60, pn.w) + 40;
       const thk = pn.thk > 0 ? pn.thk : pn.material === "plywood" ? settings.bodyThk : pn.material === "back" ? settings.backThk : settings.mdfThk;
-      return { pn, x, z: 0, w: pn.w, d: Math.max(thk, 10), h: pn.h };
+      return { pn, x, z: pn.plan ? pn.plan.z : 0, w: pn.w, d: Math.max(thk, 10), h: pn.h };
     });
   }, [planPos, panels, settings]);
 
@@ -75,10 +75,16 @@ export function PlanTab({
     if (!Number.isFinite(x) || !Number.isFinite(z)) return; // a NaN commit blanks 3D
     setCabinets((cs) => cs.map((c) => (c.id === id ? { ...c, plan: { x: Math.round(x), z: Math.round(z) } } : c)));
   };
-  const commitPanel = (id: string, x: number, _z: number) => {
+  const commitPanel = (id: string, x: number, z: number) => {
     if (!setPanels) return;
-    if (!Number.isFinite(x)) return; // a NaN commit blanks 3D
-    setPanels((ps) => ps.map((p) => (p.id === id ? { ...p, layout: { x: Math.round(x), y: 0 } } : p)));
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+    setPanels((ps) =>
+      ps.map((p) =>
+        p.id === id
+          ? { ...p, plan: { x: Math.round(x), z: Math.round(z) }, layout: { x: Math.round(x), y: p.layout?.y ?? 0 } }
+          : p,
+      ),
+    );
   };
 
   const snapX = (x: number, id: string, w: number): number => {
@@ -110,6 +116,13 @@ export function PlanTab({
         if (dd < bd && dd < 12) { bd = dd; best = cz; }
       });
     });
+    panelPlan.forEach((p) => {
+      if (p.pn.id === id) return;
+      [p.z, p.z + p.d, p.z - d].forEach((cz) => {
+        const dd = Math.abs(cz - z);
+        if (dd < bd && dd < 12) { bd = dd; best = cz; }
+      });
+    });
     return best;
   };
 
@@ -119,13 +132,11 @@ export function PlanTab({
     if (kind === 'panel') {
       const pos = panelPlan.find((p) => p.pn.id === id);
       if (!pos) return;
-      // raw panels carry only a 1-D plan position ({x, y} in layout), so they
-      // slide along X against the front wall — no Z drag for them
-      const sx = e.clientX, ox = pos.x, oz = pos.z;
+      const sx = e.clientX, sy = e.clientY, ox = pos.x, oz = pos.z;
       const live: { cur: { dx: number; dz: number } | null } = { cur: null };
       const move = (ev: PointerEvent) => {
         const dx = snapX(ox + (ev.clientX - sx) / SCALE / zoom, id, pos.w) - ox;
-        const dz = 0;
+        const dz = snapZ(oz + (ev.clientY - sy) / SCALE / zoom, id, pos.d) - oz;
         live.cur = { dx, dz };
         setDragPanel({ id, dx, dz, ox, oz });
       };
@@ -178,8 +189,8 @@ const active = planPos.map((p) => ({
   }));
 
   const maxX = Math.max(5, ...active.map((p) => p.x + p.w), ...activePanels.map((p) => p.x + p.w)) + 200;
-  const minZ = Math.min(0, ...active.map((p) => p.z - 60));
-  const maxZ = Math.max(60, ...active.map((p) => p.z + p.d)) + 200;
+  const minZ = Math.min(0, ...active.map((p) => p.z - 60), ...activePanels.map((p) => p.z - 60));
+  const maxZ = Math.max(60, ...active.map((p) => p.z + p.d), ...activePanels.map((p) => p.z + p.d)) + 200;
   const W = maxX * SCALE * zoom;
   const H = (maxZ - minZ) * SCALE * zoom;
   const OFZ = -minZ * SCALE * zoom;
@@ -209,7 +220,7 @@ return (
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="card-h"><ArrowDownUp size={17} className="text-amber-400" /> Plan View — Top-Down Footprints</h2>
-          <p className="hint mt-1">Drag any cabinet to position it · 5 mm grid + edge snap · saved to the project · dimension-accurate.</p>
+          <p className="hint mt-1">Drag any cabinet or panel · X along the wall, Z into the room · 5 mm grid + edge snap · saved to the project.</p>
         </div>
         <div className="flex gap-2">
           <Btn size="sm" onClick={() => setZoom((z) => Math.min(4, z + 0.25))}>+</Btn>

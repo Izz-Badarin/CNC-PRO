@@ -724,7 +724,7 @@ export function bomReportHtml(
       Glass doors: REFERENCE only (dashed, NOT DRILLED) - drill glass at those positions - 35 cups excluded from DXF
     </div>
     <h3>DXF layers</h3>
-    <div class="card small">CUT - CLAMP_HOLES - SHELF_HOLES - SLIDE_HOLES - DRAWER_GROOVE - SHEET - LABEL - plus GLASS DOOR REF label (not drilled). Units mm, R12 compatible.</div>
+    <div class="card small">CUT - CLAMP_HOLES - SHELF_HOLES - SLIDE_HOLES - DRAWER_GROOVE - SHEET - LABEL. Units mm, R12 compatible. Glass doors are BOM-only (not in DXF).</div>
     <h3>Customer approval</h3>
     <div class="grid2">
       <div class="card" style="height:70px">Signature / Date<br/><br/><br/></div>

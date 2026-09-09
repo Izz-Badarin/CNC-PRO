@@ -89,7 +89,7 @@ export function DxfTab({
       <div className="mt-3 rounded-xl border border-cyan-400/20 bg-cyan-400/[0.05] px-4 py-3 text-[12.5px] text-cyan-200/90">
         <span className="font-semibold">Layers:</span> CUT · CLAMP_HOLES · SHELF_HOLES · SLIDE_HOLES · DRAWER_GROOVE · SHEET · LABEL.
         Units mm, AutoCAD R12-compatible (LINE / CIRCLE / TEXT). Sheets tiled N columns × 5 rows. 10mm clamping holes are added in free areas
-        (≥300mm apart). Glass doors appear as <b>GLASS DOOR REF</b> label text (not drilled) — Ø35 cup circles stay out of the DXF.
+        (≥300mm apart). Ø35 hinge cups stay out of the DXF. Glass doors are listed in the BOM only — they are not exported here.
       </div>
 
       <div className="flex gap-2 mt-5 flex-wrap">

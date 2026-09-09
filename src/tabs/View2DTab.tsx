@@ -103,8 +103,24 @@ export function View2DTab({
   // preview position is included so the banner updates live while moving
   const allBoxes = useMemo(
     () => [
-      ...curPos.map((p) => ({ id: p.cab.id, name: p.cab.name, x: p.x, y: p.y, w: p.cab.width, h: p.cab.height })),
-      ...pposMemo.map((pp) => ({ id: pp.pn.id, name: pp.pn.name, x: pp.x, y: pp.y ?? 0, w: pp.pn.w, h: pp.pn.h })),
+      ...curPos.map((p) => ({
+        id: p.cab.id,
+        name: p.cab.name,
+        x: p.x,
+        y: p.y,
+        w: p.cab.width,
+        h: p.cab.height,
+        z: p.cab.plan && Number.isFinite(p.cab.plan.z) ? p.cab.plan.z : 0,
+      })),
+      ...pposMemo.map((pp) => ({
+        id: pp.pn.id,
+        name: pp.pn.name,
+        x: pp.x,
+        y: pp.y ?? 0,
+        w: pp.pn.w,
+        h: pp.pn.h,
+        z: pp.pn.plan && Number.isFinite(pp.pn.plan.z) ? pp.pn.plan.z : 0,
+      })),
     ].filter((b) => Number.isFinite(b.x) && Number.isFinite(b.y) && Number.isFinite(b.w) && Number.isFinite(b.h)),
     [curPos, pposMemo],
   );
@@ -511,15 +527,20 @@ export interface WarnBox {
   y: number;
   w: number;
   h: number;
+  /** plan-view Z (mm). Different Z means they sit on different depth planes — no 2D overlap. */
+  z?: number;
 }
 
 /** pairwise rectangle intersections (>1mm in BOTH axes) — exactly touching edges are NOT overlap.
- *  Generic boxes so cabinets AND raw panels are covered (Phase 8). */
+ *  Different plan Z (from Plan View) also means no overlap. */
 export function overlapBoxes(boxes: WarnBox[]) {
   const out: { a: string; b: string; wa: string; wb: string; ow: number; oh: number }[] = [];
   for (let i = 0; i < boxes.length; i++)
     for (let j = i + 1; j < boxes.length; j++) {
       const A = boxes[i], B = boxes[j];
+      const zA = Number.isFinite(A.z) ? (A.z as number) : 0;
+      const zB = Number.isFinite(B.z) ? (B.z as number) : 0;
+      if (Math.abs(zA - zB) > 1) continue;
       const ow = Math.min(A.x + A.w, B.x + B.w) - Math.max(A.x, B.x);
       const oh = Math.min(A.y + A.h, B.y + B.h) - Math.max(A.y, B.y);
       if (ow > 1 && oh > 1)

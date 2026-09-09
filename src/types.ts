@@ -275,6 +275,9 @@ export interface PanelItem {
   /** manual position on the 2D front view (mm). x = along the wall, y = lift above floor.
    *  null = auto-placed below all cabinets (display only — not used for cut list / nesting / DXF). */
   layout?: { x: number; y: number } | null;
+  /** Plan-view position (mm). x = along the wall, z = depth offset from the front
+   *  reference line. null = z 0 (front wall). Display-only. */
+  plan?: { x: number; z: number } | null;
 }
 
 export interface ProjectInfo {
