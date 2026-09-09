@@ -169,7 +169,7 @@ function plyBoxMat(ply: PlywoodMaterial): THREE.MeshStandardMaterial {
   });
 }
 
-type Tag = "carcass" | "door" | "drawer" | "shelf" | "back" | "kick" | "panel";
+type Tag = "carcass" | "door" | "drawer" | "shelf" | "back" | "kick" | "panel" | "handle";
 
 /**
  * `name` = semantic part name (Phase 9) — used by setExploded() for
@@ -730,6 +730,12 @@ function buildColumn3D(
         const mf = box(fwMdf, fh, S.mdfThk, mats.mdf, "drawer");
         mf.position.z = -inset;
         dg.add(mf);
+        // bar handle on visible MDF fronts (OLD app look — hidden fronts stay clean)
+        if (!dr.hidden) {
+          const hb = handle(fw * 0.5, "h");
+          hb.position.set(0, fh / 2 - 42, S.mdfThk / 2 + 10);
+          dg.add(hb);
+        }
       }
       if (cab.isKitchen) {
         const bd = Math.min(495, d - 60);
@@ -791,6 +797,34 @@ function buildColumn3D(
   }
 }
 
+/**
+ * Bar handle (grip + two posts) — ported from the OLD app (Izz-Badarin/OLD):
+ * the 3D view shows handles the way the 2D front view shows their dots.
+ * Handles are display-only hardware: never in the cut list / DXF / BOM.
+ */
+function handle(len: number, orient: "h" | "v"): THREE.Group {
+  const g = new THREE.Group();
+  const r = 6;
+  const grip = new THREE.Mesh(new THREE.CylinderGeometry(r, r, Math.max(30, len), 14), mats.metal);
+  grip.castShadow = true;
+  grip.userData.tag = "handle";
+  if (orient === "h") grip.rotation.z = Math.PI / 2;
+  const p1 = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.72, r * 0.72, 18, 10), mats.metal);
+  p1.rotation.x = Math.PI / 2;
+  p1.userData.tag = "handle";
+  const p2 = p1.clone();
+  const off = Math.max(30, len) / 2 - 12;
+  if (orient === "h") {
+    p1.position.set(-off, 0, -8);
+    p2.position.set(off, 0, -8);
+  } else {
+    p1.position.set(0, -off, -8);
+    p2.position.set(0, off, -8);
+  }
+  g.add(p1, p2, grip);
+  return g;
+}
+
 function buildDoor3D(
   S: Settings,
   w: number,
@@ -847,6 +881,9 @@ function buildDoor3D(
       p.position.set(0, dh / 2, 0);
       if (door.material === "glass") addGlassFrame(p);
       panel.add(p);
+      const hb = handle(26, "v");
+      hb.position.set(j === 0 ? dw / 2 - 20 : -(dw / 2 - 20), dh / 2, thk / 2 + 8);
+      panel.add(hb);
       wg.add(panel);
       doors.push({ node: panel, base: cx, sign: j === 0 ? -1 : 1, cur: 0, mode: "slide", dist: dw * 0.72 });
     }
@@ -865,6 +902,12 @@ function buildDoor3D(
     dp.position.set(hingeLeft ? dw / 2 : -dw / 2, dh / 2, 0);
     if (door.material === "glass") addGlassFrame(dp);
     pivot.add(dp);
+    if (door.hasHandle) {
+      const hb = handle(Math.min(220, dh * 0.4), "v");
+      const hy = door.handlePos === "top" ? dh - 130 : door.handlePos === "bottom" ? 130 : dh / 2;
+      hb.position.set(hingeLeft ? dw - 34 : -(dw - 34), hy, thk / 2 + 10);
+      pivot.add(hb);
+    }
     wg.add(pivot);
     doors.push({ node: pivot, base: 0, sign: hingeLeft ? -1 : 1, cur: 0, mode: "swing", dist: 0 });
   }
@@ -1015,6 +1058,11 @@ function buildCorner3D(cab: Cabinet, S: Settings, grp: THREE.Group, doors: DoorA
     const door = box(dw, dh, thk, col.door.material === "glass" ? mats.glass : col.door.material === "mdf" ? mats.mdf : woodMat(dw, dh, ply), "door");
     door.position.set(dw / 2, dh / 2, 0);
     pivot.add(door);
+    if (col.door.hasHandle !== false) {
+      const hb = handle(Math.min(220, dh * 0.4), "v");
+      hb.position.set(dw - 34, dh - 130, thk / 2 + 10);
+      pivot.add(hb);
+    }
     grp.add(pivot);
     doors.push({ node: pivot, base: ang, sign: -1, cur: 0, mode: "swing", dist: 0 });
   });
@@ -1067,7 +1115,7 @@ export class CabinetViewer {
   /** E2: door openness 0..1 (doors pivot on their hinge edges) */
   doorFrac = 0;
   drawersOpen = false;
-  layerVis: Record<Tag, boolean> = { carcass: true, door: true, drawer: true, shelf: true, back: true, kick: true, panel: true };
+  layerVis: Record<Tag, boolean> = { carcass: true, door: true, drawer: true, shelf: true, back: true, kick: true, panel: true, handle: true };
   private disposed = false;
   private visible = true;
   private io: IntersectionObserver | null = null;
@@ -1354,6 +1402,7 @@ export class CabinetViewer {
             // fallback for parts built without a partName (corner cabinets, covers)
             if (tag === "back") dz = -120;
             else if (tag === "door") dz = 250;
+            else if (tag === "handle") dz = 250; // door handles explode with the door leaf
             else if (tag === "drawer") dz = 300;
             else if (tag === "shelf") dy = 40;
             else if (tag === "carcass" && o.position.y < 25) dy = -40; // thin bottom plate

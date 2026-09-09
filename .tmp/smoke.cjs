@@ -3780,7 +3780,7 @@ var DXF_GRID_ROWS = 5;
 var holeLayer = (kind) => kind === "shelf" ? "SHELF_HOLES" : kind === "hinge" ? "HINGE_HOLES" : "SLIDE_HOLES";
 var esc = (s) => s.replace(/[^\x20-\x7E]/g, "?");
 function header() {
-  let s = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n";
+  let s = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n";
   s += "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n";
   LAYERS.forEach(([name, color]) => {
     s += `0
@@ -3889,27 +3889,9 @@ function buildDxfForSheet(sheet, labels, opts) {
         const by = py - dy * len;
         const ox2 = -dy * half;
         const oy = dx * half;
-        e += `0
-LWPOLYLINE
-8
-BANDING
-90
-3
-70
-1
-10
-${r(px)}
-20
-${r(py)}
-10
-${r(bx + ox2)}
-20
-${r(by + oy)}
-10
-${r(bx - ox2)}
-20
-${r(by - oy)}
-`;
+        e += line("BANDING", px, py, bx + ox2, by + oy);
+        e += line("BANDING", bx + ox2, by + oy, bx - ox2, by - oy);
+        e += line("BANDING", bx - ox2, by - oy, px, py);
       };
       const arrows = (edge) => {
         const horizontal = edge === "top" || edge === "bottom";
@@ -19537,6 +19519,14 @@ var S = { ...DEFAULT_SETTINGS };
   check("dxf J: default-matId panel kept in the DEFAULT plywood export", dxfDef.includes("RawPanel"));
   check("dxf: no GLASS DOOR REF (BOM only)", !dxfDef.includes("GLASS DOOR") && !dxfDef.includes("NOT DRILLED"));
   check("dxf: \xD835 cup CIRCLEs still excluded", !/0\nCIRCLE\n8\nHINGE_HOLES/.test(dxfDef));
+  const dxfTypes = /* @__PURE__ */ new Set();
+  const dLines = dxfDef.split("\n");
+  for (let i = 0; i + 1 < dLines.length; i += 2) {
+    if (dLines[i] === "0" && !["SECTION", "ENDSEC", "TABLE", "LAYER", "ENDTAB", "EOF"].includes(dLines[i + 1])) dxfTypes.add(dLines[i + 1]);
+  }
+  check("dxf: only core R12 entities (LINE/CIRCLE/TEXT)", [...dxfTypes].every((t) => t === "LINE" || t === "CIRCLE" || t === "TEXT"), [...dxfTypes].join(","));
+  check("dxf: declares $ACADVER AC1009 (AutoCAD R12)", dxfDef.includes("$ACADVER\n1\nAC1009"));
+  check("dxf: banding arrows drawn as BANDING LINEs", dxfDef.includes("0\nLINE\n8\nBANDING"));
 }
 {
   const parts = generateCabinetParts(makeCabinet("tall", 600, 1e3, 560, "Bend"), S);

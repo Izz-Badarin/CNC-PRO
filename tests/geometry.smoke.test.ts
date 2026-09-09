@@ -325,6 +325,18 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   check("dxf J: default-matId panel kept in the DEFAULT plywood export", dxfDef.includes("RawPanel"));
   check("dxf: no GLASS DOOR REF (BOM only)", !dxfDef.includes("GLASS DOOR") && !dxfDef.includes("NOT DRILLED"));
   check("dxf: Ø35 cup CIRCLEs still excluded", !/0\nCIRCLE\n8\nHINGE_HOLES/.test(dxfDef));
+  // strict AutoCAD R12: only core R12 entities, explicit $ACADVER AC1009,
+  // banding arrows as closed LINE triangles (LWPOLYLINE does not exist in R12)
+  const dxfTypes = new Set<string>();
+  const dLines = dxfDef.split("\n");
+  for (let i = 0; i + 1 < dLines.length; i += 2) {
+    // walk real code/value pairs — a VALUE "0" (layer flags, Z coords) must not
+    // be mistaken for an entity marker
+    if (dLines[i] === "0" && !["SECTION", "ENDSEC", "TABLE", "LAYER", "ENDTAB", "EOF"].includes(dLines[i + 1])) dxfTypes.add(dLines[i + 1]);
+  }
+  check("dxf: only core R12 entities (LINE/CIRCLE/TEXT)", [...dxfTypes].every((t) => t === "LINE" || t === "CIRCLE" || t === "TEXT"), [...dxfTypes].join(","));
+  check("dxf: declares $ACADVER AC1009 (AutoCAD R12)", dxfDef.includes("$ACADVER\n1\nAC1009"));
+  check("dxf: banding arrows drawn as BANDING LINEs", dxfDef.includes("0\nLINE\n8\nBANDING"));
 }
 
 /* 18 — Phase 5: bend length = total banded-edge length (I) */
