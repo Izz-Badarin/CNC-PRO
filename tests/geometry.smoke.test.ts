@@ -325,6 +325,18 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   check("dxf J: default-matId panel kept in the DEFAULT plywood export", dxfDef.includes("RawPanel"));
   check("dxf: no GLASS DOOR REF (BOM only)", !dxfDef.includes("GLASS DOOR") && !dxfDef.includes("NOT DRILLED"));
   check("dxf: Ø35 cup CIRCLEs still excluded", !/0\nCIRCLE\n8\nHINGE_HOLES/.test(dxfDef));
+  // strict AutoCAD R12: only core R12 entities, explicit $ACADVER AC1009,
+  // banding arrows as closed LINE triangles (LWPOLYLINE does not exist in R12)
+  const dxfTypes = new Set<string>();
+  const dLines = dxfDef.split("\n");
+  for (let i = 0; i + 1 < dLines.length; i += 2) {
+    // walk real code/value pairs — a VALUE "0" (layer flags, Z coords) must not
+    // be mistaken for an entity marker
+    if (dLines[i] === "0" && !["SECTION", "ENDSEC", "TABLE", "LAYER", "ENDTAB", "EOF"].includes(dLines[i + 1])) dxfTypes.add(dLines[i + 1]);
+  }
+  check("dxf: only core R12 entities (LINE/CIRCLE/TEXT)", [...dxfTypes].every((t) => t === "LINE" || t === "CIRCLE" || t === "TEXT"), [...dxfTypes].join(","));
+  check("dxf: declares $ACADVER AC1009 (AutoCAD R12)", dxfDef.includes("$ACADVER\n1\nAC1009"));
+  check("dxf: banding arrows drawn as BANDING LINEs", dxfDef.includes("0\nLINE\n8\nBANDING"));
 }
 
 /* 18 — Phase 5: bend length = total banded-edge length (I) */
@@ -516,6 +528,57 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   check("exploded report: drilling map page", html.includes("Drilling Map"), "");
   check("exploded report: vectors only, no external assets", html.includes("<svg") && !/<(script|link)\s+[^>]*src=["']?(https?:)?\/\//i.test(html));
   check("exploded report: table names the plywood, not 'plywood'", html.includes("Plywood") , "");
+}
+
+/* 22 — 2D front view: Z is taken from the Plan View; DIFFERENT Z = no overlap */
+{
+  const a = makeCabinet("base", 600, 720, 560, "ZA");
+  const b = makeCabinet("base", 600, 720, 560, "ZB");
+  const box = (c: typeof a, x: number, y: number, z: number) => ({
+    id: c.id,
+    name: c.name,
+    x,
+    y,
+    w: c.width,
+    h: c.height,
+    z,
+  });
+  // same depth plane → the X/Y intersection is a real overlap
+  check("2D overlap: same Z → overlap flagged", overlapBoxes([box(a, 0, 0, 0), box(b, 200, 0, 0)]).length === 1);
+  // different plan Z → different depth planes → NO overlap in the 2D view
+  check("2D overlap: different Z (500mm) → NO overlap", overlapBoxes([box(a, 0, 0, 0), box(b, 200, 0, 500)]).length === 0);
+  // touching edges on the same plane are NOT overlap (unchanged rule)
+  check("2D overlap: touching edges (same Z) → NOT overlap", overlapBoxes([box(a, 0, 0, 0), box(b, 600, 0, 0)]).length === 0);
+  // a ≤1mm Z difference is the same plane (floating-point tolerance)
+  check("2D overlap: 1mm Z diff = same plane", overlapBoxes([box(a, 0, 0, 0), box(b, 200, 0, 1)]).length === 1);
+  // raw panels carry their plan Z through the same rule
+  check("2D overlap: panel with different Z → NO overlap", overlapBoxes([box(a, 0, 0, 0), { id: "p1", name: "P", x: 100, y: 0, w: 300, h: 400, z: 80 }]).length === 0);
+}
+
+/* 23 — glass doors live in the BOM only (table rows AND the full report),
+   while the CNC DXF stays completely glass-free */
+{
+  // neutral cabinet name — the word "glass" in the DXF is ONLY acceptable if
+  // the user named their own cabinet that way
+  const c = makeCabinet("tall", 600, 1000, 560, "GdCab");
+  c.rows[0].columns[0].door = {
+    type: "single",
+    style: "overlay",
+    swing: "left",
+    material: "glass",
+    mdfThk: S.mdfThk,
+    hingeBrand: "Universal 35mm",
+    hasHandle: false,
+    handlePos: "center",
+  };
+  c.qty = 2; // BOM counts both copies
+  const html = bomReportHtml([c], S);
+  check("bom report: glass door line present with size", /Glass door - \d+x\d+/.test(html), "no 'Glass door' BOM row");
+  check("bom report: glass door qty = cabinet qty (2)", /Glass door - \d+x\d+<\/td><td class="num">2<\/td><td>pcs<\/td>/.test(html), "qty 2 not found");
+  check("bom report: glass row notes NOT in DXF", html.includes("NOT in DXF"));
+  // and the DXF must not contain the word glass at all (no text, no layer, no label)
+  const dxfAll = buildDxf([c], S, null, true);
+  check("dxf: zero mentions of glass in every flat export", !/glass/i.test(dxfAll), dxfAll.match(/glass/gi)?.length?.toString() ?? "");
 }
 
 if (failures) {

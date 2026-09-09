@@ -25,7 +25,9 @@ const holeLayer = (kind: string) =>
 const esc = (s: string) => s.replace(/[^\x20-\x7E]/g, "?");
 
 function header(): string {
-  let s = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n";
+  // $ACADVER = AC1009 marks the file as AutoCAD R12 (every entity used here —
+  // LINE / CIRCLE / TEXT — is a core R12 entity).
+  let s = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n";
   s += "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n";
   LAYERS.forEach(([name, color]) => {
     s += `0\nLAYER\n2\n${name}\n70\n0\n62\n${color}\n6\nCONTINUOUS\n`;
@@ -47,6 +49,10 @@ export function buildDxfForSheet(sheet: Sheet, labels: boolean, opts?: { bandMar
   const ox = 0;
   sheet.placed.forEach((pp) => {
     const { x, y, part } = pp;
+    // HARD GUARD (rule H): glass doors are purchased hardware — BOM only.
+    // A glass/reference part must never reach a CNC DXF, not as geometry and
+    // not as label text, no matter which export path produced the sheet.
+    if (part.material === "glass" || part.reference) return;
     const pts = placedOutline(pp);
     for (let i = 0; i < pts.length; i++) {
       const a = pts[i];
@@ -94,16 +100,17 @@ export function buildDxfForSheet(sheet: Sheet, labels: boolean, opts?: { bandMar
       const len = 25; // arrowhead length — big, no tail
       const half = 7; // half base width (14mm wide head)
       const step = 60; // short spacing between the 3 arrow centers
-      // one solid closed triangle with its tip at (px,py), pointing (dx,dy)
+      // one closed triangle with its tip at (px,py), pointing (dx,dy).
+      // Drawn as 3 LINEs — LWPOLYLINE does not exist in AutoCAD R12, so some
+      // CAM/CAD readers rejected or dropped the banding arrows.
       const tri = (px: number, py: number, dx: number, dy: number) => {
         const bx = px - dx * len;
         const by = py - dy * len;
         const ox = -dy * half;
         const oy = dx * half;
-        e += `0\nLWPOLYLINE\n8\nBANDING\n90\n3\n70\n1\n` +
-          `10\n${r(px)}\n20\n${r(py)}\n` +
-          `10\n${r(bx + ox)}\n20\n${r(by + oy)}\n` +
-          `10\n${r(bx - ox)}\n20\n${r(by - oy)}\n`;
+        e += line("BANDING", px, py, bx + ox, by + oy);
+        e += line("BANDING", bx + ox, by + oy, bx - ox, by - oy);
+        e += line("BANDING", bx - ox, by - oy, px, py);
       };
       const arrows = (edge: "top" | "bottom" | "left" | "right") => {
         const horizontal = edge === "top" || edge === "bottom";

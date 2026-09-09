@@ -87,7 +87,7 @@ export function ThreeCanvas({
   }, [showDims]);
 
   useEffect(() => {
-    if (viewerRef.current) viewerRef.current.setDoorOpen(doorsOpen ? 1 : 0);
+    if (viewerRef.current) viewerRef.current.doorsOpen = doorsOpen;
   }, [doorsOpen]);
 
   useEffect(() => {

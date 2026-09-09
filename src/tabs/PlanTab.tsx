@@ -226,7 +226,14 @@ return (
           <Btn size="sm" onClick={() => setZoom((z) => Math.min(4, z + 0.25))}>+</Btn>
           <Btn size="sm" onClick={() => setZoom((z) => Math.max(0.5, z - 0.25))}>−</Btn>
           <Chip>{(zoom * 100).toFixed(0)}%</Chip>
-          <Btn size="sm" onClick={() => setCabinets((cs) => cs.map((c) => ({ ...c, plan: null as null })))} title="Clear all manual plan positions">
+          <Btn
+            size="sm"
+            onClick={() => {
+              setCabinets((cs) => cs.map((c) => ({ ...c, plan: null as null })));
+              if (setPanels) setPanels((ps) => ps.map((p) => ({ ...p, plan: null as null })));
+            }}
+            title="Clear all manual plan positions (cabinets and panels)"
+          >
             <RotateCcw size={14} /> Reset
           </Btn>
           <Btn size="sm" variant="ok" onClick={exportSvg}>
@@ -289,6 +296,15 @@ return (
             <span className="text-amber-300">{p.cab.name}</span>
             <PlanPosInput label="X" value={p.x} onCommit={(n) => commit(p.cab.id, n, p.z)} />
             <PlanPosInput label="Z" value={p.z} onCommit={(n) => commit(p.cab.id, p.x, n)} />
+          </span>
+        ))}
+        {/* raw panels get their own X / Z (depth) row — a panel's plan Z is
+            what the 2D front view uses to decide overlap (different Z = no overlap) */}
+        {panelPlan.map((p) => (
+          <span key={p.pn.id} className="font-mono text-[10.5px] px-2 py-1 rounded bg-ink-900/60 border border-cyan-400/25 inline-flex items-center gap-2">
+            <span className="text-cyan-300">{p.pn.name}</span>
+            <PlanPosInput label="X" value={p.x} onCommit={(n) => commitPanel(p.pn.id, n, p.z)} />
+            <PlanPosInput label="Z" value={p.z} onCommit={(n) => commitPanel(p.pn.id, p.x, n)} />
           </span>
         ))}
       </div>

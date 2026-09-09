@@ -3780,7 +3780,7 @@ var DXF_GRID_ROWS = 5;
 var holeLayer = (kind) => kind === "shelf" ? "SHELF_HOLES" : kind === "hinge" ? "HINGE_HOLES" : "SLIDE_HOLES";
 var esc = (s) => s.replace(/[^\x20-\x7E]/g, "?");
 function header() {
-  let s = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n";
+  let s = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n";
   s += "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n";
   LAYERS.forEach(([name, color]) => {
     s += `0
@@ -3849,6 +3849,7 @@ function buildDxfForSheet(sheet, labels, opts) {
   const ox = 0;
   sheet.placed.forEach((pp) => {
     const { x, y, part } = pp;
+    if (part.material === "glass" || part.reference) return;
     const pts = placedOutline(pp);
     for (let i = 0; i < pts.length; i++) {
       const a = pts[i];
@@ -3888,27 +3889,9 @@ function buildDxfForSheet(sheet, labels, opts) {
         const by = py - dy * len;
         const ox2 = -dy * half;
         const oy = dx * half;
-        e += `0
-LWPOLYLINE
-8
-BANDING
-90
-3
-70
-1
-10
-${r(px)}
-20
-${r(py)}
-10
-${r(bx + ox2)}
-20
-${r(by + oy)}
-10
-${r(bx - ox2)}
-20
-${r(by - oy)}
-`;
+        e += line("BANDING", px, py, bx + ox2, by + oy);
+        e += line("BANDING", bx + ox2, by + oy, bx - ox2, by - oy);
+        e += line("BANDING", bx - ox2, by - oy, px, py);
       };
       const arrows = (edge) => {
         const horizontal = edge === "top" || edge === "bottom";
@@ -4008,12 +3991,7 @@ function buildDxf(cabs, S2, material, labels, ov = {}, matId, panels = []) {
   );
   const sel = [];
   groups.forEach((g) => g.sheets.forEach((sheet) => sel.push({ key: g.key, sheet })));
-  let extra = "";
-  glassDoorRefs(cabs, S2).forEach((g, i) => {
-    const cups = g.holes.map((h) => `(${r(h.x)},${r(h.y)})`).join(" ");
-    extra += text("LABEL", -3200, 400 - i * 50, 35, `GLASS DOOR REF ${r(g.w)}x${r(g.h)} - ${g.holes.length} x O${S2.hingeCupDiameter} cups @ ${cups} - NOT DRILLED (drill the glass at these positions)`);
-  });
-  return buildDxfFromSheets(sel, S2, labels, extra);
+  return buildDxfFromSheets(sel, S2, labels, "");
 }
 function buildClampHoles(sheet, S2) {
   const SW = sheet.sheetW || S2.sheetW;
@@ -4408,6 +4386,16 @@ function bomReportHtml(cabinets, settings, panels = [], grain = {}, project, cus
     });
   });
   banding.forEach((b) => bomRows.push({ category: "Materials", item: `Edge banding - ${b.material}`, qty: Math.round(b.meters * 10) / 10, unit: "m", note: `${b.mm.toFixed(0)} mm` }));
+  const cabQtyOf = new Map(cabinets.map((c) => [c.id, c.qty ?? 1]));
+  const glassAgg = {};
+  glassDoorRefs(cabinets, settings).forEach((g) => {
+    const key = g.name.replace(" (reference)", "");
+    const cur = glassAgg[key] ??= { qty: 0, w: g.w, h: g.h };
+    cur.qty += cabQtyOf.get(g.cabId) ?? 1;
+  });
+  Object.entries(glassAgg).forEach(([name, { qty, w, h }]) => {
+    bomRows.push({ category: "Hardware", item: `${name} - ${w}x${h}`, qty, unit: "pcs", note: "purchased (alu + glass) - NOT cut - NOT in DXF - drill 35mm hinge cups in the glass (positions in Drilling)" });
+  });
   if (hinges > 0) bomRows.push({ category: "Hardware", item: "Hinges - Universal 35mm", qty: hinges, unit: "pcs", note: "35 cup bored in the door only - auto: <900->2 900-1799->3 1800-2399->4 2400-2999->5 >=3000->6 - 140mm from ends" });
   Object.keys(slides).map(Number).sort((a, b) => a - b).forEach((cm) => {
     if (slides[cm] > 0) bomRows.push({ category: "Hardware", item: `Drawer slides ${cm}0mm`, qty: slides[cm], unit: "pairs", note: "1 pair per drawer, by real drawer depth" });
@@ -4571,7 +4559,7 @@ function bomReportHtml(cabinets, settings, panels = [], grain = {}, project, cus
       Glass doors: REFERENCE only (dashed, NOT DRILLED) - drill glass at those positions - 35 cups excluded from DXF
     </div>
     <h3>DXF layers</h3>
-    <div class="card small">CUT - CLAMP_HOLES - SHELF_HOLES - SLIDE_HOLES - DRAWER_GROOVE - SHEET - LABEL - plus GLASS DOOR REF label (not drilled). Units mm, R12 compatible.</div>
+    <div class="card small">CUT - CLAMP_HOLES - SHELF_HOLES - SLIDE_HOLES - DRAWER_GROOVE - SHEET - LABEL. Units mm, R12 compatible. Glass doors are BOM-only (not in DXF).</div>
     <h3>Customer approval</h3>
     <div class="grid2">
       <div class="card" style="height:70px">Signature / Date<br/><br/><br/></div>
@@ -4587,6 +4575,21 @@ var import_react = __toESM(require_react(), 1);
 
 // src/tabs/View2DTab.tsx
 var import_jsx_runtime2 = __toESM(require_jsx_runtime(), 1);
+function overlapBoxes(boxes) {
+  const out = [];
+  for (let i = 0; i < boxes.length; i++)
+    for (let j = i + 1; j < boxes.length; j++) {
+      const A = boxes[i], B = boxes[j];
+      const zA = Number.isFinite(A.z) ? A.z : 0;
+      const zB = Number.isFinite(B.z) ? B.z : 0;
+      if (Math.abs(zA - zB) > 1) continue;
+      const ow = Math.min(A.x + A.w, B.x + B.w) - Math.max(A.x, B.x);
+      const oh = Math.min(A.y + A.h, B.y + B.h) - Math.max(A.y, B.y);
+      if (ow > 1 && oh > 1)
+        out.push({ a: A.id, b: B.id, wa: A.name, wb: B.name, ow: Math.round(ow), oh: Math.round(oh) });
+    }
+  return out;
+}
 
 // src/lib/explodedReport.ts
 var escH2 = (s) => s.replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" })[c]);
@@ -19514,9 +19517,16 @@ var S = { ...DEFAULT_SETTINGS };
   const panel = { id: "p1", name: "RawPanel", w: 400, h: 300, thk: 0, material: "plywood" };
   const dxfDef = buildDxf([c], S, "plywood", true, {}, DEFAULT_PLY_ID, [panel]);
   check("dxf J: default-matId panel kept in the DEFAULT plywood export", dxfDef.includes("RawPanel"));
-  check("dxf H: GLASS DOOR REF label text present", dxfDef.includes("GLASS DOOR REF"));
-  check("dxf H: NOT DRILLED marker present", dxfDef.includes("NOT DRILLED"));
+  check("dxf: no GLASS DOOR REF (BOM only)", !dxfDef.includes("GLASS DOOR") && !dxfDef.includes("NOT DRILLED"));
   check("dxf: \xD835 cup CIRCLEs still excluded", !/0\nCIRCLE\n8\nHINGE_HOLES/.test(dxfDef));
+  const dxfTypes = /* @__PURE__ */ new Set();
+  const dLines = dxfDef.split("\n");
+  for (let i = 0; i + 1 < dLines.length; i += 2) {
+    if (dLines[i] === "0" && !["SECTION", "ENDSEC", "TABLE", "LAYER", "ENDTAB", "EOF"].includes(dLines[i + 1])) dxfTypes.add(dLines[i + 1]);
+  }
+  check("dxf: only core R12 entities (LINE/CIRCLE/TEXT)", [...dxfTypes].every((t) => t === "LINE" || t === "CIRCLE" || t === "TEXT"), [...dxfTypes].join(","));
+  check("dxf: declares $ACADVER AC1009 (AutoCAD R12)", dxfDef.includes("$ACADVER\n1\nAC1009"));
+  check("dxf: banding arrows drawn as BANDING LINEs", dxfDef.includes("0\nLINE\n8\nBANDING"));
 }
 {
   const parts = generateCabinetParts(makeCabinet("tall", 600, 1e3, 560, "Bend"), S);
@@ -19677,6 +19687,44 @@ ${l}
   check("exploded report: drilling map page", html.includes("Drilling Map"), "");
   check("exploded report: vectors only, no external assets", html.includes("<svg") && !/<(script|link)\s+[^>]*src=["']?(https?:)?\/\//i.test(html));
   check("exploded report: table names the plywood, not 'plywood'", html.includes("Plywood"), "");
+}
+{
+  const a = makeCabinet("base", 600, 720, 560, "ZA");
+  const b = makeCabinet("base", 600, 720, 560, "ZB");
+  const box = (c, x, y, z) => ({
+    id: c.id,
+    name: c.name,
+    x,
+    y,
+    w: c.width,
+    h: c.height,
+    z
+  });
+  check("2D overlap: same Z \u2192 overlap flagged", overlapBoxes([box(a, 0, 0, 0), box(b, 200, 0, 0)]).length === 1);
+  check("2D overlap: different Z (500mm) \u2192 NO overlap", overlapBoxes([box(a, 0, 0, 0), box(b, 200, 0, 500)]).length === 0);
+  check("2D overlap: touching edges (same Z) \u2192 NOT overlap", overlapBoxes([box(a, 0, 0, 0), box(b, 600, 0, 0)]).length === 0);
+  check("2D overlap: 1mm Z diff = same plane", overlapBoxes([box(a, 0, 0, 0), box(b, 200, 0, 1)]).length === 1);
+  check("2D overlap: panel with different Z \u2192 NO overlap", overlapBoxes([box(a, 0, 0, 0), { id: "p1", name: "P", x: 100, y: 0, w: 300, h: 400, z: 80 }]).length === 0);
+}
+{
+  const c = makeCabinet("tall", 600, 1e3, 560, "GdCab");
+  c.rows[0].columns[0].door = {
+    type: "single",
+    style: "overlay",
+    swing: "left",
+    material: "glass",
+    mdfThk: S.mdfThk,
+    hingeBrand: "Universal 35mm",
+    hasHandle: false,
+    handlePos: "center"
+  };
+  c.qty = 2;
+  const html = bomReportHtml([c], S);
+  check("bom report: glass door line present with size", /Glass door - \d+x\d+/.test(html), "no 'Glass door' BOM row");
+  check("bom report: glass door qty = cabinet qty (2)", /Glass door - \d+x\d+<\/td><td class="num">2<\/td><td>pcs<\/td>/.test(html), "qty 2 not found");
+  check("bom report: glass row notes NOT in DXF", html.includes("NOT in DXF"));
+  const dxfAll = buildDxf([c], S, null, true);
+  check("dxf: zero mentions of glass in every flat export", !/glass/i.test(dxfAll), dxfAll.match(/glass/gi)?.length?.toString() ?? "");
 }
 if (failures) {
   console.log(`

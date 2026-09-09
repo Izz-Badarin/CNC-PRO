@@ -15,6 +15,7 @@ import {
   stackOn as modelStackOn,
   stackedHeights as modelStackedHeights,
   drillOps as modelDrillOps,
+  glassDoorRefs as modelGlassDoorRefs,
 } from "./model";
 import { nestParts } from "./nesting";
 import { layoutCabs, panelPositions } from "./layout2d";
@@ -527,6 +528,19 @@ export function bomReportHtml(
       });
     });
   banding.forEach((b) => bomRows.push({ category: "Materials", item: `Edge banding - ${b.material}`, qty: Math.round(b.meters * 10) / 10, unit: "m", note: `${b.mm.toFixed(0)} mm` }));
+  // Glass doors — PURCHASED hardware (alu + glass): listed in the BOM ONLY.
+  // They never become a cut part, so cut list / nesting / DXF stay glass-free.
+  const cabQtyOf = new Map(cabinets.map((c) => [c.id, c.qty ?? 1]));
+  const glassAgg: Record<string, { qty: number; w: number; h: number }> = {};
+  modelGlassDoorRefs(cabinets, settings).forEach((g) => {
+    const key = g.name.replace(" (reference)", "");
+    const cur = (glassAgg[key] ??= { qty: 0, w: g.w, h: g.h });
+    cur.qty += cabQtyOf.get(g.cabId) ?? 1;
+  });
+  Object.entries(glassAgg).forEach(([name, { qty, w, h }]) => {
+    // name already reads "Glass door" / "Glass full door L" etc.
+    bomRows.push({ category: "Hardware", item: `${name} - ${w}x${h}`, qty, unit: "pcs", note: "purchased (alu + glass) - NOT cut - NOT in DXF - drill 35mm hinge cups in the glass (positions in Drilling)" });
+  });
   if (hinges > 0) bomRows.push({ category: "Hardware", item: "Hinges - Universal 35mm", qty: hinges, unit: "pcs", note: "35 cup bored in the door only - auto: <900->2 900-1799->3 1800-2399->4 2400-2999->5 >=3000->6 - 140mm from ends" });
   Object.keys(slides)
     .map(Number)
