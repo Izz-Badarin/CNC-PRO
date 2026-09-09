@@ -452,9 +452,10 @@ function buildWing3D(
 
   // linear slot — dark groove strip on the inner face of the chosen side panel(s)
   const slotV = cab.slot ?? "none";
+  const slotFromFront = cab.slotFromFront != null && cab.slotFromFront > 0 ? cab.slotFromFront : S.slotFromFront;
   if (slotV !== "none" && !isNotched(cab.type)) {
     const sw = Math.max(6, S.slotWidth);
-    const zc = d - Math.max(sw, S.slotFromFront);
+    const zc = d - Math.max(sw, slotFromFront);
     if (slotV === "left" || slotV === "both") {
       const st = box(3, BH, sw, mats.slot, "carcass");
       st.position.set(T + 1.5, BH / 2, zc);
@@ -858,6 +859,7 @@ function buildDoor3D(
 /**
  * Full-height doors on a STACKED cabinet — drawn once at cabinet level so one
  * door spans all boxes (y=0 → fullH in carcass space).
+ * Also handles cabinet-level fullDoor (off/mdf/glass) that covers the WHOLE cabinet.
  */
 function buildFullDoors3D(
   cab: Cabinet,
@@ -871,6 +873,31 @@ function buildFullDoors3D(
 ) {
   const gap = S.doorGap;
   const ply = plyMaterialOf(S, cab);
+  // cabinet-level full door (Boxes control) — one door/pair covering whole width, with left/right/double support
+  if (cab.fullDoor && cab.fullDoor !== "off") {
+    const fd = cab.fullDoor as string;
+    const isGlass = fd.startsWith("glass");
+    const suffix = fd.includes("-") ? fd.split("-")[1] : "";
+    const type: DoorSpec["type"] = suffix === "double" ? "double" : suffix === "left" || suffix === "right" ? "single" : (cab.width > 620 ? "double" : "single");
+    const swing: DoorSpec["swing"] = suffix === "right" ? "right" : "left";
+    const door: DoorSpec = {
+      type,
+      style: "overlay",
+      swing,
+      material: isGlass ? "glass" : "mdf",
+      finish: S.mdfFinish,
+      mdfThk: S.mdfThk,
+      hingeBrand: "Universal 35mm",
+      hasHandle: true,
+      handlePos: "center",
+      full: true,
+      hingeCount: cab.fullDoorHinges,
+      hOverride: cab.fullDoorHOverride != null && cab.fullDoorHOverride > 0 ? cab.fullDoorHOverride : undefined,
+      wOverride: cab.fullDoorWOverride != null && cab.fullDoorWOverride > 0 ? cab.fullDoorWOverride : undefined,
+    };
+    buildDoor3D(S, w, w/2, d, 0, fullH, door, wg, doors, T, gap, ply);
+    return;
+  }
   cab.rows.forEach((r) => {
     const lays = columnLayout(cab, r, S);
     lays.forEach((lay) => {
@@ -1249,6 +1276,182 @@ export class CabinetViewer {
   /** E2: set door openness (0 = shut … 1 = fully open, 108° swing) */
   setDoorOpen(frac: number) {
     this.doorFrac = Math.min(1, Math.max(0, frac));
+  }
+
+  private exploded = false;
+  private explodedBackup = new Map<THREE.Object3D, THREE.Vector3>();
+  private explodedBackupRot = new Map<THREE.Object3D, THREE.Euler>();
+
+  /** apply exploded offsets: sides ±150 X, top/bottom ±120 Y, back -100 Z, doors +200 Z 45°, drawers +300 Z, shelves +30 Y */
+  setExploded(v: boolean) {
+    if (v===this.exploded) return;
+    if (v){
+      // save and apply
+      this.explodedBackup.clear();
+      this.explodedBackupRot.clear();
+      this.built.forEach(bc=>{
+        const W = bc.width;
+        // estimate BH from bbox of carcass? Use group size: we can infer from top/bottom positions
+        // We'll traverse meshes inside bc.group
+        let shelfIdx=0;
+        bc.group.traverse((o:any)=>{
+          if (!o.isMesh) return;
+          const tag = o.userData?.tag as string | undefined;
+          if (!tag) return;
+          // clone original
+          this.explodedBackup.set(o, o.position.clone());
+          this.explodedBackupRot.set(o, o.rotation.clone() as any);
+          const pos = o.position;
+          // heuristic based on tag and position
+          if (tag==='carcass'){
+            // side L: x < 20
+            if (pos.x < 25 && pos.y>20 && pos.y<10000){
+              // check if height is tall (BH) – side panel: y ~ BH/2, height ~ BH
+              // we use x < 25 as side L
+              o.position.x -= 150;
+            } else if (pos.x > W-25){
+              o.position.x += 150;
+            } else if (pos.y < 20){
+              // bottom
+              o.position.y -= 20;
+            } else if (pos.y > 400 || pos.y > (o.geometry?.parameters?.height ? 0 : 0)){
+              // top – if y is near top (BH)
+              // we detect top by y > BH-30 – but BH unknown, use y > 500? Let's use y > 600? Actually BH up to 2000
+              // We'll detect top as y > pos.y && tag carcass and not side – use y > 0 and z ~ D/2 and height ~ T
+              // For simplicity, if y > 100 and x between 20 and W-20 and z ~ D/2 and height small (T) then top/bottom
+              // We'll use y threshold: if y > 300 and x ~ W/2 => likely top, but we don't know BH. We'll just check if y > 100 and o.geometry bounding box height < 30
+              const h = (o.geometry as any)?.parameters?.height ?? 0;
+              if (h>0 && h<30){
+                // horizontal panel
+                if (pos.y < 100) o.position.y -= 20;
+                else o.position.y += 120;
+              } else {
+                // fallback: if y > 500, treat as top
+                if (pos.y > 500) o.position.y += 120;
+              }
+            }
+            // also handle top/bottom by checking y
+            const isHorizontal = (o.geometry as any)?.parameters?.height !== undefined && (o.geometry as any).parameters.height < 30;
+            if (isHorizontal){
+              if (pos.y < 50) o.position.y -= 20;
+              else if (pos.y > 200) o.position.y += 120;
+            }
+          } else if (tag==='back'){
+            o.position.z -= 100;
+          } else if (tag==='door'){
+            o.position.z += 200;
+            // open 45°
+            // rotation handled via doorFrac, but also add extra offset
+            // for swing doors, we will have doorFrac set to 0.42
+          } else if (tag==='drawer'){
+            o.position.z += 300;
+          } else if (tag==='shelf'){
+            o.position.y += 30 + shelfIdx*6;
+            shelfIdx++;
+          }
+        });
+      });
+      this.exploded=true;
+    } else {
+      // restore
+      this.explodedBackup.forEach((p,o)=>{
+        o.position.copy(p);
+      });
+      this.explodedBackupRot.forEach((r,o:any)=>{
+        o.rotation.copy(r);
+      });
+      this.explodedBackup.clear();
+      this.explodedBackupRot.clear();
+      this.exploded=false;
+    }
+  }
+
+  /** snapshot with exploded offsets applied temporarily */
+  snapshotExploded(): string {
+    const prevDoor = this.doorFrac;
+    const prevDraw = this.drawersOpen;
+    this.setExploded(true);
+    this.doorFrac = 0.42; // 45°
+    this.drawersOpen = true;
+    // force a few ticks to update door/drawer animations
+    for(let i=0;i<10;i++){
+      this.built.forEach(b=>{
+        b.doors.forEach(d=>{
+          const target = this.doorFrac;
+          d.cur += (target - d.cur) * 0.5;
+          if (d.mode==='swing') d.node.rotation.y = d.base + d.sign * d.cur * OPEN_ANGLE;
+          else d.node.position.x = d.base + d.sign * d.cur * d.dist;
+        });
+        b.drawers.forEach(dr=>{
+          const target = this.drawersOpen ? 1 : 0;
+          dr.cur += (target - dr.cur) * 0.5;
+          dr.node.position.z = dr.baseZ + dr.cur * dr.dist;
+        });
+      });
+    }
+    this.controls.update();
+    this.renderer.render(this.scene, this.camera);
+    const url = this.renderer.domElement.toDataURL("image/png");
+    this.setExploded(false);
+    this.doorFrac = prevDoor;
+    this.drawersOpen = prevDraw;
+    // reset door/drawer anim to previous
+    this.built.forEach(b=>{
+      b.doors.forEach(d=>{ d.cur = prevDoor; });
+      b.drawers.forEach(dr=>{ dr.cur = prevDraw?1:0; });
+    });
+    return url;
+  }
+
+  /** snapshot iso for a single cabinet (hides others) */
+  snapshotCabinet(cabId: string): string | null {
+    const target = this.built.find(b=> (b.group.userData as any)?.cabId===cabId);
+    if (!target) return null;
+    const prevVis = this.built.map(b=> b.group.visible);
+    this.built.forEach(b=> b.group.visible = b===target);
+    this.controls.target.copy(target.group.position.clone().add(new THREE.Vector3(target.width/2000, 0.5, 0)));
+    this.controls.update();
+    this.renderer.render(this.scene, this.camera);
+    const url = this.renderer.domElement.toDataURL("image/png");
+    this.built.forEach((b,i)=> b.group.visible = prevVis[i]);
+    return url;
+  }
+
+  /** exploded snapshot for a single cabinet */
+  snapshotExplodedCabinet(cabId: string): string | null {
+    const target = this.built.find(b=> (b.group.userData as any)?.cabId===cabId);
+    if (!target) return null;
+    const prevVis = this.built.map(b=> b.group.visible);
+    this.built.forEach(b=> b.group.visible = b===target);
+    const prevDoor = this.doorFrac;
+    const prevDraw = this.drawersOpen;
+    this.setExploded(true);
+    this.doorFrac = 1; // open door view for exploded
+    this.drawersOpen = true;
+    for(let i=0;i<12;i++){
+      this.built.forEach(b=>{
+        b.doors.forEach(d=>{
+          const t = this.doorFrac;
+          d.cur += (t - d.cur)*0.5;
+          if (d.mode==='swing') d.node.rotation.y = d.base + d.sign * d.cur * OPEN_ANGLE;
+          else d.node.position.x = d.base + d.sign * d.cur * d.dist;
+        });
+        b.drawers.forEach(dr=>{
+          const t = this.drawersOpen?1:0;
+          dr.cur += (t-dr.cur)*0.5;
+          dr.node.position.z = dr.baseZ + dr.cur * dr.dist;
+        });
+      });
+    }
+    this.controls.target.copy(target.group.position.clone().add(new THREE.Vector3(target.width/2000, 0.6, 0)));
+    this.controls.update();
+    this.renderer.render(this.scene, this.camera);
+    const url = this.renderer.domElement.toDataURL("image/png");
+    this.setExploded(false);
+    this.doorFrac = prevDoor;
+    this.drawersOpen = prevDraw;
+    this.built.forEach((b,i)=> b.group.visible = prevVis[i]);
+    return url;
   }
 
   /** E1: PNG snapshot of the current 3D view (fresh render, device pixels) */

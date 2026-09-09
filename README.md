@@ -22,6 +22,7 @@ on your machine.
 | 🎯 **Drilling** | Drill operations for hinges (Ø35 cup holes), drawer slides and fittings |
 | 💾 **DXF export** | Export parts as DXF files, ready for your CNC machine |
 | 🔩 **BOM / Hardware** | Bill of materials: hinges, slides, handles, screws and fittings |
+| 📕 **Shop reports** | Full multi-page customer report (cover, 3D shot, dimensioned elevation, cut list, nesting, approval line) + **exploded per-cabinet report** — exploded view, open-door view, drilling map, panel size table and hardware for every cabinet, printable A4 |
 | ⚙️ **Settings** | Sheet sizes, plywood/MDF materials, thicknesses, units and shop defaults |
 | 📁 **Projects** | Autosave to browser storage, portable project files (Save/Open), share links |
 

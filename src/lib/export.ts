@@ -439,11 +439,13 @@ export function bomReportHtml(
   const banding = bandingByMaterial(cabinets, settings);
 
   let hinges = 0,
-    drawerBoxes = 0,
-    hangingRails = 0,
-    shelfPins = 0;
+    hangingRails = 0;
   const slides: Record<number, number> = {};
   const materials: Record<string, number> = {};
+  // shelf PINS are hardware: 4 per shelf (2 per side) — the hole count drilled
+  // per panel stays in the Drilling tab, the BOM only cares about pins bought
+  const totalShelves = parts.filter((p) => p.name.startsWith("Shelf")).reduce((a, p) => a + p.qty, 0);
+  const shelfPins = totalShelves * 4;
   modelPanelParts(panels, settings).forEach((p) => {
     const m = p.material === "plywood" ? (p.matId ?? "plywood") : p.material;
     materials[m] = (materials[m] ?? 0) + (p.w / 1000) * (p.h / 1000) * p.qty;
@@ -452,7 +454,6 @@ export function bomReportHtml(
     allParts([cab], settings).forEach((p) => {
       const m = p.material === "plywood" ? (p.matId ?? "plywood") : p.material;
       materials[m] = (materials[m] ?? 0) + (p.w / 1000) * (p.h / 1000) * p.qty;
-      if (p.name.includes("Shelf") && !p.name.includes("splitter")) shelfPins += Math.max(1, Math.round(settings.shelfHolesPerSide)) * 2 * p.qty;
     });
     modelDrillOps([cab], settings).forEach((op) => {
       if (op.type === "hinge") hinges++;
@@ -467,18 +468,21 @@ export function bomReportHtml(
           hinges += Math.min(6, Math.max(1, col.door.hingeCount ?? doorHingeCount(leafH)));
         }
         col.drawers.forEach((dr) => {
-          if (!dr.hidden) drawerBoxes++;
           const cm = Math.round(dr.slideDepthCm);
           slides[cm] = (slides[cm] ?? 0) + 1;
         });
         if (col.rail && col.rail !== "off") hangingRails += col.rail === "double" ? 2 : 1;
       });
     });
-    if (cab.fullDoor === "glass") {
+    if ((cab.fullDoor as string)?.startsWith("glass")) {
+      // same variant parsing as the BOM tab: glass / glass-left / glass-right / glass-double
+      const fdRaw = cab.fullDoor as string;
+      const fdSuffix = fdRaw.includes("-") ? fdRaw.split("-")[1] : "";
+      const fdType = fdSuffix === "double" ? "double" : fdSuffix === "left" || fdSuffix === "right" ? "single" : cab.width > 620 ? "double" : "single";
       const leafH = doorDims(
         cab.width,
         fullSpan,
-        { type: cab.width > 620 ? "double" : "single", style: "overlay", swing: "left", material: "glass", mdfThk: settings.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true, hingeCount: cab.fullDoorHinges } as any,
+        { type: fdType, style: "overlay", swing: fdSuffix === "right" ? "right" : "left", material: "glass", mdfThk: settings.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true, hingeCount: cab.fullDoorHinges } as any,
         settings,
       ).h;
       hinges += Math.min(6, Math.max(1, cab.fullDoorHinges ?? doorHingeCount(leafH)));
@@ -506,16 +510,15 @@ export function bomReportHtml(
   if (materials["mdf"]) bomRows.push({ category: "Materials", item: `MDF (${settings.mdfSheet})`, qty: sheetCount["mdf@def"] ?? Math.ceil(materials["mdf"] / (settings.mdfSheet === "3050x1220" ? 3.05 * 1.22 : 2.44 * 1.22)), unit: "sheets", note: `${materials["mdf"].toFixed(2)} m2 - nesting` });
   if (materials["back"]) bomRows.push({ category: "Materials", item: "Veneer back (2440x1220)", qty: sheetCount["back@def"] ?? Math.ceil(materials["back"] / (2.44 * 1.22)), unit: "sheets", note: `${materials["back"].toFixed(2)} m2 - nesting` });
   banding.forEach((b) => bomRows.push({ category: "Materials", item: `Edge banding - ${b.material}`, qty: Math.round(b.meters * 10) / 10, unit: "m", note: `${b.mm.toFixed(0)} mm` }));
-  if (hinges > 0) bomRows.push({ category: "Hardware", item: "Hinges - Universal 35mm", qty: hinges, unit: "pcs", note: "35 cup bored in the door only - auto: <=1000->2 <=1500->3 <=2000->4 <=2400->5 >2400->6" });
+  if (hinges > 0) bomRows.push({ category: "Hardware", item: "Hinges - Universal 35mm", qty: hinges, unit: "pcs", note: "35 cup bored in the door only - auto: <900->2 900-1799->3 1800-2399->4 2400-2999->5 >=3000->6 - 140mm from ends" });
   Object.keys(slides)
     .map(Number)
     .sort((a, b) => a - b)
     .forEach((cm) => {
       if (slides[cm] > 0) bomRows.push({ category: "Hardware", item: `Drawer slides ${cm}0mm`, qty: slides[cm], unit: "pairs", note: "1 pair per drawer, by real drawer depth" });
     });
-  if (drawerBoxes > 0) bomRows.push({ category: "Hardware", item: "Drawer boxes (pre-built)", qty: drawerBoxes, unit: "pcs" });
   if (hangingRails > 0) bomRows.push({ category: "Hardware", item: "Hanging rails", qty: hangingRails, unit: "pcs" });
-  if (shelfPins > 0) bomRows.push({ category: "Hardware", item: "Shelf pins (32mm)", qty: shelfPins, unit: "pcs" });
+  if (shelfPins > 0) bomRows.push({ category: "Hardware", item: "Shelf pins (32mm)", qty: shelfPins, unit: "pcs", note: `${totalShelves} shelves x4 - 2 pins per side` });
 
   const materialsByKey = new Map<string, typeof merged>();
   merged.forEach((p) => {
@@ -650,7 +653,7 @@ export function bomReportHtml(
         <span class="small">Cabinets: ${cabinets.map((c) => escH(c.name)).join(", ") || "-"}</span><br/>
         <span class="small">Panels: ${panels.map((p) => escH(p.name)).join(", ") || "-"}</span><br/><br/>
         <span class="small">Settings: body ${settings.bodyThk}mm - MDF ${settings.mdfThk}mm - back ${settings.backThk}mm - bit ${settings.bitDiameter}mm - shelf ${settings.holeDiameter}mm<br/>
-        Hinge auto <=1000->2 <=1500->3 <=2000->4 <=2400->5 >2400->6 - cups 140mm from ends<br/>
+        Hinge auto &lt;900-&gt;2 900-1799-&gt;3 1800-2399-&gt;4 2400-2999-&gt;5 &gt;=3000-&gt;6 - cups 140mm from ends<br/>
         Rail pilots 2x ${settings.bitDiameter}mm per rail - min gap above rail ${settings.railShelfMinGap}mm</span>
       </div></div>
     </div>
@@ -699,7 +702,7 @@ export function bomReportHtml(
     <div class="card small">
       Shelf pins ${settings.holeDiameter}mm (${settings.shelfHolesPerSide}/side at ${settings.shelfHoleCenter}mm) - rail pilots ${settings.bitDiameter}mm (2 per rail)<br/>
       Drawer slides ${settings.slideHoleDiameter}mm patterns - grooves ${settings.grooveWidth}mm x (slider - ${settings.grooveShorter}mm) at ${settings.grooveFromBottom}mm<br/>
-      Hinge cups ${settings.hingeCupDiameter}mm x ${settings.hingeCupDepth}mm deep at ${settings.hingeCupEdge}mm from edge - auto <=1000->2 <=1500->3 <=2000->4 <=2400->5 >2400->6 - cups 140mm from top/bottom<br/>
+      Hinge cups ${settings.hingeCupDiameter}mm x ${settings.hingeCupDepth}mm deep at ${settings.hingeCupEdge}mm from edge - auto &lt;900-&gt;2 900-1799-&gt;3 1800-2399-&gt;4 2400-2999-&gt;5 &gt;=3000-&gt;6 - cups 140mm from top/bottom<br/>
       Glass doors: REFERENCE only (dashed, NOT DRILLED) - drill glass at those positions - 35 cups excluded from DXF
     </div>
     <h3>DXF layers</h3>

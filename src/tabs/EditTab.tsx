@@ -64,9 +64,12 @@ import type { CabinetViewer } from "../three/scene";
 
 const FRONTS = [
   { v: "open", l: "No door" },
-  { v: "left", l: "Left" },
-  { v: "right", l: "Right" },
-  { v: "double", l: "Double" },
+  { v: "mdf-left", l: "MDF Left" },
+  { v: "mdf-right", l: "MDF Right" },
+  { v: "mdf-double", l: "MDF Double" },
+  { v: "glass-left", l: "Glass Left" },
+  { v: "glass-right", l: "Glass Right" },
+  { v: "glass-double", l: "Glass Double" },
   { v: "sliding", l: "Sliding" },
   { v: "drawers", l: "Drawers" },
   { v: "fixed", l: "Fixed panel" },
@@ -75,9 +78,12 @@ const FRONTS = [
 /** door choices available as a cover over hidden drawers */
 const HIDDEN_DOORS = [
   { v: "open", l: "No door" },
-  { v: "left", l: "Left" },
-  { v: "right", l: "Right" },
-  { v: "double", l: "Double" },
+  { v: "mdf-left", l: "MDF Left" },
+  { v: "mdf-right", l: "MDF Right" },
+  { v: "mdf-double", l: "MDF Double" },
+  { v: "glass-left", l: "Glass Left" },
+  { v: "glass-right", l: "Glass Right" },
+  { v: "glass-double", l: "Glass Double" },
   { v: "sliding", l: "Sliding" },
 ];
 
@@ -88,19 +94,21 @@ const frontOf = (c: ColumnSpec) =>
     : c.drawers.length > 0
       ? "drawers"
       : c.door
-        ? c.door.type === "single"
-          ? c.door.swing === "left"
-            ? "left"
-            : "right"
-          : c.door.type
+        ? c.door.type === "sliding"
+          ? "sliding"
+          : `${c.door.material}-${c.door.type === "double" ? "double" : c.door.swing === "right" ? "right" : "left"}`
         : "open";
 
 /** build a door spec from a picker value (left/right = single + swing) */
-const doorFromFront = (v: string, S: Settings): DoorSpec =>
-  mkDoor(v === "left" || v === "right" ? "single" : (v as DoorSpec["type"]), {
-    swing: v === "right" ? "right" : "left",
-    mdfThk: S.mdfThk,
-  });
+const doorFromFront = (v: string, S: Settings): DoorSpec => {
+  if (v === "sliding") return mkDoor("sliding", { swing: "left", material: "mdf", mdfThk: S.mdfThk });
+  const parts = v.split("-");
+  const mat = (parts[0] === "glass" ? "glass" : "mdf") as DoorSpec["material"];
+  const kind = parts[1] ?? "left";
+  const type: DoorSpec["type"] = kind === "double" ? "double" : "single";
+  const swing: DoorSpec["swing"] = kind === "right" ? "right" : "left";
+  return mkDoor(type, { swing, material: mat, mdfThk: S.mdfThk });
+};
 
 /** divide the row height equally between n drawers (auto split until edited manually) */
 function splitDrawers(n: number, rowH: number, keep: DrawerSpec[] = []): DrawerSpec[] {
@@ -317,12 +325,17 @@ export function EditTab({
                 onChange={(v) => updateCabinet(cab.id, (c) => ({ ...c, slot: v as Cabinet["slot"] }))}
               />
               {(cab.slot ?? "none") !== "none" && (
-                <Chip tone="cyan">{settings.slotWidth}mm × full height · {settings.slotFromFront}mm from front</Chip>
+                <>
+                  <Chip tone="cyan">{settings.slotWidth}mm × full height · {(cab.slotFromFront ?? settings.slotFromFront)}mm from front</Chip>
+                  <Num className="!w-[72px] !py-1 !px-2" value={cab.slotFromFront ?? settings.slotFromFront} onChange={(v)=> updateCabinet(cab.id,(c)=> ({...c, slotFromFront: Math.max(10,Math.round(v))}))} />
+                  <span className="text-[10px] text-ink-500">mm from front (0=global)</span>
+                  {(cab.slotFromFront!=null) && <Btn size="sm" variant="ghost" onClick={()=> updateCabinet(cab.id,(c)=> ({...c, slotFromFront: null}))}>Reset</Btn>}
+                </>
               )}
             </div>
           </Field>
           <p className="hint mt-2">
-            Slot width &amp; distance are global (Settings → Drilling). The slot is skipped on corner / notched side panels.
+            Slot width global (Settings → Drilling), distance editable here per cabinet (80mm default) or globally in Settings. Skipped on corner / notched.
           </p>
           <p className="hint mt-2">
             {t(lang, "carcassDepth")}: <span className="text-amber-300 font-mono">{Math.round(carcassDepth(cab, settings))}mm</span> (overall {cab.depth} − front − back)
@@ -438,26 +451,30 @@ export function EditTab({
               </p>
             )}
             {stackOn(cab) && (
-              <div className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.05] px-3 py-2">
+              <div className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.05] px-3 py-2 space-y-2">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-[11.5px] text-amber-200 font-semibold">Doors cover the whole cabinet (all boxes):</span>
-                  <Seg
-                    options={[
-                      { v: "off", l: "Per section" },
-                      { v: "mdf", l: "MDF doors" },
-                      { v: "glass", l: "Glass" },
-                    ]}
+                  <select
+                    className="inp !w-[170px] !py-1 text-[12px]"
                     value={cab.fullDoor ?? "off"}
-                    onChange={(v) =>
-                      updateCabinet(cab.id, (c) => ({ ...c, fullDoor: (v === "off" ? null : v) as Cabinet["fullDoor"] }))
-                    }
-                  />
+                    onChange={(e)=> updateCabinet(cab.id,(c)=> ({...c, fullDoor: (e.target.value==="off"? null : e.target.value) as Cabinet["fullDoor"]}))}
+                  >
+                    <option value="off">Per section</option>
+                    <option value="mdf-left">MDF Left</option>
+                    <option value="mdf-right">MDF Right</option>
+                    <option value="mdf-double">MDF Double</option>
+                    <option value="glass-left">Glass Left</option>
+                    <option value="glass-right">Glass Right</option>
+                    <option value="glass-double">Glass Double</option>
+                    <option value="mdf">MDF (auto)</option>
+                    <option value="glass">Glass (auto)</option>
+                  </select>
                   {cab.fullDoor && cab.fullDoor !== "off" && (
                     <>
                       <span className="text-[10.5px] text-ink-400">Hinges:</span>
                       <select
                         className="inp !w-[86px] !py-1 !px-1.5 text-[11px]"
-                        title="Hinge count for the full-height door(s) covering the whole cabinet — Auto = 2 under 900mm, 3 above"
+                        title="Hinge Auto: <900→2, 900-1799→3, 1800-2399→4, 2400-2999→5, ≥3000→6 · cups 140mm from ends"
                         value={cab.fullDoorHinges ?? ""}
                         onChange={(e) =>
                           updateCabinet(cab.id, (c) => ({ ...c, fullDoorHinges: e.target.value ? Number(e.target.value) : undefined }))
@@ -469,14 +486,28 @@ export function EditTab({
                         ))}
                       </select>
                       <Chip tone={cab.fullDoorHinges ? "cyan" : "green"}>
-                        {cab.fullDoorHinges ? `${cab.fullDoorHinges} hinges` : `auto`} · one long door
+                        {(() => {
+                          const BH2 = cab.height - (cab.hasToeKick ? settings.kickHeight : 0);
+                          const auto = BH2 < 900 ? 2 : BH2 < 1800 ? 3 : BH2 < 2400 ? 4 : BH2 < 3000 ? 5 : 6;
+                          return cab.fullDoorHinges ? `${cab.fullDoorHinges} hinges` : `Auto — ${auto} hinges`;
+                        })()} · one long door
                       </Chip>
                     </>
                   )}
                 </div>
-                <p className="text-[10.5px] text-ink-400 mt-1.5 leading-snug">
-                  Picked here, this door replaces the section doors below — universal 35mm hinges, cups only in the door (never
-                  in the plywood, never in the DXF).
+                {cab.fullDoor && cab.fullDoor !== "off" && (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[10.5px] text-ink-400">Full door W×H auto:</span>
+                    <Chip tone="cyan">{(() => { const BH2 = cab.height - (cab.hasToeKick ? settings.kickHeight : 0); return `${Math.round(cab.width - 2*settings.doorGap)} × ${Math.round(BH2 - 2*settings.doorGap)}mm`; })()}</Chip>
+                    <span className="text-[10.5px] text-ink-400">Override H:</span>
+                    <Num className="!w-[74px] !py-1 !px-2" min={0} value={cab.fullDoorHOverride ?? 0} onChange={(v)=> updateCabinet(cab.id,(c)=> ({...c, fullDoorHOverride: v>0? Math.round(v): null}))} />
+                    <span className="text-[10.5px] text-ink-400">W:</span>
+                    <Num className="!w-[74px] !py-1 !px-2" min={0} value={cab.fullDoorWOverride ?? 0} onChange={(v)=> updateCabinet(cab.id,(c)=> ({...c, fullDoorWOverride: v>0? Math.round(v): null}))} />
+                    <span className="text-[10px] text-ink-500">0 = auto</span>
+                  </div>
+                )}
+                <p className="text-[10.5px] text-ink-400 leading-snug">
+                  Picked here, this door replaces the section doors below — shows in 3D as real panel with hinge line & swing. No doors = suppressed. Universal 35mm hinges, cups only in door.
                 </p>
               </div>
             )}
@@ -1220,24 +1251,30 @@ function ColumnEditor({
             )}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[10.5px] text-ink-400">W×H:</span>
-            <span title="Computed door size — width from the column opening, height from the section (or the manual override below)">
-              <Chip tone="cyan">{doorDim ? `${doorDim.count === 2 ? `2× ` : ""}${Math.round(doorDim.w)} × ${Math.round(doorDim.h)}mm` : "—"}</Chip>
+            <span className="text-[10.5px] text-ink-400">W×H auto:</span>
+            <span title="Computed door size — width from the column opening, height from the section">
+              <Chip tone="cyan">{doorDim ? `${doorDim.count === 2 ? `2× ` : ""}${Math.round(doorDim.wAuto)} × ${Math.round(doorDim.hAuto)}mm` : "—"}</Chip>
             </span>
-            <span className="text-[10.5px] text-ink-400">Manual H:</span>
+            <span className="text-[10.5px] text-ink-400">Actual:</span>
+            <Chip tone="amber">{doorDim ? `${Math.round(doorDim.w)} × ${Math.round(doorDim.h)}mm${(col.door.wOverride||col.door.hOverride)?" (override)":" (auto)"}` : "—"}</Chip>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10.5px] text-ink-400">Override W:</span>
+            <Num className="!w-[74px] !py-1 !px-2" min={0} value={col.door.wOverride ?? 0} onChange={(v)=> patchDoor(r.id,col.id,{ wOverride: v>0? Math.round(v): undefined })} />
+            <span className="text-[10.5px] text-ink-400">H:</span>
             <Num
               className="!w-[74px] !py-1 !px-2"
               min={0}
               value={col.door.hOverride ?? 0}
               onChange={(v) => patchDoor(r.id, col.id, { hOverride: v > 0 ? Math.round(v) : undefined })}
             />
-            <span className="text-[10px] text-ink-500">mm · 0 = auto from section</span>
+            <span className="text-[10px] text-ink-500">mm · 0 = auto</span>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[10.5px] text-ink-400">Hinges:</span>
             <select
               className="inp !w-[86px] !py-1 !px-1.5 text-[11px]"
-              title="Number of universal 35mm hinges — Auto: ≤1000→2 · ≤1500→3 · ≤2000→4 · ≤2400→5 · >2400→6. Cups 140mm from top & bottom. Cups are bored in the door (never the plywood, never the DXF)."
+              title="Number of universal 35mm hinges — Auto: <900→2 · 900-1799→3 · 1800-2399→4 · 2400-2999→5 · ≥3000→6. Cups 140mm from top & bottom."
               value={col.door.hingeCount ?? ""}
               onChange={(e) => patchDoor(r.id, col.id, { hingeCount: e.target.value ? Number(e.target.value) : undefined })}
             >

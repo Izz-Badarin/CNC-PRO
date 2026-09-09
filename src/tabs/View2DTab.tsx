@@ -64,11 +64,13 @@ export function View2DTab({
   settings,
   setCabinets,
   panels = [],
+  setPanels,
 }: {
   cabinets: Cabinet[];
   settings: Settings;
   setCabinets: (fn: (c: Cabinet[]) => Cabinet[]) => void;
   panels?: PanelItem[];
+  setPanels?: (fn: (p: PanelItem[]) => PanelItem[]) => void;
 }) {
   const [tick, setTick] = useState(0);
   const [sel, setSel] = useState<string[]>([]); // ordered: [0] = A (mover), [1] = B (target)
@@ -80,7 +82,8 @@ export function View2DTab({
   const drag = useRef<{ id: string; x0: number; y0: number; vx0: number; vy0: number; moved: boolean } | null>(null);
   const dSettings = useDebounced(settings, 160);
   const pos = useMemo(() => layoutCabs(cabinets), [cabinets]);
-  const vm = useMemo(() => viewMetrics(pos), [pos]);
+  const pposMemo = useMemo(() => panelPositions(cabinets, panels), [cabinets, panels]);
+  const vm = useMemo(() => viewMetrics(pos, pposMemo.length ? { maxX: Math.max(...pposMemo.map(p=>p.x+p.pn.w)), maxH: Math.max(...pposMemo.map(p=>(p.y??0)+p.pn.h)) } : undefined), [pos, pposMemo]);
   const anyLayout = cabinets.some((c) => c.layout);
   // during a drag the preview position is overlaid straight into the SVG (no
   // debounce) so the cabinet sticks to the cursor; the state commit happens on release
@@ -99,15 +102,22 @@ export function View2DTab({
 
   const moveCab = (id: string, x: number, y: number) =>
     setCabinets((prev) => prev.map((c) => (c.id === id ? { ...c, layout: { x: Math.round(x), y: Math.max(0, Math.round(y)) } } : c)));
+  const movePanel = (id: string, x: number, y: number) => {
+    if (!setPanels) return;
+    setPanels((prev) => prev.map((p) => (p.id === id ? { ...p, layout: { x: Math.round(x), y: Math.round(y) } } : p)));
+  };
 
   const resetAuto = () => {
     setSel([]);
     setPreview(null);
     setGuides(null);
     setCabinets((prev) => prev.map((c) => ({ ...c, layout: null })));
+    if (setPanels) setPanels((prev) => prev.map((p) => ({ ...p, layout: null })));
   };
-  const floorAll = () =>
+  const floorAll = () => {
     setCabinets((prev) => prev.map((c) => (c.layout ? { ...c, layout: { ...c.layout, y: 0 } } : c)));
+    if (setPanels) setPanels((prev) => prev.map((p) => (p.layout ? { ...p, layout: { ...p.layout, y: 0 } } : p)));
+  };
 
   if (cabinets.length === 0 && panels.length === 0)
     return (
@@ -133,10 +143,22 @@ export function View2DTab({
       const topY = floorY - p.cab.height * vm.sc;
       return vx >= sx && vx <= sx + p.cab.width * vm.sc && vy >= topY && vy <= floorY;
     });
+  const panelAt = (vx: number, vy: number) => {
+    // use pposMemo for hit test
+    return pposMemo.find((pp) => {
+      const px = vm.left + (pp.x - vm.minX) * vm.sc;
+      const py = vm.base - (pp.y ?? 0) * vm.sc - pp.pn.h * vm.sc;
+      return vx >= px && vx <= px + pp.pn.w * vm.sc && vy >= py && vy <= py + pp.pn.h * vm.sc;
+    });
+  };
 
   const snapDrag = (id: string, nx: number, ny: number): { x: number; y: number; g: DragGuides } => {
     const cab = cabinets.find((c) => c.id === id);
-    if (!cab) return { x: nx, y: ny, g: {} };
+    const pn = panels.find((p) => p.id === id);
+    const isPanel = !!pn && !cab;
+    const width = isPanel ? pn!.w : cab?.width ?? 0;
+    const height = isPanel ? pn!.h : cab?.height ?? 0;
+    if (!cab && !pn) return { x: nx, y: ny, g: {} };
     const GRID = 5;
     const TH = 12 / vm.sc; // 12 px snap threshold expressed in mm
     // --- X candidates: edges of other cabinets, then the 5 mm grid ---
@@ -146,8 +168,18 @@ export function View2DTab({
       [p.x, p.x + p.cab.width].forEach((e) => {
         const d1 = Math.abs(nx - e);
         if (d1 <= TH) xc.push({ v: e, e, d: d1 });
-        const d2 = Math.abs(nx + cab.width - e);
-        if (d2 <= TH) xc.push({ v: e - cab.width, e, d: d2 });
+        const d2 = Math.abs(nx + width - e);
+        if (d2 <= TH) xc.push({ v: e - width, e, d: d2 });
+      });
+    });
+    // also snap to panel edges
+    pposMemo.forEach((pp) => {
+      if (pp.pn.id === id) return;
+      [pp.x, pp.x + pp.pn.w].forEach((e) => {
+        const d1 = Math.abs(nx - e);
+        if (d1 <= TH) xc.push({ v: e, e, d: d1 });
+        const d2 = Math.abs(nx + width - e);
+        if (d2 <= TH) xc.push({ v: e - width, e, d: d2 });
       });
     });
     const gx = Math.round(nx / GRID) * GRID;
@@ -162,9 +194,17 @@ export function View2DTab({
     pos.forEach((p) => {
       if (p.cab.id === id) return;
       tryY(p.y + p.cab.height, "stack");
-      tryY(p.y - cab.height, "under");
+      tryY(p.y - height, "under");
       tryY(p.y, "edge");
-      tryY(p.y + p.cab.height - cab.height, "edge");
+      tryY(p.y + p.cab.height - height, "edge");
+    });
+    pposMemo.forEach((pp) => {
+      if (pp.pn.id === id) return;
+      const py = pp.y ?? 0;
+      tryY(py + pp.pn.h, "stack");
+      tryY(py - height, "under");
+      tryY(py, "edge");
+      tryY(py + pp.pn.h - height, "edge");
     });
     const bx = xc.length ? xc.reduce((m, c) => (c.d < m.d ? c : m)) : null;
     const by = yc.length ? yc.reduce((m, c) => (c.d < m.d ? c : m)) : null;
@@ -189,7 +229,7 @@ export function View2DTab({
     }
     if (applyY && by) {
       y = Math.max(0, by.v);
-      g.vy = by.kind === "under" ? by.v + cab.height : by.v;
+      g.vy = by.kind === "under" ? by.v + height : by.v;
       g.label = by.kind === "floor" ? "floor" : by.kind === "stack" ? "stack" : by.kind === "under" ? "under" : undefined;
     }
     return { x, y, g };
@@ -199,11 +239,19 @@ export function View2DTab({
     if (e.button !== 0) return;
     const v = toView(e);
     if (!v) return;
-    const hit = cabAt(v.vx, v.vy);
-    if (!hit) {
+    const hitCab = cabAt(v.vx, v.vy);
+    const hitPan = !hitCab ? panelAt(v.vx, v.vy) : null;
+    if (!hitCab && !hitPan) {
       setSel([]);
       return;
     }
+    if (hitPan) {
+      // panel drag – no selection logic for cabinets, but allow dragging
+      drag.current = { id: hitPan.pn.id, x0: hitPan.x, y0: hitPan.y ?? 0, vx0: v.vx, vy0: v.vy, moved: false } as any;
+      try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch {}
+      return;
+    }
+    const hit = hitCab!;
     // click = select (A first pick amber, B second pick cyan); the same press
     // also arms a drag which only starts after a 3 px move threshold
     setSel((prev) => {
@@ -237,7 +285,11 @@ export function View2DTab({
     drag.current = null;
     if (d?.moved) {
       const p = previewRef.current;
-      if (p && p.id === d.id) moveCab(d.id, p.x, p.y);
+      if (p && p.id === d.id) {
+        const isPanel = panels.some((pp) => pp.id === p.id);
+        if (isPanel) movePanel(p.id, p.x, p.y);
+        else moveCab(d.id, p.x, p.y);
+      }
       setPreview(null);
       setGuides(null);
     }
@@ -319,9 +371,9 @@ return (
         <div>
           <h2 className="card-h"><Layers2 size={17} className="text-amber-400" /> 2D Front View — All Cabinets</h2>
           <p className="hint mt-1">
-            Front elevation with rows, columns, doors, drawers, shelves and toe kicks. <b>Drag</b> any cabinet —
+            Front elevation with rows, columns, doors, drawers, shelves and toe kicks. <b>Drag</b> any cabinet or <b>raw panel</b> —
             click one to select, click a second to pair, then <b>Stick</b> A on top of / below / left / right of B
-            to build the real kitchen or wardrobe.
+            to build the real kitchen or wardrobe. Panels now draggable with snap 5mm.
           </p>
         </div>
         <div className="flex gap-2">
@@ -652,29 +704,48 @@ const aboveBank = col.drawerAlign !== "top";
 
     // ---- full-height doors: one long door spanning the whole carcass ----
     const fullBodyH = stackOn(cab) ? stackedHeights(cab).reduce((a, h) => a + h, 0) - kick : cab.height - kick;
-    cab.rows.forEach((row) => {
-      const lays = columnLayout(cab, row, S);
-      lays.forEach((lay) => {
-        const col = lay.col;
-        if (!col.door?.full || col.fixed) return;
-        if (columnHasDrawers(col) && !col.drawers.every((d) => d.hidden)) return;
-        const colX = x + (S.bodyThk + lay.x) * sc;
-        const colW = lay.w * sc;
-        const n = col.door.type === "double" || col.door.type === "sliding" ? 2 : 1;
-        const glass = col.door.material === "glass";
-        const doorH = fullBodyH * sc;
-        const doorTopY = floor - (kick + fullBodyH) * sc;
-        for (let j = 0; j < n; j++) {
-          const dw = colW / n;
-          out += `<rect x="${f(colX + j * dw + g)}" y="${f(doorTopY + g)}" width="${f(dw - 2 * g)}" height="${f(doorH - 2 * g)}" fill="${glass ? "rgba(140,190,230,0.25)" : "#22364e"}" stroke="${glass ? "#9cc3e8" : "#7ea3cc"}" stroke-width="${glass ? 2 : 1.4}"/>`;
-          [doorTopY + doorH * 0.2, doorTopY + doorH * 0.8].forEach((cy) => {
-            const hx = n === 2 && j === 0 ? colX + dw - g - 9 : colX + j * dw + g + 9;
-            out += `<circle cx="${f(hx)}" cy="${f(cy)}" r="2.4" fill="#c9ccd4"/>`;
-          });
-        }
-        out += `<text x="${f(colX + colW / 2)}" y="${f(doorTopY + 16)}" fill="#9dc0e4" font-size="9" text-anchor="middle">${glass ? "GLASS / ALU · FULL HEIGHT" : "FULL-HEIGHT DOOR"}</text>`;
+    // cabinet-level full door (Boxes control) — supports mdf-left/right/double etc
+    if (cab.fullDoor && cab.fullDoor !== "off") {
+      const fd = cab.fullDoor as string;
+      const glass = fd.startsWith("glass");
+      const suffix = fd.includes("-") ? fd.split("-")[1] : "";
+      const doorH = fullBodyH * sc;
+      const doorTopY = floor - (kick + fullBodyH) * sc;
+      const n = suffix === "double" ? 2 : suffix === "left" || suffix === "right" ? 1 : (cab.width > 620 ? 2 : 1);
+      for (let j=0;j<n;j++) {
+        const dw = cw / n;
+        out += `<rect x="${f(x + j*dw + g)}" y="${f(doorTopY + g)}" width="${f(dw - 2*g)}" height="${f(doorH - 2*g)}" fill="${glass ? "rgba(140,190,230,0.25)" : "#22364e"}" stroke="${glass ? "#9cc3e8" : "#7ea3cc"}" stroke-width="${glass ? 2 : 1.4}"/>`;
+        [doorTopY + doorH*0.2, doorTopY + doorH*0.8].forEach((cy)=> {
+          const hx = n===2 && j===0 ? x + dw - g - 9 : x + j*dw + g + 9;
+          out += `<circle cx="${f(hx)}" cy="${f(cy)}" r="2.4" fill="#c9ccd4"/>`;
+        });
+      }
+      out += `<text x="${f(x + cw/2)}" y="${f(doorTopY+16)}" fill="#9dc0e4" font-size="9" text-anchor="middle">${glass ? "GLASS / ALU · FULL CABINET" : "FULL-CABINET DOOR"}</text>`;
+    } else {
+      cab.rows.forEach((row) => {
+        const lays = columnLayout(cab, row, S);
+        lays.forEach((lay) => {
+          const col = lay.col;
+          if (!col.door?.full || col.fixed) return;
+          if (columnHasDrawers(col) && !col.drawers.every((d) => d.hidden)) return;
+          const colX = x + (S.bodyThk + lay.x) * sc;
+          const colW = lay.w * sc;
+          const n = col.door.type === "double" || col.door.type === "sliding" ? 2 : 1;
+          const glass = col.door.material === "glass";
+          const doorH = fullBodyH * sc;
+          const doorTopY = floor - (kick + fullBodyH) * sc;
+          for (let j = 0; j < n; j++) {
+            const dw = colW / n;
+            out += `<rect x="${f(colX + j * dw + g)}" y="${f(doorTopY + g)}" width="${f(dw - 2 * g)}" height="${f(doorH - 2 * g)}" fill="${glass ? "rgba(140,190,230,0.25)" : "#22364e"}" stroke="${glass ? "#9cc3e8" : "#7ea3cc"}" stroke-width="${glass ? 2 : 1.4}"/>`;
+            [doorTopY + doorH * 0.2, doorTopY + doorH * 0.8].forEach((cy) => {
+              const hx = n === 2 && j === 0 ? colX + dw - g - 9 : colX + j * dw + g + 9;
+              out += `<circle cx="${f(hx)}" cy="${f(cy)}" r="2.4" fill="#c9ccd4"/>`;
+            });
+          }
+          out += `<text x="${f(colX + colW / 2)}" y="${f(doorTopY + 16)}" fill="#9dc0e4" font-size="9" text-anchor="middle">${glass ? "GLASS / ALU · FULL HEIGHT" : "FULL-HEIGHT DOOR"}</text>`;
+        });
       });
-    });
+    }
 
     // ---- cover panels (L / R only in the FRONT view) ----
     // Top/Bottom covers are horizontal panels (width × DEEP) — they are NOT

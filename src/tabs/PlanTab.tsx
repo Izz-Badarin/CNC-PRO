@@ -34,14 +34,17 @@ export function PlanTab({
   settings,
   setCabinets,
   panels = [],
+  setPanels,
 }: {
   cabinets: Cabinet[];
   settings: Settings;
   setCabinets: (fn: (cs: Cabinet[]) => Cabinet[]) => void;
   panels?: PanelItem[];
+  setPanels?: (fn: (p: PanelItem[]) => PanelItem[]) => void;
 }) {
   const [zoom, setZoom] = useState(1);
   const [drag, setDrag] = useState<{ id: string; dx: number; dz: number; ox: number; oz: number } | null>(null);
+  const [dragPanel, setDragPanel] = useState<{ id: string; dx: number; dz: number; ox: number; oz: number } | null>(null);
   const [selId, setSelId] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   void settings;
@@ -70,12 +73,23 @@ export function PlanTab({
 
   const commit = (id: string, x: number, z: number) =>
     setCabinets((cs) => cs.map((c) => (c.id === id ? { ...c, plan: { x: Math.round(x), z: Math.round(z) } } : c)));
+  const commitPanel = (id: string, x: number, _z: number) => {
+    if (!setPanels) return;
+    setPanels((ps) => ps.map((p) => (p.id === id ? { ...p, layout: { x: Math.round(x), y: 0 } } : p)));
+  };
 
   const snapX = (x: number, id: string, w: number): number => {
     let best = Math.round(x / GRID) * GRID;
     let bd = Math.abs(best - x);
     planPos.forEach((p) => {
       if (p.cab.id === id) return;
+      [p.x, p.x + p.w, p.x - w].forEach((cx) => {
+        const dd = Math.abs(cx - x);
+        if (dd < bd && dd < 12) { bd = dd; best = cx; }
+      });
+    });
+    panelPlan.forEach((p) => {
+      if (p.pn.id === id) return;
       [p.x, p.x + p.w, p.x - w].forEach((cx) => {
         const dd = Math.abs(cx - x);
         if (dd < bd && dd < 12) { bd = dd; best = cx; }
@@ -96,9 +110,36 @@ export function PlanTab({
     return best;
   };
 
-  const onPointerDown = (id: string, e: React.PointerEvent) => {
+  const onPointerDown = (id: string, e: React.PointerEvent, kind: 'cab'|'panel' = 'cab') => {
     e.preventDefault();
     setSelId(id);
+    if (kind === 'panel') {
+      const pos = panelPlan.find((p) => p.pn.id === id);
+      if (!pos) return;
+      // raw panels carry only a 1-D plan position ({x, y} in layout), so they
+      // slide along X against the front wall — no Z drag for them
+      const sx = e.clientX, ox = pos.x, oz = pos.z;
+      const live: { cur: { dx: number; dz: number } | null } = { cur: null };
+      const move = (ev: PointerEvent) => {
+        const dx = snapX(ox + (ev.clientX - sx) / SCALE / zoom, id, pos.w) - ox;
+        const dz = 0;
+        live.cur = { dx, dz };
+        setDragPanel({ id, dx, dz, ox, oz });
+      };
+      const up = () => {
+        const d = live.cur;
+        if (d) commitPanel(id, ox + d.dx, oz + d.dz);
+        setDragPanel(null);
+        wrapRef.current?.removeEventListener("pointermove", move);
+        wrapRef.current?.removeEventListener("pointerup", up);
+        wrapRef.current?.removeEventListener("pointercancel", up);
+      };
+      wrapRef.current?.setPointerCapture?.(e.pointerId);
+      wrapRef.current?.addEventListener("pointermove", move);
+      wrapRef.current?.addEventListener("pointerup", up);
+      wrapRef.current?.addEventListener("pointercancel", up);
+      return;
+    }
     const pos = planPos.find((p) => p.cab.id === id);
     if (!pos) return;
     const sx = e.clientX, sy = e.clientY, ox = pos.x, oz = pos.z;
@@ -127,8 +168,13 @@ const active = planPos.map((p) => ({
     x: p.cab.id === drag?.id ? drag.ox + drag.dx : p.x,
     z: p.cab.id === drag?.id ? drag.oz + drag.dz : p.z,
   }));
+  const activePanels = panelPlan.map((p)=>({
+    ...p,
+    x: p.pn.id === dragPanel?.id ? dragPanel.ox + dragPanel.dx : p.x,
+    z: p.pn.id === dragPanel?.id ? dragPanel.oz + dragPanel.dz : p.z,
+  }));
 
-  const maxX = Math.max(5, ...active.map((p) => p.x + p.w), ...panelPlan.map((p) => p.x + p.w)) + 200;
+  const maxX = Math.max(5, ...active.map((p) => p.x + p.w), ...activePanels.map((p) => p.x + p.w)) + 200;
   const minZ = Math.min(0, ...active.map((p) => p.z - 60));
   const maxZ = Math.max(60, ...active.map((p) => p.z + p.d)) + 200;
   const W = maxX * SCALE * zoom;
@@ -144,7 +190,7 @@ const active = planPos.map((p) => ({
       const shape = isCorner(p.cab.type) ? rect + ` M${px},${py} L${px + w},${py + d}` : rect;
       return `<path d="${shape}" fill="none" stroke="#22314a" stroke-width="1.2"/><text x="${px + 6}" y="${py + 16}" font-size="9">${esc(p.cab.name)}</text><text x="${px + 6}" y="${py + 28}" font-size="8">${Math.round(p.w)} x ${Math.round(p.d)}</text>`;
     }).join("");
-    const bodyPanels = panelPlan.map((p) => {
+    const bodyPanels = activePanels.map((p) => {
       const px = p.x * SCALE, py = (p.z - minZ) * SCALE;
       const w = p.w * SCALE, d = Math.max(p.d * SCALE, 2.5);
       return `<rect x="${px}" y="${py}" width="${w}" height="${d}" fill="none" stroke="#0e7490" stroke-width="1.4" stroke-dasharray="5 3"/><text x="${px + 4}" y="${py - 4}" font-size="8" fill="#0e7490">${esc(p.pn.name)} ${Math.round(p.w)}x${Math.round(p.h)}</text>`;
@@ -196,15 +242,16 @@ return (
               </g>
             );
           })}
-          {/* raw project panels — standing w×thk footprints */}
-          {panelPlan.map((p) => {
+          {/* raw project panels — standing w×thk footprints — draggable */}
+          {activePanels.map((p) => {
             const px = p.x * SCALE * zoom;
             const py = OFZ + (p.z - minZ) * SCALE * zoom;
             const w = Math.max(2, p.w * SCALE * zoom);
             const d = Math.max(2.5, p.d * SCALE * zoom);
+            const selected = p.pn.id === selId || p.pn.id === dragPanel?.id;
             return (
-              <g key={p.pn.id}>
-                <rect x={px} y={py} width={w} height={d} rx={1.5} fill="#0b2f3f" stroke="#22d3ee" strokeWidth={1.3} strokeDasharray="5 3" />
+              <g key={p.pn.id} onPointerDown={(e)=>{e.stopPropagation(); onPointerDown(p.pn.id,e,'panel');}} style={{cursor:'grab'}}>
+                <rect x={px} y={py} width={w} height={d} rx={1.5} fill="#0b2f3f" stroke={selected?"#f59e0b":"#22d3ee"} strokeWidth={selected?2:1.3} strokeDasharray="5 3" />
                 <text x={px + 4} y={py - 5} fill="#22d3ee" fontSize={10}>
                   {p.pn.name}
                 </text>

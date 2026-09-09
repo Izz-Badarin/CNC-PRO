@@ -175,6 +175,51 @@ export function View3DTab({
             <Btn size="sm" title="Model as GLB (glTF binary), millimetres" onClick={shotGlb}><Box size={13} /> GLB</Btn>
             <Btn size="sm" title="Model as OBJ, millimetres" onClick={shotObj}><Box size={13} /> OBJ</Btn>
           </div>
+          <div className="grid grid-cols-2 gap-1.5 mt-2">
+            <Btn size="sm" variant="ok" title="Exploded 3D view – sides ±150 X top/bottom ±120 Y back -100 Z doors +200 Z 45° – saved as cnc-exploded overall and used in Exploded Report" onClick={()=>{
+              const url = (viewer.current as any)?.snapshotExploded?.();
+              if (!url) return;
+              try{
+                localStorage.setItem('cnc-exploded-overall', url);
+                localStorage.setItem('cnc-last-3d-png', url);
+              }catch{}
+              const a=document.createElement('a'); a.href=url; a.download='cnc-exploded-3d.png'; a.click();
+            }}><Layers size={13} /> Exploded PNG</Btn>
+            <Btn size="sm" title="Save per-cab iso + exploded for Exploded Report – each cabinet gets its own PNG (localStorage cnc-cab-iso-* and cnc-exploded-*)" onClick={()=>{
+              cabinets.forEach(c=>{
+                try{
+                  const iso = (viewer.current as any)?.snapshotCabinet?.(c.id);
+                  if (iso) localStorage.setItem(`cnc-cab-iso-${c.id}`, iso);
+                  const exp = (viewer.current as any)?.snapshotExplodedCabinet?.(c.id);
+                  if (exp) localStorage.setItem(`cnc-exploded-${c.id}`, exp);
+                }catch{}
+              });
+              alert(`Saved ${cabinets.length} cabinets – iso + exploded PNGs to localStorage. Now go to BOM → Save Exploded Report.`);
+            }}><Box size={13} /> Save All Cab PNGs</Btn>
+          </div>
+          {cabinets.length>0 && (
+            <div className="mt-2 max-h-[160px] overflow-auto rounded border border-white/[0.06] p-1 space-y-1">
+              {cabinets.map(c=>(
+                <div key={c.id} className="flex items-center justify-between gap-1 text-[10px]">
+                  <span className="truncate text-ink-300">{c.name}</span>
+                  <span className="flex gap-1">
+                    <button className="px-1.5 py-0.5 rounded bg-ink-800 hover:bg-ink-700 text-cyan-300" onClick={()=>{
+                      const url=(viewer.current as any)?.snapshotCabinet?.(c.id);
+                      if(!url) return;
+                      try{ localStorage.setItem(`cnc-cab-iso-${c.id}`, url);}catch{}
+                      const a=document.createElement('a'); a.href=url; a.download=`${c.name}-iso.png`; a.click();
+                    }}>Iso</button>
+                    <button className="px-1.5 py-0.5 rounded bg-ink-800 hover:bg-amber-900/40 text-amber-300" onClick={()=>{
+                      const url=(viewer.current as any)?.snapshotExplodedCabinet?.(c.id);
+                      if(!url) return;
+                      try{ localStorage.setItem(`cnc-exploded-${c.id}`, url);}catch{}
+                      const a=document.createElement('a'); a.href=url; a.download=`${c.name}-exploded.png`; a.click();
+                    }}>Expl</button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         <div>
           <div className="field-label !mb-2 flex items-center gap-1.5"><Layers size={12} /> Part visibility</div>
