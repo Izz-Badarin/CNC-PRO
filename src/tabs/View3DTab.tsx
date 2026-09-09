@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Camera, DoorClosed, DoorOpen, Layers, Link2, Move3d, RotateCcw, SquareMousePointer } from "lucide-react";
+import { Camera, DoorClosed, DoorOpen, Layers, Link2, Move3d, RotateCcw, SquareMousePointer, UnfoldVertical } from "lucide-react";
 import type { Cabinet, PanelItem, Settings } from "../types";
 import { Btn, Empty, Field, Num } from "../components/ui";
 import { ThreeCanvas } from "../components/ThreeCanvas";
@@ -21,6 +21,7 @@ export function View3DTab({
   const [spacing, setSpacing] = useState(0);
   const [doorsOpen, setDoorsOpen] = useState(false);
   const [drawersOpen, setDrawersOpen] = useState(false);
+  const [exploded, setExploded] = useState(false);
   const [showDims, setShowDims] = useState(false);
   const [layers, setLayers] = useState<Record<string, boolean>>({});
   const [followLayout, setFollowLayout] = useState(true);
@@ -69,6 +70,14 @@ export function View3DTab({
           </Btn>
           <Btn size="sm" variant={drawersOpen ? "ok" : "default"} onClick={() => setDrawersOpen(!drawersOpen)}>
             <SquareMousePointer size={14} /> Drawers
+          </Btn>
+          <Btn
+            size="sm"
+            variant={exploded ? "ok" : "default"}
+            onClick={() => setExploded(!exploded)}
+            title="Slide every part out of its seat (or back in)"
+          >
+            <UnfoldVertical size={14} /> Explode
           </Btn>
           <Btn size="sm" variant={followLayout ? "ok" : "default"} onClick={() => setFollowLayout(!followLayout)}>
             <Link2 size={14} /> Follow 2D
@@ -137,6 +146,7 @@ export function View3DTab({
             showDims={showDims}
             doorsOpen={doorsOpen}
             drawersOpen={drawersOpen}
+            exploded={exploded}
             followLayout={followLayout}
             panels={panels}
             onReady={(v) => (viewer.current = v)}

@@ -177,7 +177,13 @@ export function frontElevationSvg(cabs: Cabinet[], panels: PanelItem[] = []): st
   const minX = Math.min(...items.map((i) => i.x));
   const maxX = Math.max(...items.map((i) => i.x + i.w));
   const maxH = Math.max(...items.map((i) => i.h));
-  const W = 1560, H = 880;
+  // single cabinet, no panels → TIGHT mode: the canvas follows the cabinet's
+  // aspect (portrait allowed) so the report renders the elevation BIG instead
+  // of a tiny cabinet centered in a 1560×880 landscape sheet
+  const spanW = Math.max(maxX - minX, 1);
+  const single = cabs.length === 1 && panels.length === 0 && items.length === 1;
+  const W = single ? Math.min(1560, Math.max(460, Math.round(spanW + 360))) : 1560;
+  const H = single ? Math.min(2300, Math.max(680, Math.round(maxH + 340))) : 880;
   const padL = 80, padR = 110, padT = 130, padB = 200;
   const sc = Math.min((W - padL - padR) / Math.max(maxX - minX, 1), (H - padT - padB) / Math.max(maxH, 1));
   const base = H - padB;

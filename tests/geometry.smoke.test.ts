@@ -966,8 +966,68 @@ const S: Settings = { ...DEFAULT_SETTINGS };
 
 /* ============ automatic ISO / front / left captures degrade gracefully headless ============ */
 const autoShotTest = captureCabinetShots(makeCabinet("custom", 900, 720, 560, "Custom-01"), S).then((shots) => {
-  check("autoshots: headless (no window) → empty triple, no throw", shots.iso === "" && shots.front === "" && shots.left === "");
+  check("autoshots: headless (no window) → empty quad, no throw", shots.iso === "" && shots.front === "" && shots.left === "" && shots.exploded === "");
 });
+
+/* ============ Phase 15: interactive explode diagram, hinge consistency, tight elevation ============ */
+{
+  const tall = makeCabinet("tall", 600, 2200, 560, "TallHinge");
+  tall.hasToeKick = true;
+  tall.rows[0].columns[0].door = { type: "single", style: "overlay", swing: "left", material: "mdf", mdfThk: S.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true } as any;
+  const short = makeCabinet("base", 600, 720, 560, "ShortHinge");
+  short.hasToeKick = true;
+  short.rows[0].columns[0].door = { type: "single", style: "overlay", swing: "right", material: "glass", mdfThk: S.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center" } as any;
+  const both = [tall, short];
+  const html = explodedReportHtml(both, S, [], {}, null, null, {}, {});
+
+  check("interactive: one xp-block per cabinet", (html.match(/class="xp-block"/g) || []).length === both.length);
+  check("interactive: slider + Assembled/Exploded buttons", html.includes('class="xp-slider"') && html.includes('class="xp-assemble"') && html.includes('class="xp-explode"'));
+  check("interactive: inline IIFE, no external assets", html.includes("(function () {") && !/<script\s+[^>]*src=/i.test(html));
+
+  // data must parse; every part corner must stay inside its canvas at t ∈ {0,1}
+  const C = 0.8660254, S3 = 0.5;
+  const datas = [...html.matchAll(/<script type="application\/json" class="xp-data">([\s\S]*?)<\/script>/g)];
+  const sizes = [...html.matchAll(/<svg class="xp-svg"[^>]*width="(\d+)" height="(\d+)"/g)];
+  let nParts = 0, fit = true;
+  datas.forEach((d, i) => {
+    const data = JSON.parse(d[1].replace(/\\u003c/g, "<"));
+    nParts += data.parts.length;
+    const VW = +sizes[i][1], VH = +sizes[i][2];
+    for (const t of [0, 1])
+      for (const p of data.parts) {
+        const x = p.x + p.ox * t, y = p.y + p.oy * t, z = p.z + p.oz * t;
+        for (const q of [[x, y, z], [x + p.w, y, z], [x + p.w, y + p.h, z], [x, y + p.h, z], [x, y, z + p.d], [x + p.w, y, z + p.d], [x + p.w, y + p.h, z + p.d], [x, y + p.h, z + p.d]]) {
+          const sx = data.o.x + (q[0] - q[2]) * C * data.s;
+          const sy = data.o.y + ((q[0] + q[2]) * S3 - q[1]) * data.s;
+          if (sx < -1 || sy < -1 || sx > VW + 1 || sy > VH + 1) fit = false;
+        }
+      }
+  });
+  check("interactive: JSON data parses + parts in canvas (assembled & exploded)", datas.length === both.length && nParts >= 20 && fit, `${datas.length} blocks / ${nParts} parts`);
+
+  // open-door view: REAL hinge cup counts (tall 2094mm → 4, short 714mm → 2)
+  const svgs = [...html.matchAll(/<svg[\s\S]*?<\/svg>/g)].map((m) => m[0]);
+  const cupsOf = (name: string) => (svgs.find((s) => s.includes("Open Door View") && s.includes(name))?.match(/fill="#f87171"/g) || []).length;
+  check("openDoor: tall full door shows 4 real cups", cupsOf("TallHinge") === 4, `${cupsOf("TallHinge")}`);
+  check("openDoor: short glass door shows 2 real cups", cupsOf("ShortHinge") === 2, `${cupsOf("ShortHinge")}`);
+
+  // hardware table must equal the generator's real hinge-cup holes
+  const genCups = (cab: any) =>
+    allPartsMerged([cab], S, {}, [], []).reduce((a, p) => a + p.holes.filter((h) => h.kind === "hinge").length * p.qty, 0) +
+    glassDoorRefs([cab], S).reduce((a, p) => a + p.holes.filter((h) => h.kind === "hinge").length, 0);
+  const markers = both.map((c) => `id="cab-${c.id}"`);
+  both.forEach((cab, i) => {
+    const seg = html.slice(html.indexOf(markers[i]), i + 1 < both.length ? html.indexOf(markers[i + 1]) : html.indexOf('id="overall-bom"'));
+    const tableCups = Number(seg.match(/Hinges Universal 35mm<\/td><td class="num">(\d+)</)?.[1] ?? -1);
+    check(`hardware: ${cab.name} table cups == generator cups`, tableCups === genCups(cab), `table=${tableCups} gen=${genCups(cab)}`);
+  });
+
+  // front elevation: TIGHT single mode (portrait allowed) vs fixed multi canvas
+  const vb1 = frontElevationSvg([tall], []).match(/viewBox="0 0 (\d+) (\d+)"/)!;
+  check("elevation: tight single canvas is portrait for a tall cabinet", +vb1[2] > 880, `${vb1[1]}×${vb1[2]}`);
+  const vb2 = frontElevationSvg(both, []).match(/viewBox="0 0 (\d+) (\d+)"/)!;
+  check("elevation: multi-cabinet canvas stays 1560×880", vb2[1] === "1560" && vb2[2] === "880", `${vb2[1]}×${vb2[2]}`);
+}
 
 /* ============ rail shelves: 60mm-first rule, extras only when the space is big ============ */
 {

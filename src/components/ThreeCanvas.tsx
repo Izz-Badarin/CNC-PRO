@@ -11,6 +11,7 @@ export function ThreeCanvas({
   showDims = true,
   doorsOpen = false,
   drawersOpen = false,
+  exploded = false,
   followLayout = false,
   panels = [],
   onReady,
@@ -23,6 +24,8 @@ export function ThreeCanvas({
   showDims?: boolean;
   doorsOpen?: boolean;
   drawersOpen?: boolean;
+  /** slide every part out of its seat (true) / back in (false) */
+  exploded?: boolean;
   followLayout?: boolean;
   panels?: PanelItem[];
   onReady?: (v: CabinetViewer) => void;
@@ -35,6 +38,8 @@ export function ThreeCanvas({
   readyRef.current = onReady;
   const clickRef = useRef(onCabinetClick);
   clickRef.current = onCabinetClick;
+  const explodedRef = useRef(exploded);
+  explodedRef.current = exploded;
 
   useEffect(() => {
     if (!ref.current) return;
@@ -78,7 +83,11 @@ export function ThreeCanvas({
   const dPanels = useDebounced(panels, 200);
 
   useEffect(() => {
-    viewerRef.current?.setData(dCabinets, dSettings, { spacing: dSpacing, showDims, followLayout: dFollow, panels: dPanels });
+    const v = viewerRef.current;
+    if (!v) return;
+    v.setData(dCabinets, dSettings, { spacing: dSpacing, showDims, followLayout: dFollow, panels: dPanels });
+    // setData rebuilt the meshes — re-apply the current explode state
+    v.setExploded(explodedRef.current ? 1 : 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dCabinets, dSettings, dSpacing, dFollow, dPanels]);
 
@@ -93,6 +102,10 @@ export function ThreeCanvas({
   useEffect(() => {
     if (viewerRef.current) viewerRef.current.drawersOpen = drawersOpen;
   }, [drawersOpen]);
+
+  useEffect(() => {
+    viewerRef.current?.setExploded(exploded ? 1 : 0);
+  }, [exploded]);
 
   return (
     <div ref={ref} className={className} style={{ cursor: onCabinetClick ? "pointer" : "default" }} onClick={onCabinetClick ? onClick : undefined} />

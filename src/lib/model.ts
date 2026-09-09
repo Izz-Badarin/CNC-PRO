@@ -1427,12 +1427,19 @@ export function glassDoorRefs(cabs: Cabinet[], S: Settings): Part[] {
         lays.forEach((lay, ci) => {
           const col = lay.col;
           const door = col.door;
-          if (door && door.material === "glass" && (col.rows ?? []).length === 0 && door.type !== "sliding") {
+          // SAME suppression as the part generator (buildColumn): a column
+          // with visible drawers (or a fixed panel) has NO door, so no glass
+          // reference and no hinge cups either — otherwise the BOM would list
+          // hinges for a door that does not exist
+          const hasDr = columnHasDrawers(col);
+          const allHidden = hasDr && col.drawers.every((d) => d.hidden);
+          if (door && door.material === "glass" && (col.rows ?? []).length === 0 && door.type !== "sliding"
+            && !col.fixed && (!hasDr || allHidden)) {
             const faceW = lays.length === 1 ? cab.width : columnFaceWidth(cab, lay, S);
             const leafH = door.full ? fullH : r.h;
             const tag = lays.length > 1 ? ` · ${cab.name} C${ci + 1}` : "";
             const { w: dw, h: dh, count } = doorDims(faceW, leafH, door, S);
-            const nHinges = Math.min(6, Math.max(1, doorHingeCount(dh))); // glass: never has a handle
+            const nHinges = effectiveHingeCount(door, dh);
             const cupYs = hingeCupYs(dh, nHinges);
             const wR = Math.max(5, Math.round(dw * 10) / 10);
             for (let j = 0; j < count; j++) {

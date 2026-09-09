@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { allParts, bandingByMaterial, columnFaceWidth, columnLayout, doorDims, drillOps, doorHingeCount, generatePanelParts, glassDoorRefs, kickH, stackOn, stackedHeights, type RotationOverrides } from "../lib/model";
+import { allParts, bandingByMaterial, columnFaceWidth, columnLayout, doorDims, drillOps, effectiveHingeCount, generatePanelParts, glassDoorRefs, kickH, stackOn, stackedHeights, columnHasDrawers, type RotationOverrides } from "../lib/model";
 import { nestParts } from "../lib/nesting";
 import { applyWaste, plyMaterialById, wastePctOf } from "../lib/defaults";
 import type { Cabinet, Customer, PanelItem, ProjectInfo, Settings } from "../types";
@@ -31,34 +31,18 @@ interface BomRow {
 
 export function BomTab({ cabinets, settings, panels = [], grain = {}, rotation = {}, project = null, customers = null }: Props) {
   const [lastScreenshot, setLastScreenshot] = useState<string | null>(null);
-  const [explodedShots, setExplodedShots] = useState<Record<string, string>>({});
-  const [perCabShots, setPerCabShots] = useState<Record<string, string>>({});
-  /** automatic ISO/front/left photos per cabinet — captured headlessly on demand */
+  /** automatic ISO/front/left/exploded photos per cabinet — captured headlessly on demand */
   const [autoPhotos, setAutoPhotos] = useState(true);
   const [capturing, setCapturing] = useState<{ done: number; total: number } | null>(null);
   const wastePct = wastePctOf(settings);
 
-  // reads the shots captured in 3D View (E1 overall PNG + per-cabinet iso/exploded)
+  // reads the overall 3D PNG captured in 3D View (E1)
   useEffect(() => {
     try {
       const s = localStorage.getItem("cnc-last-3d-png");
       if (s) setLastScreenshot(s);
-      const exp: Record<string, string> = {};
-      const per: Record<string, string> = {};
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (!k) continue;
-        const v = localStorage.getItem(k);
-        if (!v) continue;
-        if (k.startsWith("cnc-exploded-")) exp[k.replace("cnc-exploded-", "")] = v;
-        if (k.startsWith("cnc-cab-iso-")) per[k.replace("cnc-cab-iso-", "")] = v;
-      }
-      setExplodedShots(exp);
-      setPerCabShots(per);
     } catch {}
   }, []);
-
-  const hasCabShots = Object.keys(explodedShots).length > 0 || Object.keys(perCabShots).length > 0;
 
   const bom = useMemo(() => {
     const rows: BomRow[] = [];
@@ -84,18 +68,23 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, rotation =
       drillOps([cab], settings, grain, [], rotation).forEach((op) => {
         if (op.type === "hinge") hinges++;
       });
-      const fullSpan = (stackOn(cab) ? stackedHeights(cab).reduce((a, h) => a + h, 0) : cab.height) - kickH(cab, settings);
-      // a cabinet-level full door suppresses every per-section door in the
-      // model — don't count the suppressed per-column glass door hinges too
-      const fullDoorActive = !!cab.fullDoor && cab.fullDoor !== "off";
+      const kick = kickH(cab, settings);
+      const fullSpan = (stackOn(cab) ? stackedHeights(cab).reduce((a, h) => a + h, 0) : cab.height) - kick;
+      // a cabinet-level full door (stacked cabinets) suppresses EVERY
+      // per-column door — exactly like the part generator — so the BOM must
+      // not count the suppressed per-column hinges. Fixed panels and columns
+      // with visible drawers also have no door in the model.
+      const fullDoorActive = stackOn(cab) && !!cab.fullDoor && cab.fullDoor !== "off";
       cab.rows.forEach((row) => {
         const lays = columnLayout(cab, row, settings);
         row.columns.forEach((col, ci) => {
-          if (col.door && !fullDoorActive) {
-            if (col.door.material === "glass" && col.door.type !== "sliding") {
-              const faceW = lays.length === 1 ? cab.width : columnFaceWidth(cab, lays[ci], settings);
-              const leafH = doorDims(faceW, col.door.full ? fullSpan : row.h, col.door, settings).h;
-              hinges += Math.min(6, Math.max(1, col.door.hingeCount ?? doorHingeCount(leafH)));
+          if (col.door && !col.fixed && !fullDoorActive) {
+            const allHidden = col.drawers.length > 0 && col.drawers.every((dr) => dr.hidden);
+            if (!columnHasDrawers(col) || allHidden) {
+              const lay = lays.find((l) => l.col.id === col.id) ?? lays[ci];
+              const faceW = lays.length === 1 ? cab.width : columnFaceWidth(cab, lay, settings);
+              const dd = doorDims(faceW, col.door.full ? fullSpan : row.h, col.door, settings);
+              hinges += dd.count * effectiveHingeCount(col.door, dd.h);
             }
           }
           col.drawers.forEach((dr) => {
@@ -105,12 +94,14 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, rotation =
           if (col.rail && col.rail !== "off") hangingRails += col.rail === "double" ? 2 : 1;
         });
       });
-      if ((cab.fullDoor as string)?.startsWith("glass")) {
-        const fdRaw = cab.fullDoor as string;
-        const fdSuffix = fdRaw.includes("-") ? fdRaw.split("-")[1] : "";
+      if (fullDoorActive) {
+        // the full door counts exactly like genCabinetFullDoor
+        const raw = cab.fullDoor as string;
+        const fdSuffix = raw.includes("-") ? raw.split("-")[1] : "";
         const fdType = fdSuffix === "double" ? "double" : fdSuffix === "left" || fdSuffix === "right" ? "single" : cab.width > 620 ? "double" : "single";
-        const leafH = doorDims(cab.width, fullSpan, { type: fdType, style: "overlay", swing: fdSuffix === "right" ? "right" : "left", material: "glass", mdfThk: settings.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true, hingeCount: cab.fullDoorHinges } as any, settings).h;
-        hinges += Math.min(6, Math.max(1, cab.fullDoorHinges ?? doorHingeCount(leafH)));
+        const fdSpec: any = { type: fdType, style: "overlay", swing: fdSuffix === "right" ? "right" : "left", material: raw.startsWith("glass") ? "glass" : "mdf", mdfThk: settings.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true, hingeCount: cab.fullDoorHinges };
+        const dd = doorDims(cab.width, fullSpan, fdSpec, settings);
+        hinges += dd.count * effectiveHingeCount(fdSpec, dd.h);
       }
     });
     const sheetCount: Record<string, number> = {};
@@ -197,27 +188,15 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, rotation =
   const explodedReport = async (print = false) => {
     if (capturing) return;
     let shot: string | null = lastScreenshot;
-    const exp: Record<string, string> = { ...explodedShots };
-    const per: Record<string, string> = { ...perCabShots };
     try {
       const s = localStorage.getItem("cnc-last-3d-png");
       if (s) shot = s;
-      // re-read so shots captured a moment ago in 3D View land without a remount
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (!k) continue;
-        const v = localStorage.getItem(k);
-        if (!v) continue;
-        if (k.startsWith("cnc-exploded-")) exp[k.replace("cnc-exploded-", "")] = v;
-        if (k.startsWith("cnc-cab-iso-")) per[k.replace("cnc-cab-iso-", "")] = v;
-      }
     } catch {}
     let auto: Record<string, CabShots> | undefined;
     if (autoPhotos && cabinets.length > 0) {
       try {
         setCapturing({ done: 0, total: cabinets.length });
         auto = await captureAllCabinetShots(cabinets, settings, {
-          panels,
           onProgress: (done, total) => setCapturing({ done, total }),
         });
       } catch {
@@ -228,8 +207,6 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, rotation =
     }
     const html = explodedReportHtml(cabinets, settings, panels, grain, project, customers ?? undefined, {
       screenshotDataUrl: shot,
-      perCabinetScreenshots: per,
-      explodedScreenshots: exp,
       autoShots: auto,
     }, rotation);
     if (print) openPrintWindow(html);
@@ -255,9 +232,9 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, rotation =
             <Btn size="sm" onClick={() => void explodedReport(false)} title="Save the exploded per-cabinet report as one offline HTML file">
               {capturing ? <Loader2 size={14} className="animate-spin" /> : <PackageOpen size={14} />} {capturing ? `Capturing ${capturing.done}/${capturing.total}…` : "Save Exploded Report"}
             </Btn>
-            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-white/10 px-2 py-1 text-[11.5px] text-ink-300" title="Capture ISO / front / left photos of every cabinet automatically (no screenshots needed) and embed them in the Exploded Report">
+            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-white/10 px-2 py-1 text-[11.5px] text-ink-300" title="Capture ISO / front / left / EXPLODED photos of every cabinet automatically (no screenshots needed) and embed them in the Exploded Report — cabinet only, no panels">
               <input type="checkbox" className="chk" checked={autoPhotos} onChange={(e) => setAutoPhotos(e.target.checked)} />
-              <Camera size={13} className="text-cyan-300" /> Auto ISO / front / left photos
+              <Camera size={13} className="text-cyan-300" /> Auto ISO / front / left / exploded photos
             </label>
           </div>
         </div>
@@ -272,26 +249,9 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, rotation =
             <Camera size={12} className="inline mr-1 -mt-0.5" /> No 3D screenshot yet — go to <b>3D View</b> → click <b>PNG</b>. It saves automatically and will be embedded in the Full Report (O).
           </div>
         )}
-        {hasCabShots ? (
-          <div className="mt-2 flex items-center gap-2">
-            <Chip tone="green">
-              <Layers size={12} /> {Object.keys(explodedShots).length} exploded + {Object.keys(perCabShots).length} iso per cabinet - embedded in the Exploded Report
-            </Chip>
-            <Btn size="sm" variant="danger" onClick={() => {
-              try {
-                Object.keys(localStorage).forEach((k) => {
-                  if (k.startsWith("cnc-exploded-") || k.startsWith("cnc-cab-iso-")) localStorage.removeItem(k);
-                });
-              } catch {}
-              setExplodedShots({});
-              setPerCabShots({});
-            }}>Clear per-cab shots</Btn>
-          </div>
-        ) : (
-          <div className="mt-2 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.05] px-3 py-2 text-[11.5px] text-cyan-200/90">
-            <PackageOpen size={12} className="inline mr-1 -mt-0.5" /> <b>Exploded Per-Cabinet Report</b> - every cabinet gets its own pages: 2D exploded schematic, open-door view, drilling map, panel size table and hardware. For 3D photos per cabinet, go to <b>3D View</b> - <b>Save All Cab PNGs</b> (optional; the report works without them).
-          </div>
-        )}
+        <div className="mt-2 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.05] px-3 py-2 text-[11.5px] text-cyan-200/90">
+          <PackageOpen size={12} className="inline mr-1 -mt-0.5" /> <b>Exploded Per-Cabinet Report</b> - every cabinet gets its own pages: big 3D photos (ISO / front / left / <b>exploded</b>), fixed 2D exploded schematic, <b>interactive assemble⇄explode diagram</b>, open-door view (real hinge counts), drilling map, panel size table and hardware.
+        </div>
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
