@@ -480,8 +480,8 @@ export default function App() {
           />
         )}
         {tab === "view3d" && <View3DTab cabinets={cabinets} settings={settings} setSettings={setSettingsState} panels={panels} />}
-        {tab === "view2d" && <View2DTab cabinets={cabinets} settings={settings} setCabinets={setCabinets} panels={panels} />}
-        {tab === "plan" && <PlanTab cabinets={cabinets} settings={settings} setCabinets={setCabinets} panels={panels} />}
+        {tab === "view2d" && <View2DTab cabinets={cabinets} settings={settings} setCabinets={setCabinets} panels={panels} setPanels={setPanels} />}
+        {tab === "plan" && <PlanTab cabinets={cabinets} settings={settings} setCabinets={setCabinets} panels={panels} setPanels={setPanels} />}
         {tab === "cut" && <CutListTab cabinets={cabinets} settings={settings} grain={grain} setGrain={setGrainState} panels={panels} />}
         {tab === "nest" && <NestingTab cabinets={cabinets} settings={settings} grain={grain} setSettings={setSettingsState} panels={panels} />}
         {tab === "drill" && <DrillTab cabinets={cabinets} settings={settings} />}

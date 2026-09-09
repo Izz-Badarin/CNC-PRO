@@ -229,12 +229,12 @@ export const GLASS_RAIL = 60;
 export const HINGE_BRANDS = ["Blum Clip Top", "Blum Clip Top Blumotion", "Universal 35mm"];
 /**
  * Auto hinge count by LEAF HEIGHT (universal 35mm hinges):
- *   ≤1000 → 2 · ≤1500 → 3 · ≤2000 → 4 · ≤2400 → 5 · >2400 → 6
+ *   <900 → 2 · 900-1799 → 3 · 1800-2399 → 4 · 2400-2999 → 5 · ≥3000 → 6
  * Hinge cups sit 140mm from the top and bottom of the door; extras spread
  * evenly in between (see genDoor in model.ts).
  */
 export const doorHingeCount = (doorH: number) =>
-  doorH <= 1000 ? 2 : doorH <= 1500 ? 3 : doorH <= 2000 ? 4 : doorH <= 2400 ? 5 : 6;
+  doorH < 900 ? 2 : doorH < 1800 ? 3 : doorH < 2400 ? 4 : doorH < 3000 ? 5 : 6;
 
 /** doors & drawer fronts default to MDF */
 export const mkDoor = (type: DoorSpec["type"] = "single", p?: Partial<DoorSpec>): DoorSpec => ({

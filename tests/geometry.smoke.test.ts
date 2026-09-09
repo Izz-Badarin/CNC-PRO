@@ -1,10 +1,11 @@
 import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, doorHingeCount, makeCabinet } from "../src/lib/defaults";
 import { buildDxf } from "../src/lib/dxf";
 import { layoutCabs, panelPositions } from "../src/tabs/View2DTab";
-import { frontElevationHtml, frontElevationDxf, frontElevationSvg } from "../src/lib/export";
+import { bomReportHtml, frontElevationHtml, frontElevationDxf, frontElevationSvg } from "../src/lib/export";
+import { explodedReportHtml } from "../src/lib/explodedReport";
 import * as THREE from "three";
 import { OBJExporter } from "three/examples/jsm/exporters/OBJExporter.js";
-import { allParts, bandLengthMm, carcassDepth, doorDims, drillOps, generateCabinetParts, glassDoorRefs, kickH, railShelfYs, stackOn, stackedHeights, totalBandingM, validateCabinet } from "../src/lib/model";
+import { allParts, bandLengthMm, carcassDepth, doorDims, drillOps, fullDoorAutoDims, generateCabinetParts, glassDoorRefs, kickH, railShelfYs, stackOn, stackedHeights, totalBandingM, validateCabinet } from "../src/lib/model";
 import type { Part } from "../src/types";
 import { nestParts, layoutIsValid, sheetDimsFor } from "../src/lib/nesting";
 import type { Settings } from "../src/types";
@@ -198,12 +199,19 @@ const S: Settings = { ...DEFAULT_SETTINGS };
 /* 12 — hinge rule (E): ≤1000→2 · ≤1500→3 · ≤2000→4 · ≤2400→5 · >2400→6,
    cups 140mm from top & bottom with extras evenly in between */
 {
-  check("hinges: 900mm → 2", doorHingeCount(900) === 2, `${doorHingeCount(900)}`);
-  check("hinges: 1000mm → 2", doorHingeCount(1000) === 2, `${doorHingeCount(1000)}`);
+  // new bands (replaces the old ≤1000→2 … >2400→6 rule): <900→2 · 900-1799→3 · 1800-2399→4 · 2400-2999→5 · ≥3000→6
+  check("hinges: 899mm → 2", doorHingeCount(899) === 2, `${doorHingeCount(899)}`);
+  check("hinges: 900mm → 3 (was 2)", doorHingeCount(900) === 3, `${doorHingeCount(900)}`);
+  check("hinges: 1000mm → 3 (was 2)", doorHingeCount(1000) === 3, `${doorHingeCount(1000)}`);
   check("hinges: 1200mm → 3", doorHingeCount(1200) === 3, `${doorHingeCount(1200)}`);
+  check("hinges: 1799mm → 3", doorHingeCount(1799) === 3, `${doorHingeCount(1799)}`);
+  check("hinges: 1800mm → 4", doorHingeCount(1800) === 4, `${doorHingeCount(1800)}`);
   check("hinges: 2000mm → 4", doorHingeCount(2000) === 4, `${doorHingeCount(2000)}`);
+  check("hinges: 2399mm → 4", doorHingeCount(2399) === 4, `${doorHingeCount(2399)}`);
   check("hinges: 2400mm → 5", doorHingeCount(2400) === 5, `${doorHingeCount(2400)}`);
-  check("hinges: 2600mm → 6", doorHingeCount(2600) === 6, `${doorHingeCount(2600)}`);
+  check("hinges: 2600mm → 5 (was 6)", doorHingeCount(2600) === 5, `${doorHingeCount(2600)}`);
+  check("hinges: 2999mm → 5", doorHingeCount(2999) === 5, `${doorHingeCount(2999)}`);
+  check("hinges: 3000mm → 6", doorHingeCount(3000) === 6, `${doorHingeCount(3000)}`);
   const c = makeCabinet("tall", 600, 2100, 560, "Hng");
   c.rows = [
     {
@@ -389,6 +397,126 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   check("obj: 24 vertices (8 corners x 3 faces, no dedup)", vs.length === 24, `${vs.length}`);
   check("obj: 1m cube exports as 1000mm", Math.max(...xs) === 1000 && Math.max(...ys) === 1000, `x${Math.max(...xs)} y${Math.max(...ys)}`);
   check("obj: floor corner at origin", xs.includes(0) && ys.includes(0));
+}
+
+/* ================= full doors, back material, slot override, reports ================= */
+{
+  // a second plywood in the library so "back follows material" is observable
+  const S2: Settings = {
+    ...S,
+    plyMaterials: [...(S.plyMaterials ?? []), { id: "ply-baltic", name: "Baltic Birch", color: "#c9a06a", opacity: 1, solid: false }],
+  };
+
+  // Phase #3 — Back inherits the cabinet plywood (buildBody)
+  const c = makeCabinet("base", 600, 720, 560, "BackMat");
+  c.matId = "ply-baltic";
+  const back = allParts([c], S2).find((p) => p.name === "Back");
+  check("back: carries the cabinet matId", back?.matId === "ply-baltic", `${back?.matId}`);
+  check("back: material stays 'back' (banding/grain rules untouched)", back?.material === "back", `${back?.material}`);
+  const group = nestParts(allParts([c], S2), S2).find((g) => g.material === "back");
+  check("back: nesting groups per plywood, not back@def", group?.matId === "ply-baltic", `${group?.matId}`);
+
+  // Phase #3 — same for stacked boxes (buildStackedBody)
+  const st = makeCabinet("base", 600, 1440, 560, "BackMatStack");
+  st.matId = "ply-baltic";
+  st.stack = [720, 720];
+  const backs = allParts([st], S2).filter((p) => p.name.startsWith("Back"));
+  check("back stacked: one back per box", backs.length === 2, `${backs.length}`);
+  check("back stacked: every box back follows the plywood", backs.every((p) => p.matId === "ply-baltic"), backs.map((p) => String(p.matId)).join(","));
+
+  // default plywood still resolves when the cabinet has no matId
+  const dflt = allParts([makeCabinet("base", 600, 720, 560, "BackDef")], S2).find((p) => p.name === "Back");
+  check("back: no matId → project default plywood", dflt?.matId === DEFAULT_PLY_ID, `${dflt?.matId}`);
+}
+
+/* door W×H auto + override (rule F) */
+{
+  const mk = (over: Record<string, number>) =>
+    ({ type: "single", style: "overlay", swing: "left", material: "mdf", mdfThk: S.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", ...over }) as any;
+  const auto = doorDims(600, 720, mk({}), S);
+  check("doorDims: auto h = row − 2×gap", auto.h === 720 - 2 * S.doorGap, `${auto.h}`);
+  check("doorDims: auto w = face − 2×gap", auto.w === 600 - 2 * S.doorGap, `${auto.w}`);
+  check("doorDims: wAuto/hAuto reported", auto.wAuto === auto.w && auto.hAuto === auto.h, `${auto.wAuto}/${auto.hAuto}`);
+  const ovr = doorDims(600, 720, mk({ hOverride: 700, wOverride: 640 }), S);
+  check("doorDims: height override wins", ovr.h === 700 && ovr.hAuto === 720 - 2 * S.doorGap, `${ovr.h}`);
+  check("doorDims: width override wins", ovr.w === 640 && ovr.wAuto === 600 - 2 * S.doorGap, `${ovr.w}`);
+  const dbl = doorDims(600, 720, mk({ type: "double" }), S);
+  check("doorDims: double leaf splits the opening", dbl.count === 2 && Math.abs(dbl.wAuto * 2 + S.doorGap - (600 - 2 * S.doorGap)) < 0.51, `${dbl.wAuto}`);
+  const fd = fullDoorAutoDims(makeCabinet("base", 600, 1440, 560, "FD"), S);
+  check("fullDoor auto dims span the carcass, not the cabinet", fd.hAuto < 1440 && fd.hAuto > 1440 - S.bodyThk * 2 - 2 * S.doorGap - S.kickHeight - 1, `${fd.wAuto}×${fd.hAuto}`);
+}
+
+/* per-cabinet slot-from-front override */
+{
+  const global80 = makeCabinet("base", 600, 720, 560, "SlotG");
+  global80.slot = "left";
+  const g = allParts([global80], S).find((p) => p.name.startsWith("Side panel L"));
+  check("slot: global slotFromFront used by default", !!g && g.note.includes(`${S.slotFromFront}mm from front`), g?.note.slice(-60));
+
+  const c = makeCabinet("base", 600, 720, 560, "SlotC");
+  c.slot = "left";
+  c.slotFromFront = 120;
+  const p = allParts([c], S).find((x) => x.name.startsWith("Side panel L"));
+  check("slot: per-cabinet override wins over global", !!p && p.note.includes("120mm from front") && !p.note.includes("80mm from front"), p?.note.slice(-60));
+  const gr = p?.grooves.find((x: any) => x.kind === "slot");
+  const D = carcassDepth(c, S);
+  // allParts rotates every piece once (L↔W), so the depth axis may read on x OR y —
+  // what must hold either way: the groove is slotFromFront away from a panel end
+  const along = gr ? [Math.abs(gr!.x1 + gr!.x2) / 2, Math.abs(gr!.y1 + gr!.y2) / 2] : [-1];
+  const distFromEnd = Math.min(...[along[0], along[1], D - along[0], D - along[1]].map(Math.abs));
+  check("slot: groove sits 120mm from the front end of the depth axis", !!gr && Math.abs(distFromEnd - 120) < 0.6, `${Math.round(distFromEnd * 10) / 10} (D=${D})`);
+  check("slot: groove width = settings.slotWidth", !!gr && Math.abs(gr!.y2 - gr!.y1 - S.slotWidth) < 0.01, `${gr ? gr!.y2 - gr!.y1 : "-"}`);
+}
+
+/* full-door variants (L/R/Double) are parsed, not just "mdf"/"glass" */
+{
+  const c = makeCabinet("base", 900, 1440, 560, "FullDoor");
+  c.stack = [720, 720];
+  for (const v of ["mdf-left", "mdf-right", "mdf-double"] as const) {
+    c.fullDoor = v;
+    const doors = generateCabinetParts(c, S).filter((p) => p.name.startsWith("Door"));
+    check(`fullDoor ${v}: one full-height MDF door part per leaf on a stacked box`, doors.length >= 1, `${doors.length}`);
+    if (v === "mdf-double") check("fullDoor mdf-double: two leaves", doors.length === 2, `${doors.length}`);
+    if (v === "mdf-left") check("fullDoor mdf-left: single leaf", doors.length === 1, `${doors.length}`);
+    // the door must span the whole carcass (both boxes), not one box
+    if (v === "mdf-left") {
+      const full = 720 + 720 - kickH(c, S) - 2 * S.doorGap;
+      check("fullDoor leaf covers the stacked boxes", Math.abs(Math.max(doors[0].w, doors[0].h) - full) < 1.5, `${Math.max(doors[0].w, doors[0].h)} vs ${full}`);
+    }
+  }
+  // glass fronts are REFERENCE ONLY — hardware counted, no cut part drilled
+  c.fullDoor = "glass-double";
+  check("fullDoor glass-*: no plywood/MDF cut part (reference only)", generateCabinetParts(c, S).filter((p) => p.name.startsWith("Door")).length === 0);
+  c.fullDoor = "off";
+  check("fullDoor off: no cabinet-level door parts", generateCabinetParts(c, S).filter((p) => p.name.startsWith("Door")).length === 0);
+}
+
+/* BOM report — drawer boxes gone, shelf pins counted as shelves ×4 */
+{
+  const c = makeCabinet("base", 600, 720, 560, "BomReport");
+  c.rows = [{ id: "r1", h: 720, columns: [{ id: "c1", width: 0, shelves: 2, fixed: false, drawers: [], door: null }] }] as any;
+  const parts = allParts([c], S);
+  const shelves = parts.filter((p) => p.name.startsWith("Shelf")).reduce((a, p) => a + p.qty, 0);
+  check("shelf parts exist for the pin math", shelves === 2, `${shelves}`);
+  const html = bomReportHtml([c], S);
+  check("report: no 'Drawer boxes' hardware row", !/Drawer boxes/i.test(html));
+  check("report: shelf pins use the ×4 rule", html.includes(`${shelves * 4}`) && html.includes("shelves x4"), "");
+  check("report: hinge note carries the NEW bands", html.includes("<900-&gt;2") || html.includes("900-1799-&gt;3") || html.includes("900-1799->3"), "");
+}
+
+/* exploded per-cabinet report — renders offline, one section per cabinet */
+{
+  const a = makeCabinet("base", 600, 720, 560, "EXP-A");
+  a.rows = [{ id: "r1", h: 720, columns: [{ id: "c1", width: 0, shelves: 1, fixed: false, drawers: [], door: { type: "single", style: "overlay", swing: "left", material: "mdf", mdfThk: S.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center" } as any }] }] as any;
+  const b = makeCabinet("wall", 800, 600, 320, "EXP-B");
+  const html = explodedReportHtml([a, b], S, [], {}, { name: "Smoke Project" } as any, null, {});
+  check("exploded report: non-trivial html", html.length > 20000, `${Math.round(html.length / 1024)} KB`);
+  check("exploded report: one section per cabinet", html.includes("Cabinet 1/2") && html.includes("Cabinet 2/2"), "");
+  check("exploded report: exploded + open-door pages", html.includes("Exploded View") && html.includes("Open Door View"), "");
+  check("exploded report: per-cabinet panel size table", html.includes("Panel Size Table"), "");
+  check("exploded report: drilling map page", html.includes("Drilling Map"), "");
+  check("exploded report: vectors only, no external assets", html.includes("<svg") && !/<(script|link)\s+[^>]*src=["']?(https?:)?\/\//i.test(html));
+  check("exploded report: table names the plywood, not 'plywood'", html.includes("Plywood") , "");
 }
 
 if (failures) {

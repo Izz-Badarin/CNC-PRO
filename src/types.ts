@@ -53,7 +53,8 @@ export interface DoorSpec {
   full?: boolean;
   /**
    * Hinge count override for this door (universal 35mm hinges). undefined =
-   * auto by height (≤1000→2 · ≤1500→3 · ≤2000→4 · ≤2400→5 · >2400→6). The
+   * auto by leaf height (<900→2 · 900-1799→3 · 1800-2399→4 · 2400-2999→5 ·
+   * ≥3000→6), first/last cup 140mm from the ends. The
    * hinge-cup hole (Ø35mm) is drilled in the DOOR at each hinge position —
    * never in the side panels, and never exported to DXF.
    */
@@ -63,6 +64,11 @@ export interface DoorSpec {
    * section height. Width is always computed from the column opening.
    */
   hOverride?: number;
+  /**
+   * Manual door WIDTH override (mm). 0/undefined = auto from column opening.
+   * For section doors, lets user override width as well.
+   */
+  wOverride?: number;
 }
 
 /**
@@ -215,6 +221,8 @@ export interface Cabinet {
    * front edge. "none" (default) / left / right / both.
    */
   slot?: "none" | "left" | "right" | "both";
+  /** per-cabinet slot distance from front override (mm) — null/undefined = global Settings.slotFromFront */
+  slotFromFront?: number | null;
   /**
    * Stacked boxes: when set (array of box heights, bottom → top), the cabinet is
    * built as SEPARATE boxes bolted on top of each other — each box with its own
@@ -234,9 +242,13 @@ export interface Cabinet {
    * boxes, chosen here instead of inside a section. "off" (default) = use the
    * per-section doors. Glass = no cut part (purchased), MDF = one long part.
    */
-  fullDoor?: "off" | "mdf" | "glass" | null;
+  fullDoor?: "off" | "mdf" | "glass" | "mdf-left" | "mdf-right" | "mdf-double" | "glass-left" | "glass-right" | "glass-double" | null;
   /** hinge count override for the cabinet-level full door (undefined = auto by height) */
   fullDoorHinges?: number;
+  /** manual override for full-door height (mm) — for stacked full doors */
+  fullDoorHOverride?: number | null;
+  /** manual override for full-door width (mm) — rare, but editable */
+  fullDoorWOverride?: number | null;
 }
 
 /* ---------- project / business ---------- */

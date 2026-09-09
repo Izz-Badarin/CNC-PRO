@@ -217,11 +217,15 @@ export function SettingsTab({ settings, setSettings }: { settings: Settings; set
                 </Field>
               )}
               {g === "Drilling" && (
-                <p className="hint mt-1 text-[12px] bg-white/[0.03] rounded-md px-3 py-2">
-                  Hinges: universal 35mm — the Ø35 cup is bored in the DOOR, never in the plywood, and is never exported to DXF.
-                  Shelf pins Ø{settings.holeDiameter}mm · slide holes Ø{settings.slideHoleDiameter}mm · linear slot Ø{settings.slotWidth}mm
-                  from the front edge.
-                </p>
+                <>
+                  <Field label="Linear slot from front (global, mm)">
+                    <Num value={settings.slotFromFront} onChange={(v)=> setSettings({...settings, slotFromFront: Math.max(10,Math.round(v))})} />
+                  </Field>
+                  <p className="hint mt-1 text-[12px] bg-white/[0.03] rounded-md px-3 py-2 col-span-full">
+                    Hinges: universal 35mm — the Ø35 cup is bored in the DOOR, never in the plywood, and is never exported to DXF.
+                    Shelf pins Ø{settings.holeDiameter}mm · slide holes Ø{settings.slideHoleDiameter}mm · linear slot {settings.slotWidth}mm wide @ {settings.slotFromFront}mm from front (editable per cabinet too).
+                  </p>
+                </>
               )}
               {g === "Materials" && (
                 <Field label="Default MDF finish (doors & covers)">
@@ -406,7 +410,7 @@ export function SettingsTab({ settings, setSettings }: { settings: Settings; set
           <li>• Drawer groove <span className="text-amber-300">{settings.grooveWidth}mm × (slider − {settings.grooveShorter}mm), {settings.grooveFromBottom}mm from bottom</span></li>
           <li>• Shelf pins <span className="text-amber-300">Ø{settings.holeDiameter}</span> · slide holes <span className="text-amber-300">Ø{settings.slideHoleDiameter}</span></li>
           <li>• Hanging rail: <span className="text-amber-300">2× Ø{settings.bitDiameter} pilot</span> per rail (one per rail end, at rail center height)</li>
-          <li>• Hinge auto: <span className="text-amber-300">≤1000→2 · ≤1500→3 · ≤2000→4 · ≤2400→5 · &gt;2400→6</span> · cups 140mm from top &amp; bottom</li>
+          <li>• Hinge auto: <span className="text-amber-300">&lt;900→2 · 900-1799→3 · 1800-2399→4 · 2400-2999→5 · ≥3000→6</span> · cups 140mm from top &amp; bottom</li>
           <li>• Cover thickness: <span className="text-amber-300">0 = auto</span> (plywood {settings.bodyThk}mm / MDF {settings.mdfThk}mm)</li>
           <li>• New cabinets: <span className="text-amber-300">600 × 720 × 560</span>, toe kick OFF, MDF fronts OFF</li>
           <li>• Cut list: every piece is <span className="text-amber-300">rotated once (L↔W)</span>, then grain lock applies</li>

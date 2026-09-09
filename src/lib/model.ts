@@ -235,19 +235,38 @@ export function drawerBank(col: ColumnSpec, rowH: number, S: Settings): { y: num
 
 /* ================= door math ================= */
 
-export function doorDims(faceW: number, rowH: number, door: DoorSpec, S: Settings): { w: number; h: number; count: number } {
-  // rule F — manual height override wins over the section-derived height
+export function doorDims(faceW: number, rowH: number, door: DoorSpec, S: Settings): { w: number; h: number; count: number; wAuto: number; hAuto: number } {
+  // rule F — manual height/width override wins over auto
   const hAuto = door.style === "inset" ? rowH - 2 * (S.bodyThk + S.doorGap) : rowH - 2 * S.doorGap;
   const h = door.hOverride && door.hOverride > 0 ? Math.max(50, door.hOverride) : hAuto;
+  const insetTotal = faceW - 2 * (S.bodyThk + S.doorGap);
+  const overlayTotal = faceW - 2 * S.doorGap;
+  const totalAuto = door.style === "inset" ? insetTotal : overlayTotal;
+  const leafWAutoSingle = totalAuto;
+  const leafWAutoDouble = (totalAuto - DOOR_GAP_BETWEEN_DOUBLE) / 2;
+  const leafWAutoSliding = leafWAutoDouble + 20;
+
+  const applyWOverride = (autoW: number) => (door.wOverride && door.wOverride > 0 ? Math.max(50, door.wOverride) : autoW);
+
   if (door.style === "inset") {
-    const total = faceW - 2 * (S.bodyThk + S.doorGap);
-    if (door.type === "double" || door.type === "sliding") return { w: (total - DOOR_GAP_BETWEEN_DOUBLE) / 2, h, count: 2 };
-    return { w: total, h, count: 1 };
+    if (door.type === "double" || door.type === "sliding") {
+      const autoW = door.type === "sliding" ? leafWAutoSliding : leafWAutoDouble;
+      return { w: applyWOverride(autoW), h, count: 2, wAuto: autoW, hAuto };
+    }
+    return { w: applyWOverride(leafWAutoSingle), h, count: 1, wAuto: leafWAutoSingle, hAuto };
   }
-  const total = faceW - 2 * S.doorGap;
-  if (door.type === "double") return { w: (total - DOOR_GAP_BETWEEN_DOUBLE) / 2, h, count: 2 };
-  if (door.type === "sliding") return { w: (total - DOOR_GAP_BETWEEN_DOUBLE) / 2 + 20, h, count: 2 };
-  return { w: total, h, count: 1 };
+  if (door.type === "double") return { w: applyWOverride(leafWAutoDouble), h, count: 2, wAuto: leafWAutoDouble, hAuto };
+  if (door.type === "sliding") return { w: applyWOverride(leafWAutoSliding), h, count: 2, wAuto: leafWAutoSliding, hAuto };
+  return { w: applyWOverride(leafWAutoSingle), h, count: 1, wAuto: leafWAutoSingle, hAuto };
+}
+
+/** helper for full-door auto dims with optional cab overrides */
+export function fullDoorAutoDims(cab: Cabinet, S: Settings): { wAuto: number; hAuto: number } {
+  const kick = kickH(cab, S);
+  const BH = cab.height - kick;
+  const wAuto = cab.width - 2 * S.doorGap;
+  const hAuto = BH - 2 * S.doorGap;
+  return { wAuto, hAuto };
 }
 
 
@@ -365,6 +384,9 @@ function fullDoorColumns(cab: Cabinet): Set<number> {
 function buildBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
   const kick = kickH(cab, S);
   const BH = cab.height - kick;
+  // the cabinet's own plywood — backs and full-depth sides inherit it (Phase #3:
+  // "back follows material") so 3D colour and nesting grouping match the carcass
+  const cabinetPly = plyMaterialOf(S, cab);
   const W = cab.width;
   const D = carcassDepth(cab, S); // depth minus front + back thickness
   const insideW = W - 2 * T;
@@ -404,9 +426,10 @@ function buildBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
   // The RIGHT slot is therefore stored MIRRORED (same mirroring drillRight uses
   // for shelf/slide holes) so both panels read "slotFromFront from the front".
   const slot = cab.slot ?? "none";
+  const slotFromFront = cab.slotFromFront != null && cab.slotFromFront > 0 ? cab.slotFromFront : S.slotFromFront;
   if (slot !== "none" && !notch) {
     const sw = Math.max(6, S.slotWidth);
-    const cx = D - Math.max(sw, S.slotFromFront); // slot center x on the panel
+    const cx = D - Math.max(sw, slotFromFront); // slot center x on the panel
     const x1 = cx - sw / 2;
     const x2 = cx + sw / 2;
     if (x1 > 8 && x2 < D - 8) {
@@ -414,7 +437,7 @@ function buildBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
       targets.forEach((sp) => {
         const isR = sp === sideR;
         sp.grooves.push({ x1: isR ? D - x2 : x1, y1: 0, x2: isR ? D - x1 : x2, y2: sp.h, width: sw, kind: "slot" });
-        sp.note = `${sp.note} · slot ${sw}mm @ ${Math.round(S.slotFromFront)}mm from front${isR ? " (mirrored)" : ""}`;
+        sp.note = `${sp.note} · slot ${sw}mm @ ${Math.round(slotFromFront)}mm from front${isR ? " (mirrored)" : ""}`;
       });
     }
   }
@@ -442,6 +465,7 @@ function buildBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
 
   // ---- back panel ----
   // Always ONE continuous back panel for the whole cabinet unit (no subdivisions).
+  // Back follows cabinet plywood material (matId) so 3D color + nesting grouping matches carcass (Phase #3)
   if (cab.hasBack !== false)
     mk({
       name: "Back",
@@ -449,8 +473,9 @@ function buildBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
       h: BH - 2,
       material: "back",
       thickness: S.backThk,
+      matId: cabinetPly.id,
       grain: false,
-      note: "full cabinet back",
+      note: `full cabinet back · follows ${cabinetPly.name} · ${S.backThk}mm`,
     });
 
   // ---- rows & columns ----
@@ -514,6 +539,7 @@ function buildBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
  */
 function buildStackedBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
   const kick = kickH(cab, S);
+  const cabinetPly = plyMaterialOf(S, cab); // per-cabinet plywood — backs follow it (Phase #3)
   const W = cab.width;
   const D = carcassDepth(cab, S);
   const insideW = W - 2 * T;
@@ -551,9 +577,10 @@ function buildStackedBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
 
     // linear slot on every box's side panels — RIGHT panel coordinates are
     // MIRRORED (x=0 = front edge) so BOTH panels read "slotFromFront from front".
+    const slotFromFront2 = cab.slotFromFront != null && cab.slotFromFront > 0 ? cab.slotFromFront : S.slotFromFront;
     if (slot !== "none") {
       const sw = Math.max(6, S.slotWidth);
-      const cx = D - Math.max(sw, S.slotFromFront);
+      const cx = D - Math.max(sw, slotFromFront2);
       const x1 = cx - sw / 2;
       const x2 = cx + sw / 2;
       if (x1 > 8 && x2 < D - 8) {
@@ -561,7 +588,7 @@ function buildStackedBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
         targets.forEach((sp) => {
           const isR = sp === sideR;
           sp.grooves.push({ x1: isR ? D - x2 : x1, y1: 0, x2: isR ? D - x1 : x2, y2: sp.h, width: sw, kind: "slot" });
-          sp.note = `${sp.note} · slot ${sw}mm @ ${Math.round(S.slotFromFront)}mm from front${isR ? " (mirrored)" : ""}`;
+          sp.note = `${sp.note} · slot ${sw}mm @ ${Math.round(slotFromFront2)}mm from front${isR ? " (mirrored)" : ""}`;
         });
       }
     }
@@ -591,8 +618,9 @@ function buildStackedBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
         h: bH - 2,
         material: "back",
         thickness: S.backThk,
+        matId: cabinetPly.id,
         grain: false,
-        note: `box ${bi + 1} back`,
+        note: `box ${bi + 1} back · follows ${cabinetPly.name}`,
       });
 
     // rows belonging to this box
@@ -950,10 +978,11 @@ function buildColumn(
   if (rail !== "off") {
     const rh0 = col.railHeight ?? (rail === "suits" ? S.railSuitsH : rail === "dresses" ? S.railDressesH : S.railDouble1);
     const railHeights = rail === "double" ? [rh0, S.railDouble2] : [rh0];
+    const railCenterX = D / 2;
     railHeights.forEach((ry) => {
       const yy = clamp(y0 + ry, 8, sides.L.h - 8);
-      drillLeft(S.shelfHoleCenter, yy, S.bitDiameter, "shelf");
-      drillRight(S.shelfHoleCenter, yy, S.bitDiameter, "shelf");
+      drillLeft(railCenterX, yy, S.bitDiameter, "shelf");
+      drillRight(railCenterX, yy, S.bitDiameter, "shelf");
     });
   }
 
@@ -1163,11 +1192,16 @@ function genCabinetFullDoor(S: Settings, mk: MkFn, cab: Cabinet) {
   if (!fd || fd === "off") return;
   const kick = kickH(cab, S);
   const BH = cab.height - kick;
+  const raw = fd as string;
+  const isGlass = raw.startsWith("glass");
+  const suffix = raw.includes("-") ? raw.split("-")[1] : "";
+  const type: DoorSpec["type"] = suffix === "double" ? "double" : suffix === "left" || suffix === "right" ? "single" : (cab.width > 620 ? "double" : "single");
+  const swing: DoorSpec["swing"] = suffix === "right" ? "right" : "left";
   const door: DoorSpec = {
-    type: cab.width > 620 ? "double" : "single",
+    type,
     style: "overlay",
-    swing: "left",
-    material: fd === "mdf" ? "mdf" : "glass",
+    swing,
+    material: isGlass ? "glass" : "mdf",
     finish: S.mdfFinish,
     mdfThk: S.mdfThk,
     hingeBrand: "Universal 35mm",
@@ -1175,6 +1209,8 @@ function genCabinetFullDoor(S: Settings, mk: MkFn, cab: Cabinet) {
     handlePos: "center",
     full: true,
     hingeCount: cab.fullDoorHinges,
+    hOverride: cab.fullDoorHOverride != null && cab.fullDoorHOverride > 0 ? cab.fullDoorHOverride : undefined,
+    wOverride: cab.fullDoorWOverride != null && cab.fullDoorWOverride > 0 ? cab.fullDoorWOverride : undefined,
   };
   genDoor(S, mk, door, cab.width, BH, " CABINET");
 }
