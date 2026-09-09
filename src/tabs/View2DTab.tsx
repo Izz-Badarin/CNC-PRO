@@ -79,6 +79,7 @@ export function View2DTab({
   setPanels?: (fn: (p: PanelItem[]) => PanelItem[]) => void;
 }) {
   const [tick, setTick] = useState(0);
+  const [mode, setMode] = useState<"front" | "side">("front");
   const [sel, setSel] = useState<string[]>([]); // ordered: [0] = A (mover), [1] = B (target)
   const [sideLine, setSideLine] = useState<"bottom" | "top">("bottom");
   const [preview, setPreview] = useState<{ id: string; x: number; y: number } | null>(null);
@@ -130,6 +131,8 @@ export function View2DTab({
     () => buildFrontSvg(cabinets, dSettings, { override: preview, sel, guides, warn }, panels),
     [cabinets, dSettings, preview, sel, guides, warn, tick],
   );
+  // depth (side) view — read-only true-depth profile of the same arrangement
+  const sideSvg = useMemo(() => buildSideSvg(cabinets, dSettings, panels), [cabinets, dSettings, panels, tick]);
 
   const moveCab = (id: string, x: number, y: number) => {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return; // a NaN commit blanks 3D
@@ -403,32 +406,51 @@ return (
     <div className="card p-5 anim-rise">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h2 className="card-h"><Layers2 size={17} className="text-amber-400" /> 2D Front View — All Cabinets</h2>
+          <h2 className="card-h"><Layers2 size={17} className="text-amber-400" /> 2D View — {mode === "front" ? "Front Elevation" : "Depth (Side) View"} — All Cabinets</h2>
           <p className="hint mt-1">
-            Front elevation with rows, columns, doors, drawers, shelves and toe kicks. <b>Drag</b> any cabinet or <b>raw panel</b> —
-            click one to select, click a second to pair, then <b>Stick</b> A on top of / below / left / right of B
-            to build the real kitchen or wardrobe. Panels now draggable with snap 5mm.
+            {mode === "front" ? (
+              <>
+                Front elevation with rows, columns, doors, drawers, shelves and toe kicks. <b>Drag</b> any cabinet or <b>raw panel</b> —
+                click one to select, click a second to pair, then <b>Stick</b> A on top of / below / left / right of B
+                to build the real kitchen or wardrobe. Panels draggable with snap 5mm.
+              </>
+            ) : (
+              <>
+                True-depth side profile: carcass, veneer back, toe-kick recess, overlay front and cover panels drawn to scale
+                (rear at LEFT · front at RIGHT). Read-only — positions are set in the Front / Plan views.
+              </>
+            )}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          <div className="flex overflow-hidden rounded-lg border border-white/10">
+            <Btn size="sm" variant={mode === "front" ? "ok" : "default"} onClick={() => setMode("front")} title="Front elevation (width × height)">Front</Btn>
+            <Btn size="sm" variant={mode === "side" ? "ok" : "default"} onClick={() => setMode("side")} title="Depth view (depth × height) — side profile">Depth</Btn>
+          </div>
           {anyLayout && <Btn size="sm" variant="danger" onClick={resetAuto}><RotateCcw size={14} /> Reset auto</Btn>}
           {anyLayout && <Btn size="sm" onClick={floorAll}>Floor all</Btn>}
-          <Btn size="sm" onClick={() => downloadRaw("front-elevation.svg", svg, "image/svg+xml")}><FileImage size={14} /> Export SVG</Btn>
+          <Btn size="sm" onClick={() => downloadRaw(mode === "front" ? "front-elevation.svg" : "depth-view.svg", mode === "front" ? svg : sideSvg, "image/svg+xml")}><FileImage size={14} /> Export SVG</Btn>
           <Btn
             size="sm"
             variant="ok"
-            title="Dimensioned front elevation — floor line, per-cabinet W×H, chain dimension, overall + height dims"
-            onClick={() => openPrintWindow(frontElevationHtml(cabinets, panels))}
+            title={mode === "front" ? "Dimensioned front elevation — floor line, per-cabinet W×H, chain dimension, overall + height dims" : "Print the depth (side) view — true depth profiles with dims"}
+            onClick={() =>
+              mode === "front"
+                ? openPrintWindow(frontElevationHtml(cabinets, panels))
+                : openPrintWindow(`<!doctype html><html><head><meta charset="utf-8"><title>Depth view</title><style>body{margin:0;padding:16px;background:#fff}</style></head><body>${sideSvg}<script>window.onload=()=>window.print()</script></body></html>`)
+            }
           >
-            <Ruler size={14} /> Elevation (print)
+            <Ruler size={14} /> {mode === "front" ? "Elevation (print)" : "Depth (print)"}
           </Btn>
-          <Btn
-            size="sm"
-            title="Dimensioned front elevation as DXF (FLOOR / ELEVATION / DIMENSION / LABEL layers, real mm)"
-            onClick={() => downloadRaw("front-elevation-dims.dxf", frontElevationDxf(cabinets, panels), "application/dxf")}
-          >
-            <Ruler size={14} /> Elevation (DXF)
-          </Btn>
+          {mode === "front" && (
+            <Btn
+              size="sm"
+              title="Dimensioned front elevation as DXF (FLOOR / ELEVATION / DIMENSION / LABEL layers, real mm)"
+              onClick={() => downloadRaw("front-elevation-dims.dxf", frontElevationDxf(cabinets, panels), "application/dxf")}
+            >
+              <Ruler size={14} /> Elevation (DXF)
+            </Btn>
+          )}
           <Btn size="sm" onClick={() => setTick((t) => t + 1)}><RotateCw size={14} /> Refresh</Btn>
         </div>
       </div>
@@ -486,7 +508,7 @@ return (
         </div>
       )}
 
-      {sel.length > 0 && (() => {
+      {mode === "front" && sel.length > 0 && (() => {
         const a = posOf(sel[0]);
         const b = sel[1] ? posOf(sel[1]) : null;
         if (!a) return null;
@@ -515,14 +537,14 @@ return (
       })()}
 
       <div
-        className="mt-4 overflow-auto rounded-xl border border-white/[0.07] bg-[#0a0f18] p-3 cursor-move select-none"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
+        className={`mt-4 overflow-auto rounded-xl border border-white/[0.07] bg-[#0a0f18] p-3 ${mode === "front" ? "cursor-move select-none" : "select-none"}`}
+        onPointerDown={mode === "front" ? onPointerDown : undefined}
+        onPointerMove={mode === "front" ? onPointerMove : undefined}
+        onPointerUp={mode === "front" ? endDrag : undefined}
+        onPointerCancel={mode === "front" ? endDrag : undefined}
         style={{ touchAction: "none" }}
       >
-        <div key={tick} dangerouslySetInnerHTML={{ __html: svg }} />
+        <div key={`${mode}-${tick}`} dangerouslySetInnerHTML={{ __html: mode === "front" ? svg : sideSvg }} />
       </div>
     </div>
   );
@@ -882,6 +904,143 @@ const aboveBank = col.drawerAlign !== "top";
   return out;
 
 function dim(x1: number, y1: number, x2: number, y2: number, label: string, color: string, o: "h" | "v" = "h") {
+    const mx = (x1 + x2) / 2;
+    const my = (y1 + y2) / 2;
+    let s = `<line x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" stroke="${color}"/>`;
+    if (o === "h") {
+      s += `<line x1="${f(x1)}" y1="${f(y1 - 6)}" x2="${f(x1)}" y2="${f(y1 + 6)}" stroke="${color}"/><line x1="${f(x2)}" y1="${f(y2 - 6)}" x2="${f(x2)}" y2="${f(y2 + 6)}" stroke="${color}"/>`;
+      s += `<text x="${f(mx)}" y="${f(my - 6)}" fill="${color}" font-size="12" text-anchor="middle">${label}</text>`;
+    } else {
+      s += `<line x1="${f(x1 - 6)}" y1="${f(y1)}" x2="${f(x1 + 6)}" y2="${f(y1)}" stroke="${color}"/><line x1="${f(x2 - 6)}" y1="${f(y2)}" x2="${f(x2 + 6)}" y2="${f(y2)}" stroke="${color}"/>`;
+      s += `<text x="${f(mx + 8)}" y="${f(my)}" fill="${color}" font-size="12" transform="rotate(90 ${f(mx + 8)} ${f(my)})">${label}</text>`;
+    }
+    return s;
+  }
+}
+
+/**
+ * DEPTH (side) view — every cabinet drawn in true depth profile.
+ * Horizontal axis = depth (rear at LEFT, front at RIGHT), vertical = height.
+ * Shows: carcass, veneer back, toe-kick recess, overlay front (door/drawer
+ * plane), stacked-box joints and cover panels (L cover = the side you see).
+ * Raw panels are edge-on slabs (thk × h). Read-only — positions come from the
+ * front view / plan view.
+ */
+export function buildSideSvg(cabs: Cabinet[], S: Settings, panels: PanelItem[] = []): string {
+  const pos = layoutCabs(cabs).filter((p) => Number.isFinite(p.cab.depth) && p.cab.depth > 0);
+  const ppos = panelPositions(cabs, panels);
+  const thkOf = (pn: PanelItem) =>
+    (Number.isFinite(pn.thk) && pn.thk > 0 ? pn.thk : pn.material === "mdf" ? S.mdfThk : pn.material === "back" ? S.backThk : S.bodyThk);
+
+  // metrics — horizontal extent = depths (cabinets) + panel thicknesses
+  const W = 1400, H = 720, padL = 110, padR = 130, padT = 96, padB = 110;
+  const minXRaw = Math.min(...pos.map((p) => p.x), ...ppos.map((p) => p.x), 0);
+  const maxXRaw = Math.max(...pos.map((p) => p.x + p.cab.depth), ...ppos.map((p) => p.x + thkOf(p.pn)), 1);
+  const maxHRaw = Math.max(...pos.map((p) => p.y + p.cab.height), ...ppos.map((p) => (p.y ?? 0) + p.pn.h), 1);
+  const minX = Number.isFinite(minXRaw) ? minXRaw : 0;
+  const maxX = Number.isFinite(maxXRaw) ? maxXRaw : 1000;
+  const maxH = Number.isFinite(maxHRaw) ? maxHRaw : 1000;
+  const totalW = Math.max(1, maxX - minX);
+  const sc = Math.min((W - padL - padR) / totalW, (H - padT - padB) / maxH);
+  const base = H - padB;
+  const left = padL + (W - padL - padR - totalW * sc) / 2;
+
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="JetBrains Mono, monospace">`;
+  out += `<defs><pattern id="kickhatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#0d1520"/><rect width="2" height="6" fill="#1b2740"/></pattern></defs>`;
+  out += `<rect width="${W}" height="${H}" fill="#0a0f18"/>`;
+  for (let gy = 70; gy <= H; gy += 50) out += `<line x1="0" y1="${gy}" x2="${W}" y2="${gy}" stroke="#101a2a"/>`;
+  for (let gx = 0; gx <= W; gx += 50) out += `<line x1="${gx}" y1="0" x2="${gx}" y2="${H}" stroke="#101a2a"/>`;
+  out += `<line x1="0" y1="${base}" x2="${W}" y2="${base}" stroke="#3d5878" stroke-width="2"/>`;
+  out += `<text x="${W / 2}" y="26" fill="#9dc0e4" font-size="15" font-weight="700" text-anchor="middle">DEPTH (SIDE) VIEW — rear at LEFT · front at RIGHT · true depth</text>`;
+  out += `<text x="${W / 2}" y="44" fill="#5f7a98" font-size="10" text-anchor="middle">left side viewed · kick recess, veneer back, overlay front and covers shown to scale</text>`;
+
+  pos.forEach((p, ci) => {
+    const cab = p.cab;
+    const kick = hasKick(cab, S) ? S.kickHeight : 0;
+    const D = cab.depth;
+    const Hc = cab.height;
+    const frontThk = cab.hasFronts !== false ? S.mdfThk : 0;
+    const bodyD = Math.max(20, D - frontThk);
+    const x = left + (p.x - minX) * sc;
+    const floor = base - p.y * sc;
+    const top = floor - Hc * sc;
+    const dw = D * sc;
+    const bodyW = bodyD * sc;
+
+    // silhouette (carcass) — amber outline like the front view
+    out += `<rect x="${f(x)}" y="${f(top)}" width="${f(dw)}" height="${f(Hc * sc)}" fill="#14202f" stroke="#f5b33c" stroke-width="1.6"/>`;
+    // veneer back at the rear
+    if (cab.hasBack !== false)
+      out += `<rect x="${f(x)}" y="${f(top)}" width="${f(S.backThk * sc)}" height="${f((Hc - kick) * sc)}" fill="#0c141f" stroke="#3d5878" stroke-width="0.7"/>`;
+    // overlay front plane (door / drawer faces)
+    if (frontThk > 0) {
+      out += `<rect x="${f(x + bodyW)}" y="${f(top)}" width="${f(frontThk * sc)}" height="${f((Hc - kick) * sc)}" fill="#22364e" stroke="#7ea3cc" stroke-width="1"/>`;
+      const full = cab.fullDoor && cab.fullDoor !== "off";
+      out += `<text x="${f(x + dw + 6)}" y="${f(top + (Hc - kick) * sc * 0.4)}" fill="#9dc0e4" font-size="7.5" transform="rotate(-90 ${f(x + dw + 6)} ${f(top + (Hc - kick) * sc * 0.4)})" text-anchor="middle">${full ? (String(cab.fullDoor).startsWith("glass") ? "GLASS" : "FULL DOOR") : "FRONTS"}</text>`;
+    }
+    // toe kick recess: board face kickDepth behind the carcass front
+    if (kick > 0) {
+      const kbW = Math.max(0, bodyW - (S.kickDepth + frontThk) * sc);
+      out += `<rect x="${f(x)}" y="${f(floor - kick * sc)}" width="${f(kbW)}" height="${f(kick * sc)}" fill="url(#kickhatch)" stroke="#2c3c55"/>`;
+      out += `<rect x="${f(x + kbW)}" y="${f(floor - kick * sc)}" width="${f(frontThk * sc)}" height="${f(kick * sc)}" fill="none" stroke="#5f7a98" stroke-width="0.7" stroke-dasharray="3 3"/>`;
+    }
+    // stacked boxes: joint line
+    if (stackOn(cab)) {
+      let cum = kick;
+      stackedHeights(cab).forEach((bh, bi) => {
+        cum += bh;
+        if (bi < stackedHeights(cab).length - 1) {
+          const jy = floor - cum * sc;
+          out += `<line x1="${f(x)}" y1="${f(jy)}" x2="${f(x + dw)}" y2="${f(jy)}" stroke="#3d5878" stroke-width="1" stroke-dasharray="8 4"/>`;
+        }
+      });
+    }
+
+    // cover panels
+    (cab.covers ?? []).forEach((cv) => {
+      const cvThk = Number.isFinite(cv.thk) && cv.thk > 0 ? cv.thk : cv.mat === "mdf" ? S.mdfThk : S.bodyThk;
+      const fill = cv.mat === "mdf" ? (cv.finish === "oak" ? "#6b4a2c" : "#3a4f6a") : "#5a4a36";
+      const stroke = cv.mat === "mdf" ? (cv.finish === "oak" ? "#a97b48" : "#6b8bb0") : "#8a7a5a";
+      if (cv.side === "L") {
+        // the side we are looking at — the cover IS the silhouette
+        out += `<rect x="${f(x)}" y="${f(top)}" width="${f(dw)}" height="${f(Hc * sc)}" fill="${fill}" opacity="0.28"/>`;
+        out += `<rect x="${f(x - cvThk * sc)}" y="${f(floor - Math.min(cv.h, Hc) * sc)}" width="${f(Math.max(0.8, cvThk * sc))}" height="${f(Math.min(cv.h, Hc) * sc)}" fill="${fill}" stroke="${stroke}"/>`;
+      } else if (cv.side === "R") {
+        out += `<rect x="${f(x)}" y="${f(top)}" width="${f(dw)}" height="${f(Hc * sc)}" fill="none" stroke="${stroke}" stroke-width="1" stroke-dasharray="6 4"/>`;
+      } else if (cv.side === "T") {
+        out += `<rect x="${f(x)}" y="${f(top - cvThk * sc)}" width="${f(dw)}" height="${f(cvThk * sc)}" fill="${fill}" stroke="${stroke}"/>`;
+        out += `<text x="${f(x + dw / 2)}" y="${f(top - cvThk * sc - 5)}" fill="${stroke}" font-size="7.5" text-anchor="middle">COVER TOP ${Math.round(cv.w)}×${Math.round(cv.h)}</text>`;
+      } else {
+        const by = floor + kick * sc;
+        out += `<rect x="${f(x)}" y="${f(by)}" width="${f(dw)}" height="${f(cvThk * sc)}" fill="${fill}" stroke="${stroke}"/>`;
+        out += `<text x="${f(x + dw / 2)}" y="${f(by + cvThk * sc + 11)}" fill="${stroke}" font-size="7.5" text-anchor="middle">COVER BOTTOM ${Math.round(cv.w)}×${Math.round(cv.h)}</text>`;
+        out += `<line x1="${f(x)}" y1="${f(by + cvThk * sc)}" x2="${f(x + dw)}" y2="${f(by + cvThk * sc)}" stroke="#3d5878" stroke-width="1" stroke-dasharray="4 3"/>`;
+      }
+    });
+
+    // labels + dims
+    out += `<text x="${f(x + dw / 2)}" y="${f(top - 26)}" fill="#f5b33c" font-size="13" font-weight="700" text-anchor="middle">${esc(cab.name)}${cab.qty > 1 ? ` ×${cab.qty}` : ""}</text>`;
+    out += `<text x="${f(x + dw / 2)}" y="${f(top - 10)}" fill="#6d7f96" font-size="10" text-anchor="middle">D ${Math.round(D)} × H ${Math.round(Hc)} · W ${Math.round(cab.width)}</text>`;
+    out += dim(x, floor + 34, x + dw, floor + 34, `${Math.round(D)}`, "#f5b33c");
+    if (ci === pos.length - 1) out += dim(x + 26, floor, x + 26, top, `${Math.round(Hc)}`, "#7dd3fc", "v");
+  });
+
+  // raw panels — edge-on slabs (thk × h), dashed cyan
+  ppos.forEach(({ pn, x, y }) => {
+    const t = thkOf(pn);
+    const px = left + (x - minX) * sc;
+    const py = base - ((y ?? 0) + pn.h) * sc;
+    const pw = Math.max(1.2, t * sc);
+    const fill = pn.material === "mdf" ? (pn.finish === "oak" ? "#4a3620" : "#2c3f58") : pn.material === "back" ? "#33402f" : "#5a4a36";
+    out += `<rect x="${f(px)}" y="${f(py)}" width="${f(pw)}" height="${f(pn.h * sc)}" rx="1" fill="${fill}" stroke="#22d3ee" stroke-width="1.4" stroke-dasharray="5 3"/>`;
+    out += `<text x="${f(px + pw / 2)}" y="${f(py - 8)}" fill="#22d3ee" font-size="10" font-weight="700" text-anchor="middle">${esc(pn.name)}</text>`;
+    out += `<text x="${f(px + pw / 2)}" y="${f(py + pn.h * sc / 2 + 4)}" fill="#bfe8f7" font-size="9" transform="rotate(-90 ${f(px + pw / 2)} ${f(py + pn.h * sc / 2 + 4)})" text-anchor="middle">${t} × ${Math.round(pn.h)}</text>`;
+  });
+
+  out += "</svg>";
+  return out;
+
+  function dim(x1: number, y1: number, x2: number, y2: number, label: string, color: string, o: "h" | "v" = "h") {
     const mx = (x1 + x2) / 2;
     const my = (y1 + y2) / 2;
     let s = `<line x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" stroke="${color}"/>`;

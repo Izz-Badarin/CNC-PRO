@@ -117,8 +117,13 @@ const OAK_MDF_PLY: PlywoodMaterial = { id: "mdf-oak", name: "MDF oak", color: "#
 /** wood-textured plywood material, optionally tinted with a plywood material's color/opacity.
  *  A `solid` material skips the grain texture entirely — flat laminated-board look.
  *  `vert` = grain runs VERTICALLY (along the panel height) — used for every H×D
- *  panel (sides, dividers, doors, L/R covers) so the grain follows H, never D. */
-function woodMat(w: number, h: number, ply?: PlywoodMaterial, vert = false): THREE.MeshStandardMaterial {
+ *  panel (sides, dividers, doors, L/R covers) so the grain follows H, never D.
+ *  `span` = horizontal span panel (top / bottom / shelf / section / splitter,
+ *  T-B covers) — the grain MUST follow the panel's length (W), ignoring the
+ *  material's 90° grainRot (which is meant for upright doors/sides). Without
+ *  this, a 90° grain plywood (e.g. oak) rendered its tops/bottoms/shelves with
+ *  the grain running along the DEPTH — reversed. */
+function woodMat(w: number, h: number, ply?: PlywoodMaterial, vert = false, span = false): THREE.MeshStandardMaterial {
   const op = ply ? Math.min(1, Math.max(0.05, ply.opacity)) : woodOpacity;
   if (ply?.solid) {
     return new THREE.MeshStandardMaterial({
@@ -133,8 +138,9 @@ function woodMat(w: number, h: number, ply?: PlywoodMaterial, vert = false): THR
   const t = getWoodTexture().clone();
   t.needsUpdate = true;
   t.repeat.set(Math.max(0.5, w / 900), Math.max(0.5, h / 900));
-  // per-material grain direction (0° = horizontal, 90° = vertical)
-  if (ply?.grainRot === 90 || vert) {
+  // per-material grain direction (0° = horizontal, 90° = vertical) — span panels
+  // stay horizontal no matter what the material's 90° setting says
+  if (vert || (!span && ply?.grainRot === 90)) {
     t.center.set(0.5, 0.5);
     t.rotation = Math.PI / 2;
   }
@@ -336,9 +342,9 @@ function buildCover3D(cab: Cabinet, S: Settings, cv: CoverPanel, grp: THREE.Grou
   const vert = cv.side === "L" || cv.side === "R";
   const mat3 =
     mat === "plywood"
-      ? woodMat(vert ? cv.h : cv.w, vert ? cv.w : cv.h, ply, vert)
+      ? woodMat(vert ? cv.h : cv.w, vert ? cv.w : cv.h, ply, vert, !vert)
       : finish === "oak"
-        ? woodMat(vert ? cv.h : cv.w, vert ? cv.w : cv.h, ply, vert)
+        ? woodMat(vert ? cv.h : cv.w, vert ? cv.w : cv.h, ply, vert, !vert)
         : new THREE.MeshStandardMaterial({ color: S.colorMdf, roughness: 0.55, metalness: 0.02 });
   let mesh: THREE.Mesh;
   if (cv.side === "L") {
@@ -437,7 +443,7 @@ function buildWing3D(
     }
   }
 
-  const bottom = box(w - 2 * T, T, d, woodMat(w, d, ply), "carcass");
+  const bottom = box(w - 2 * T, T, d, woodMat(w, d, ply, false, true), "carcass");
   bottom.position.set(w / 2, T / 2, d / 2);
   wg.add(bottom);
   const top = bottom.clone();
@@ -473,7 +479,7 @@ function buildWing3D(
     const lays = columnLayout(cab, r, S);
     // row section (horizontal divider) — same size as top/bottom, always present
     if (rowIdx++ > 0) {
-      const sec = box(w - 2 * T, T, d, woodMat(w, d, ply), "carcass");
+      const sec = box(w - 2 * T, T, d, woodMat(w, d, ply, false, true), "carcass");
       sec.position.set(w / 2, y0 - T / 2, d / 2);
       wg.add(sec);
     }
@@ -529,7 +535,7 @@ function buildColumn3D(
     nested.forEach((sub, si) => {
       const subH = (sub.h / total) * rowH;
       if (si > 0) {
-        const hd = box(clearW, T, d, woodMat(clearW, d, ply), "carcass");
+        const hd = box(clearW, T, d, woodMat(clearW, d, ply, false, true), "carcass");
         hd.position.set(faceCx, sy, d / 2);
         wg.add(hd);
       }
@@ -567,7 +573,7 @@ function buildColumn3D(
       for (let k = 0; k < shelvesAbove; k++) {
         const sy2 = shY + positions[k];
         const sd = d - S.shelfFrontSetback - 6;
-        const sh = box(clearW - 6, T, sd, woodMat(clearW, d, ply), "shelf");
+        const sh = box(clearW - 6, T, sd, woodMat(clearW, d, ply, false, true), "shelf");
         sh.position.set(faceCx, sy2, sd / 2 + 2);
         wg.add(sh);
       }
@@ -575,7 +581,7 @@ function buildColumn3D(
     // splitter panel at the bank edge — always drawn when requested
     if (dz > 0 && shH > 20 && (col.shelves > 0 || col.splitter)) {
       const splitY = aboveBank ? y0 + bank.y + bank.h : y0 + bank.y;
-      const sp = box(clearW, T, d, woodMat(clearW, d, ply), "carcass");
+      const sp = box(clearW, T, d, woodMat(clearW, d, ply, false, true), "carcass");
       sp.position.set(faceCx, splitY, d / 2);
       wg.add(sp);
     }
@@ -625,7 +631,7 @@ function buildColumn3D(
           const shelfY = firstY + (count > 1 ? (above * k) / count : 0);
           if (shelfY >= rowH - 10) continue;
           const sd = d - S.shelfFrontSetback - 6;
-          const sh = box(clearW - 6, T, sd, woodMat(clearW, d, ply), "shelf");
+          const sh = box(clearW - 6, T, sd, woodMat(clearW, d, ply, false, true), "shelf");
           sh.position.set(faceCx, y0 + shelfY, sd / 2 + 2);
           wg.add(sh);
         }
@@ -641,7 +647,7 @@ function buildColumn3D(
       subs.forEach((sub, si) => {
         const baseY = y0 + si * subH;
         if (si > 0) {
-          const sd2 = box(clearW, T, d, woodMat(clearW, d, ply), "carcass");
+          const sd2 = box(clearW, T, d, woodMat(clearW, d, ply, false, true), "carcass");
           sd2.position.set(faceCx, baseY, d / 2);
           wg.add(sd2);
         }
@@ -649,7 +655,7 @@ function buildColumn3D(
           for (let k = 0; k < sub.shelves; k++) {
             const sy2 = baseY + (subH * (k + 1)) / (sub.shelves + 1);
             const sd3 = d - S.shelfFrontSetback - 6;
-            const sh = box(clearW - 6, T, sd3, woodMat(clearW, d, ply), "shelf");
+            const sh = box(clearW - 6, T, sd3, woodMat(clearW, d, ply, false, true), "shelf");
             sh.position.set(faceCx, sy2, sd3 / 2 + 2);
             wg.add(sh);
           }
@@ -956,7 +962,7 @@ function buildCorner3D(cab: Cabinet, S: Settings, grp: THREE.Group, doors: DoorA
   const plate = (y: number, th: number, tag: Tag, inset = 0) => {
     const sh = inset ? insetPoly(inset) : pts;
     const geo = new THREE.ExtrudeGeometry(new THREE.Shape(sh.map(([x, z]) => new THREE.Vector2(x, -z))), { depth: th, bevelEnabled: false });
-    const m = new THREE.Mesh(geo, woodMat(W, D, ply));
+    const m = new THREE.Mesh(geo, woodMat(W, D, ply, false, true));
     m.rotation.x = -Math.PI / 2;
     m.position.y = y + th;
     m.userData.tag = tag;
@@ -987,7 +993,7 @@ function buildCorner3D(cab: Cabinet, S: Settings, grp: THREE.Group, doors: DoorA
       const sy = kick + (r.h * (k + 1)) / (col.shelves + 1);
       const sh = new THREE.Mesh(
         new THREE.ExtrudeGeometry(new THREE.Shape(insetPoly(T + 4).map(([x, z]) => new THREE.Vector2(x, -z))), { depth: T, bevelEnabled: false }),
-        woodMat(W - 2 * T, D - 2 * T, ply),
+        woodMat(W - 2 * T, D - 2 * T, ply, false, true),
       );
       sh.rotation.x = -Math.PI / 2;
       sh.position.y = sy + T;

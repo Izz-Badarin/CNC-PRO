@@ -2,7 +2,7 @@ import { modelBounds } from "../src/three/bounds";
 import { layout3DCabs } from "../src/lib/layout3d";
 import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, doorHingeCount, makeCabinet } from "../src/lib/defaults";
 import { buildDxf, buildDxfForSheet } from "../src/lib/dxf";
-import { layoutCabs, overlapBoxes, panelPositions } from "../src/tabs/View2DTab";
+import { buildSideSvg, layoutCabs, overlapBoxes, panelPositions } from "../src/tabs/View2DTab";
 import { bomReportHtml, frontElevationHtml, frontElevationDxf, frontElevationSvg, projectJson, readProjectFile } from "../src/lib/export";
 import { explodedReportHtml } from "../src/lib/explodedReport";
 import * as THREE from "three";
@@ -690,6 +690,16 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   check("3D fit stays stable after label scaling and layer toggles", before.equals(modelBounds(root)));
   check("3D bounds include placement", Math.abs(before.min.x - 2) < 1e-9);
   check("empty 3D bounds remain empty", modelBounds(new THREE.Group()).isEmpty());
+}
+
+/* 21b — depth (side) view builds with true depth + height labels */
+{
+  const c = makeCabinet("base", 600, 720, 560, "SideTest");
+  const svg = buildSideSvg([c], S);
+  check("side view is an svg", svg.startsWith("<svg") && svg.includes("DEPTH (SIDE) VIEW"));
+  check("side view shows depth + height", svg.includes("D 560 × H 720") && svg.includes(">560<"));
+  const withPanels = buildSideSvg([c], S, [{ id: "p1", name: "Oak", side: "L", w: 1200, h: 600, thk: 0, material: "mdf", finish: "oak" } as any]);
+  check("side view includes raw panels", withPanels.includes("Oak") && withPanels.includes("19 × 600"));
 }
 
 /* 22 — saved project round-trip must keep raw panels (Save .json → reopen) */
