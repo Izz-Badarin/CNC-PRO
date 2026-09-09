@@ -373,7 +373,7 @@ export default function App() {
         {tab === "drill" && <DrillTab cabinets={cabinets} settings={settings} />}
 
         {tab === "dxf" && <DxfTab cabinets={cabinets} settings={settings} grain={grain} panels={panels} />}
-        {tab === "bom" && <BomTab cabinets={cabinets} settings={settings} panels={panels} grain={grain} />}
+        {tab === "bom" && <BomTab cabinets={cabinets} settings={settings} panels={panels} grain={grain} project={project} customers={customers} />}
         {tab === "settings" && <SettingsTab settings={settings} setSettings={setSettingsState} />}
       </main>
 
