@@ -16,8 +16,8 @@ import {
   UserPlus,
   X,
 } from "lucide-react";
-import type { Cabinet, CabinetType, Customer, ProjectInfo, ProjectStatus, Settings } from "../types";
-import { DEFAULT_DIMS, duplicateCabinet, makeCabinet, nextCopyName, PROJECT_TYPES, sameConfig, TYPE_META, uid, type LibraryItem } from "../lib/defaults";
+import type { Cabinet, CabinetType, Customer, PanelItem, ProjectInfo, ProjectStatus, Settings } from "../types";
+import { DEFAULT_DIMS, DEFAULT_PLY_ID, duplicateCabinet, makeCabinet, nextCopyName, plyMaterialsOf, PROJECT_TYPES, sameConfig, TYPE_META, uid, type LibraryItem } from "../lib/defaults";
 import { generateCabinetParts, validateCabinet } from "../lib/model";
 import { Btn, Chip, Empty, Field, Num, Stat } from "../components/ui";
 import { PackDialog } from "../components/PackDialog";
@@ -66,6 +66,8 @@ export function ProjectTab({
   onEdit,
   library,
   setLibrary,
+  panels = [],
+  setPanels,
 }: {
   cabinets: Cabinet[];
   settings: Settings;
@@ -77,6 +79,9 @@ export function ProjectTab({
   onEdit: (id: string) => void;
   library: LibraryItem[];
   setLibrary: (fn: (l: LibraryItem[]) => LibraryItem[]) => void;
+  /** raw panels (project-level cut parts) — editor ships in Phase 8 */
+  panels?: PanelItem[];
+  setPanels?: (fn: (p: PanelItem[]) => PanelItem[]) => void;
 }) {
   const [name, setName] = useState("");
   const [type, setType] = useState<CabinetType>("custom");
@@ -219,6 +224,44 @@ export function ProjectTab({
           </div>
         </div>
 
+        {/* ---- raw panels (project-level cut parts — full editor in Phase 8) ---- */}
+        <div className="card p-4">
+          <div className="flex items-center justify-between">
+            <span className="card-h text-[14px]"><Layers size={15} className="text-amber-400" /> Panels</span>
+            <Btn
+              size="sm"
+              onClick={() =>
+                setPanels?.((ps) => [
+                  ...ps,
+                  { id: uid(), name: `Panel-${String(ps.length + 1).padStart(2, "0")}`, w: 400, h: 300, thk: 0, material: "mdf", finish: "oak", grain: true, layout: null },
+                ])
+              }
+              title="Add a raw panel (not inside any cabinet) — appears in cut list, nesting, DXF and BOM"
+            >
+              <Plus size={12} /> Add panel
+            </Btn>
+          </div>
+          {panels.length === 0 ? (
+            <p className="hint mt-2">
+              Raw panels are standalone cut parts (an oak MDF panel, a plyboard piece…) — no cabinet needed.
+              They flow into the cut list, nesting, DXF and BOM, and show as labeled rectangles in the
+              Front / Plan views (floating in 3D).
+            </p>
+          ) : (
+            <div className="mt-2 space-y-2">
+              {panels.map((p) => (
+                <PanelEditor
+                  key={p.id}
+                  p={p}
+                  S={settings}
+                  onChange={(patch) => setPanels?.((ps) => ps.map((x) => (x.id === p.id ? { ...x, ...patch } : x)))}
+                  onDelete={() => setPanels?.((ps) => ps.filter((x) => x.id !== p.id))}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* ---- library (collapsible) ---- */}
         <div className="card p-4">
           <button className="flex w-full items-center justify-between" onClick={() => setShowLibrary((v) => !v)}>
@@ -229,7 +272,12 @@ export function ProjectTab({
             </span>
           </button>
           {showLibrary && (
-            <div className="mt-3 space-y-1.5 max-h-[300px] overflow-y-auto pr-1">
+            <div className="mt-3 max-h-[320px] overflow-y-auto pr-1">
+              <p className="hint mb-2">
+                Cabinet templates — <b>“Save as template”</b> in the Edit tab stores any cabinet here; the <b>+</b> button adds a copy
+                to this project (identical configs merge into one line).
+              </p>
+              <div className="space-y-1.5">
               {library.map((it) => (
                 <div key={it.id} className="group flex items-center gap-2 rounded-lg border border-white/[0.06] bg-ink-900/60 px-2.5 py-2 hover:border-amber-400/30 transition-colors">
                   <div className="min-w-0 flex-1">
@@ -243,7 +291,12 @@ export function ProjectTab({
                     </div>
                   </div>
                   {it.builtin && <Chip>preset</Chip>}
-                  <Btn size="sm" variant="ok" title="Insert" onClick={() => addCabinet(duplicateCabinet(it.cabinet, it.cabinet.name))}>
+                  <Btn
+                    size="sm"
+                    variant="ok"
+                    title="Add from template — insert a copy of this template into the project"
+                    onClick={() => addCabinet(duplicateCabinet(it.cabinet, it.cabinet.name))}
+                  >
                     <Plus size={12} />
                   </Btn>
                   {!it.builtin && (
@@ -251,6 +304,7 @@ export function ProjectTab({
                   )}
                 </div>
               ))}
+              </div>
             </div>
           )}
         </div>
@@ -316,7 +370,10 @@ export function ProjectTab({
       {/* ============ right: cabinet list ============ */}
       <div className="card p-5">
         <div className="flex items-center justify-between flex-wrap gap-3">
-          <h2 className="card-h"><Boxes size={17} className="text-amber-400" /> Cabinets</h2>
+          <h2 className="card-h">
+            <Boxes size={17} className="text-amber-400" /> Cabinets
+            {panels.length > 0 && <Chip tone="cyan" className="ml-2">{panels.length} panel{panels.length > 1 ? "s" : ""}</Chip>}
+          </h2>
           <div className="flex gap-2">
             <Btn size="sm" onClick={() => {
               const out: { cab: string; level: string; msg: string }[] = [];
@@ -426,5 +483,105 @@ export function ProjectTab({
       </div>
     </div>
     </>
+  );
+}
+
+/** full raw-panel editor (Phase 8) — name, size, thk (0=auto), material,
+ *  plywood pick / MDF finish, grain lock, front-view position (auto or x/y) */
+function PanelEditor({
+  p,
+  S,
+  onChange,
+  onDelete,
+}: {
+  p: PanelItem;
+  S: Settings;
+  onChange: (patch: Partial<PanelItem>) => void;
+  onDelete: () => void;
+}) {
+  const plys = plyMaterialsOf(S);
+  const autoThk = p.material === "plywood" ? S.bodyThk : p.material === "back" ? S.backThk : S.mdfThk;
+  return (
+    <div className="rounded-lg border border-white/[0.06] bg-ink-900/60 px-2.5 py-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <input
+          className="inp !w-[150px] !py-1 text-[12px]"
+          value={p.name}
+          onChange={(e) => onChange({ name: e.target.value })}
+          title="Panel name"
+        />
+        <span className="text-[10.5px] text-ink-500">W</span>
+        <Num className="!w-[74px] !py-1 !px-2" min={10} value={p.w} onChange={(v) => onChange({ w: Math.max(10, Math.round(v)) })} />
+        <span className="text-[10.5px] text-ink-500">H</span>
+        <Num className="!w-[74px] !py-1 !px-2" min={10} value={p.h} onChange={(v) => onChange({ h: Math.max(10, Math.round(v)) })} />
+        <span className="text-[10.5px] text-ink-500">thk</span>
+        <Num className="!w-[64px] !py-1 !px-2" min={0} value={p.thk ?? 0} onChange={(v) => onChange({ thk: Math.max(0, Math.round(v)) })} />
+        <span className="text-[10.5px] text-ink-500">{p.thk > 0 ? "mm" : `auto (${autoThk}mm)`}</span>
+        <select
+          className="inp !w-[104px] !py-1 text-[11px]"
+          value={p.material}
+          onChange={(e) => {
+            const material = e.target.value as PanelItem["material"];
+            onChange({
+              material,
+              matId: material === "plywood" ? (p.matId ?? null) : undefined,
+              finish: material === "mdf" ? (p.finish ?? "white") : undefined,
+            });
+          }}
+        >
+          <option value="plywood">Plywood</option>
+          <option value="mdf">MDF</option>
+          <option value="back">Veneer back</option>
+        </select>
+        {p.material === "plywood" && (
+          <select
+            className="inp !w-[160px] !py-1 text-[11px]"
+            value={p.matId ?? DEFAULT_PLY_ID}
+            onChange={(e) => onChange({ matId: e.target.value === DEFAULT_PLY_ID ? null : e.target.value })}
+          >
+            {plys.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+        )}
+        {p.material === "mdf" && (
+          <select className="inp !w-[92px] !py-1 text-[11px]" value={p.finish ?? "white"} onChange={(e) => onChange({ finish: e.target.value as "white" | "oak" })}>
+            <option value="white">White</option>
+            <option value="oak">Oak</option>
+          </select>
+        )}
+        <label className="flex items-center gap-1.5 cursor-pointer text-[11px] text-ink-300" title="Grain lock — no rotation during nesting">
+          <input type="checkbox" className="chk !h-3 !w-3" checked={p.grain ?? false} onChange={(e) => onChange({ grain: e.target.checked })} />
+          grain
+        </label>
+        <Btn size="sm" variant="danger" className="ml-auto" onClick={onDelete}>
+          <Trash2 size={11} />
+        </Btn>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap mt-1.5 pl-1">
+        <span className="text-[10px] text-ink-500">Front-view position:</span>
+        <label className="flex items-center gap-1 cursor-pointer text-[10.5px] text-ink-400">
+          <input
+            type="checkbox"
+            className="chk !h-3 !w-3"
+            checked={!p.layout}
+            onChange={(e) => onChange({ layout: e.target.checked ? null : { x: 0, y: 0 } })}
+          />
+          auto (after cabinets)
+        </label>
+        {p.layout && (
+          <>
+            <span className="text-[10px] text-ink-500">x</span>
+            <Num className="!w-[64px] !py-0.5 !px-1.5" value={p.layout.x} onChange={(v) => onChange({ layout: { ...p.layout!, x: Math.round(v) } })} />
+            <span className="text-[10px] text-ink-500">y</span>
+            <Num className="!w-[64px] !py-0.5 !px-1.5" value={p.layout.y} onChange={(v) => onChange({ layout: { ...p.layout!, y: Math.max(0, Math.round(v)) } })} />
+            <span className="text-[10px] text-ink-500">mm</span>
+          </>
+        )}
+        <span className="text-[10px] text-ink-500">· position is display only — cut list / nesting / DXF are unaffected</span>
+      </div>
+    </div>
   );
 }

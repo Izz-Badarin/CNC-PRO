@@ -1,47 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, FileImage, Layers2, RotateCcw, RotateCw } from "lucide-react";
-import type { Cabinet, Settings } from "../types";
-import { columnHasDrawers, columnLayout, drawerBank, hasKick, stackOn, stackedHeights } from "../lib/model";
+import { AlertTriangle, FileImage, Layers2, RotateCcw, RotateCw, Ruler } from "lucide-react";
+import type { Cabinet, PanelItem, Settings } from "../types";
+import { columnHasDrawers, columnLayout, drawerBank, hasKick, railShelfYs, stackOn, stackedHeights } from "../lib/model";
 import { Btn, Empty } from "../components/ui";
-import { downloadRaw } from "../lib/export";
+import { downloadRaw, frontElevationDxf, frontElevationHtml, openPrintWindow } from "../lib/export";
+import { layoutCabs, panelPositions, type CabPos } from "../lib/layout2d";
 import { useDebounced } from "../lib/useDebounced";
 
-/* ================= layout math (shared by the renderer AND the drag hit-testing) ================= */
-
-export interface CabPos {
-  cab: Cabinet;
-  x: number; // mm along the wall (left edge)
-  y: number; // mm lift above the floor (cabinet floor line, incl. its kick)
-}
+/* layout math (shared by the renderer, drag hit-testing AND the dimensioned
+   elevation export) — pure functions live in lib/layout2d, re-exported here
+   for existing importers and the geometry tests */
+export { layoutCabs, panelPositions, type CabPos };
 
 type DragGuides = { vx?: number; vy?: number; label?: string };
-
-/**
- * Assign every cabinet a position. If ANY cabinet has a manual `layout`, all
- * cabinets get a spot: manual layouts win, the rest auto-flow in a ground row
- * after the rightmost placed cabinet. Otherwise the whole set auto-flows one
- * side-by-side row (the historical behavior).
- */
-export function layoutCabs(cabs: Cabinet[]): CabPos[] {
-  const anyLayout = cabs.some((c) => c.layout);
-  if (!anyLayout) {
-    let x = 0;
-    return cabs.map((cab) => {
-      const p: CabPos = { cab, x, y: 0 };
-      x += cab.width + 4;
-      return p;
-    });
-  }
-  const out: CabPos[] = [];
-  cabs.filter((c) => c.layout).forEach((c) => out.push({ cab: c, x: c.layout!.x, y: c.layout!.y }));
-  const minX = out.length ? Math.min(...out.map((p) => p.x)) : 0;
-  let cursor = out.length ? Math.max(...out.map((p) => p.x + p.cab.width)) + 4 : 0;
-  cabs.filter((c) => !c.layout).forEach((cab) => {
-    out.push({ cab, x: Math.max(cursor, minX), y: 0 });
-    cursor += cab.width + 4;
-  });
-  return out;
-}
 
 interface ViewMetrics {
   W: number;
@@ -52,12 +23,12 @@ interface ViewMetrics {
   minX: number; // leftmost mm
 }
 
-function viewMetrics(pos: CabPos[]): ViewMetrics {
+function viewMetrics(pos: CabPos[], extra?: { maxX?: number; maxH?: number }): ViewMetrics {
   const padL = 110, padB = 110, padT = 70, W = 1400, H = 720;
   const minX = Math.min(...pos.map((p) => p.x), 0);
-  const maxX = Math.max(...pos.map((p) => p.x + p.cab.width), 1);
+  const maxX = Math.max(...pos.map((p) => p.x + p.cab.width), extra?.maxX ?? 0, 1);
   const totalW = maxX - minX;
-  const maxH = Math.max(...pos.map((p) => p.cab.height), 1);
+  const maxH = Math.max(...pos.map((p) => p.cab.height), extra?.maxH ?? 0, 1);
   const sc = Math.min((W - padL - 60) / Math.max(totalW, 1), (H - padT - padB) / maxH);
   const base = H - padB;
   const left = padL + (W - padL - 60 - totalW * sc) / 2;
@@ -92,10 +63,12 @@ export function View2DTab({
   cabinets,
   settings,
   setCabinets,
+  panels = [],
 }: {
   cabinets: Cabinet[];
   settings: Settings;
   setCabinets: (fn: (c: Cabinet[]) => Cabinet[]) => void;
+  panels?: PanelItem[];
 }) {
   const [tick, setTick] = useState(0);
   const [sel, setSel] = useState<string[]>([]); // ordered: [0] = A (mover), [1] = B (target)
@@ -120,7 +93,7 @@ export function View2DTab({
   const overlaps = useMemo(() => overlapPairs(curPos), [curPos]);
   const warn = useMemo(() => overlaps.flatMap((o) => [o.a, o.b]), [overlaps]);
   const svg = useMemo(
-    () => buildFrontSvg(cabinets, dSettings, { override: preview, sel, guides, warn }),
+    () => buildFrontSvg(cabinets, dSettings, { override: preview, sel, guides, warn }, panels),
     [cabinets, dSettings, preview, sel, guides, warn, tick],
   );
 
@@ -136,10 +109,10 @@ export function View2DTab({
   const floorAll = () =>
     setCabinets((prev) => prev.map((c) => (c.layout ? { ...c, layout: { ...c.layout, y: 0 } } : c)));
 
-  if (cabinets.length === 0)
+  if (cabinets.length === 0 && panels.length === 0)
     return (
       <div className="card p-4 anim-rise">
-        <Empty title="No cabinets" sub="Add cabinets to see the front elevation drawing." icon={<Layers2 size={26} />} />
+        <Empty title="No cabinets" sub="Add cabinets (or raw panels) to see the front elevation drawing." icon={<Layers2 size={26} />} />
       </div>
     );
 
@@ -355,6 +328,21 @@ return (
           {anyLayout && <Btn size="sm" variant="danger" onClick={resetAuto}><RotateCcw size={14} /> Reset auto</Btn>}
           {anyLayout && <Btn size="sm" onClick={floorAll}>Floor all</Btn>}
           <Btn size="sm" onClick={() => downloadRaw("front-elevation.svg", svg, "image/svg+xml")}><FileImage size={14} /> Export SVG</Btn>
+          <Btn
+            size="sm"
+            variant="ok"
+            title="Dimensioned front elevation — floor line, per-cabinet W×H, chain dimension, overall + height dims"
+            onClick={() => openPrintWindow(frontElevationHtml(cabinets, panels))}
+          >
+            <Ruler size={14} /> Elevation (print)
+          </Btn>
+          <Btn
+            size="sm"
+            title="Dimensioned front elevation as DXF (FLOOR / ELEVATION / DIMENSION / LABEL layers, real mm)"
+            onClick={() => downloadRaw("front-elevation-dims.dxf", frontElevationDxf(cabinets, panels), "application/dxf")}
+          >
+            <Ruler size={14} /> Elevation (DXF)
+          </Btn>
           <Btn size="sm" onClick={() => setTick((t) => t + 1)}><RotateCw size={14} /> Refresh</Btn>
         </div>
       </div>
@@ -453,11 +441,17 @@ export function overlapPairs(pos: CabPos[]) {
   return out;
 }
 
-export function buildFrontSvg(cabs: Cabinet[], S: Settings, opts?: SvgOpts): string {
+export function buildFrontSvg(cabs: Cabinet[], S: Settings, opts?: SvgOpts, panels: PanelItem[] = []): string {
   const pos = layoutCabs(cabs);
+  // raw project panels — labeled rectangles (manual layout or auto-flow
+  // after the rightmost cabinet); they extend the drawing bounds
+  const ppos = panelPositions(cabs, panels);
+  const extra = ppos.length
+    ? { maxX: Math.max(...ppos.map((p) => p.x + p.pn.w)), maxH: Math.max(...ppos.map((p) => (p.y ?? 0) + p.pn.h)) }
+    : undefined;
   // metrics are computed WITHOUT the drag override so the canvas never
   // rescales mid-drag; the override is applied only for drawing
-  const { W, H, sc, base, left, minX } = viewMetrics(pos);
+  const { W, H, sc, base, left, minX } = viewMetrics(pos, extra);
   const draw = opts?.override
     ? pos.map((p) => (p.cab.id === opts.override!.id ? { ...p, x: opts.override!.x, y: opts.override!.y } : p))
     : pos;
@@ -531,7 +525,6 @@ export function buildFrontSvg(cabs: Cabinet[], S: Settings, opts?: SvgOpts): str
               out += `<text x="${f(colX + colW / 2)}" y="${f(yy + fh / 2 + 4)}" fill="#9dc0e4" font-size="9" text-anchor="middle">${d.frontMdf ? "INNER + MDF" : "INNER"}</text>`;
             } else if (d.frontMdf) {
               out += `<rect x="${f(colX + g)}" y="${f(yy + g)}" width="${f(colW - 2 * g)}" height="${f(fh - 2 * g)}" fill="#1d3049" stroke="#5f8fb9" rx="2"/>`;
-              out += `<circle cx="${f(colX + colW / 2)}" cy="${f(yy + 14)}" r="2.2" fill="#c9ccd4"/>`;
             } else {
               out += `<rect x="${f(colX + inset)}" y="${f(yy + g)}" width="${f(Math.max(4, colW - 2 * inset))}" height="${f(fh - 2 * g)}" fill="#12202f" stroke="#456b93" stroke-dasharray="4 3" rx="2"/>`;
               out += `<text x="${f(colX + colW / 2)}" y="${f(yy + fh / 2 + 4)}" fill="#7fa0c4" font-size="8.5" text-anchor="middle">BOX</text>`;
@@ -630,13 +623,12 @@ const aboveBank = col.drawerAlign !== "top";
           else if (rail === "dresses") drawRail(rh, "DRESSES");
           else if (rail === "double") { drawRail(rh, "SUITS"); drawRail(S.railDouble2, "DRESSES"); }
 
-          // shelf directly above the rail
+          // shelves above the rail (auto = max count with gap ≥ railShelfMinGap, evenly spaced; manual = Y positions)
           if (col.railShelf) {
-            const shelfY = rh + (S.railShelfGap || 60);
-            if (shelfY < row.h - 10) {
+            railShelfYs(col, S, row.h).forEach((shelfY) => {
               const sy = floor - (kick + y0 + shelfY) * sc;
               out += `<line x1="${f(colX + 3)}" y1="${f(sy)}" x2="${f(colX + colW - 3)}" y2="${f(sy)}" stroke="#3f6c99" stroke-dasharray="3 4"/>`;
-            }
+            });
           }
         }
       });
@@ -691,7 +683,9 @@ const aboveBank = col.drawerAlign !== "top";
     (cab.covers ?? []).forEach((cv) => {
       if (cv.side !== "L" && cv.side !== "R") return;
       const label = cv.side === "L" ? "L" : "R";
-      const pthk = Math.max(2, cv.thk * sc);
+      // thk 0 = auto (ply 16.5 / MDF 19) — same rule as the model
+      const cvThk = cv.thk > 0 ? cv.thk : cv.mat === "plywood" ? S.bodyThk : S.mdfThk;
+      const pthk = Math.max(2, cvThk * sc);
       const finish = cv.finish ?? "white";
       const mdf = cv.mat !== "plywood";
       const fill = mdf ? (finish === "oak" ? "#6b4a2c" : "#3a4f6a") : "#5a4a36";
@@ -720,6 +714,19 @@ const aboveBank = col.drawerAlign !== "top";
       if (gu.label) out += `<text x="${f(W - 34)}" y="${f(gy - 6)}" fill="#22d3ee" font-size="11" text-anchor="end">${gu.label}</text>`;
     }
   }
+  // raw project panels — cyan dashed labeled rectangles on the floor row
+  ppos.forEach(({ pn, x, y }) => {
+    const pw = pn.w * sc;
+    const ph = pn.h * sc;
+    const px = left + (x - minX) * sc;
+    const py = base - (y + pn.h) * sc;
+    const thk = pn.thk > 0 ? pn.thk : pn.material === "plywood" ? S.bodyThk : pn.material === "back" ? S.backThk : S.mdfThk;
+    const fill =
+      pn.material === "mdf" ? (pn.finish === "oak" ? "#4a3620" : "#2c3f58") : pn.material === "back" ? "#33402f" : "#5a4a36";
+    out += `<rect x="${f(px)}" y="${f(py)}" width="${f(pw)}" height="${f(ph)}" rx="2" fill="${fill}" stroke="#22d3ee" stroke-width="1.5" stroke-dasharray="7 4"/>`;
+    out += `<text x="${f(px + pw / 2)}" y="${f(py - 8)}" fill="#22d3ee" font-size="11" font-weight="700" text-anchor="middle">${esc(pn.name)}</text>`;
+    out += `<text x="${f(px + pw / 2)}" y="${f(py + ph / 2 + 4)}" fill="#bfe8f7" font-size="10" text-anchor="middle">${Math.round(pn.w)}×${Math.round(pn.h)}×${thk}</text>`;
+  });
   out += "</svg>";
   return out;
 

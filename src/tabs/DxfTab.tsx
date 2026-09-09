@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import { FileDown, FolderDown, Layers, PackageOpen } from "lucide-react";
-import type { Cabinet, PartMaterial, Settings } from "../types";
+import type { Cabinet, PanelItem, PartMaterial, Settings } from "../types";
 import { buildDxf, dxfFileDefs } from "../lib/dxf";
+import { DEFAULT_PLY_ID } from "../lib/defaults";
 import { allParts, type GrainOverrides } from "../lib/model";
 import { nestParts } from "../lib/nesting";
 import { downloadRaw } from "../lib/export";
@@ -11,23 +12,38 @@ const TONE: Record<PartMaterial, "ok" | "warn" | "default"> = {
   plywood: "ok",
   mdf: "warn",
   back: "default",
+  glass: "default",
 };
 
-export function DxfTab({ cabinets, settings, grain = {} }: { cabinets: Cabinet[]; settings: Settings; grain?: GrainOverrides }) {
+export function DxfTab({
+  cabinets,
+  settings,
+  grain = {},
+  panels = [],
+}: {
+  cabinets: Cabinet[];
+  settings: Settings;
+  grain?: GrainOverrides;
+  panels?: PanelItem[];
+}) {
   const defs = useMemo(() => dxfFileDefs(settings), [settings]);
-  const groups = useMemo(() => nestParts(allParts(cabinets, settings, grain), settings), [cabinets, settings, grain]);
+  const groups = useMemo(() => nestParts(allParts(cabinets, settings, grain, panels), settings), [cabinets, settings, grain, panels]);
   const [preview, setPreview] = useState<string>("");
 
-  if (cabinets.length === 0) {
+  if (cabinets.length === 0 && panels.length === 0) {
     return (
       <div className="card p-4 anim-rise">
-        <Empty title="Nothing to export" sub="Add cabinets, then export nested DXF sheets ready for your CAM pipeline." icon={<PackageOpen size={26} />} />
+        <Empty title="Nothing to export" sub="Add cabinets (or raw panels), then export nested DXF sheets ready for your CAM pipeline." icon={<PackageOpen size={26} />} />
       </div>
     );
   }
 
   const matStats = (mat: PartMaterial, matId?: string | null) => {
-    const gs = groups.filter((g) => g.material === mat && (mat !== "plywood" || g.matId === (matId ?? null)));
+    // rule J — the default "def" plywood group also belongs to the default
+    // plywood file (same match as buildDxf)
+    const gs = groups.filter(
+      (g) => g.material === mat && (mat !== "plywood" || g.matId === (matId ?? null) || (g.matId === null && matId === DEFAULT_PLY_ID))
+    );
     const sheets = gs.reduce((a, g) => a + g.sheets.length, 0);
     const parts = gs.reduce((a, g) => a + g.partCount, 0);
     const util = gs.length ? gs.reduce((a, g) => a + g.avgUtil, 0) / gs.length : 0;
@@ -38,14 +54,14 @@ export function DxfTab({ cabinets, settings, grain = {} }: { cabinets: Cabinet[]
   const doExport = (mat: PartMaterial | null, labels: boolean, matId?: string | null) => {
     if (mat === null) {
       defs.forEach((d) =>
-        downloadRaw(`${d.filename}${labels ? "" : "_nolabel"}.dxf`, buildDxf(cabinets, settings, d.material, labels, grain, d.matId)),
+        downloadRaw(`${d.filename}${labels ? "" : "_nolabel"}.dxf`, buildDxf(cabinets, settings, d.material, labels, grain, d.matId, panels)),
       );
       setPreview(`Exported ${defs.length} DXF files (${defs.map((d) => d.title).join(", ")})${labels ? "" : " without labels"}.`);
       return;
     }
     const def = defs.find((d) => d.material === mat && d.matId === (matId ?? null))!;
     const name = `${def.filename}${labels ? "" : "_nolabel"}.dxf`;
-    downloadRaw(name, buildDxf(cabinets, settings, mat, labels, grain, def.matId));
+    downloadRaw(name, buildDxf(cabinets, settings, mat, labels, grain, def.matId, panels));
     const st = matStats(mat);
     setPreview(
       `Exported ${name} — ${st.sheets} sheet(s), ${st.parts} parts, avg util ${(st.util * 100).toFixed(1)}%${labels ? "" : " (no labels)"}.`,
@@ -57,7 +73,8 @@ export function DxfTab({ cabinets, settings, grain = {} }: { cabinets: Cabinet[]
       <h2 className="card-h"><FolderDown size={17} className="text-amber-400" /> DXF Export — Flat Layout ({defs.length} files by material)</h2>
       <div className="mt-3 rounded-xl border border-cyan-400/20 bg-cyan-400/[0.05] px-4 py-3 text-[12.5px] text-cyan-200/90">
         <span className="font-semibold">Layers:</span> CUT · CLAMP_HOLES · SHELF_HOLES · SLIDE_HOLES · DRAWER_GROOVE · SHEET · LABEL.
-        Units mm, AutoCAD R12-compatible (LINE / CIRCLE / TEXT). Sheets tiled N columns × 5 rows. 10mm clamping holes are added in free areas (≥300mm apart).
+        Units mm, AutoCAD R12-compatible (LINE / CIRCLE / TEXT). Sheets tiled N columns × 5 rows. 10mm clamping holes are added in free areas
+        (≥300mm apart). Glass doors appear as <b>GLASS DOOR REF</b> label text (not drilled) — Ø35 cup circles stay out of the DXF.
       </div>
 
       <div className="flex gap-2 mt-5 flex-wrap">

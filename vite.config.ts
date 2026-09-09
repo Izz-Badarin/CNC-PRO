@@ -13,6 +13,12 @@ export default defineConfig({
   // Relative base so the single-file build can be opened directly from the
   // filesystem (file://) with no web server required.
   base: "./",
+  server: {
+    // allow the sandboxed live-preview host (any *.e2b.app proxy) to reach the dev server
+    host: true,
+    port: 5173,
+    allowedHosts: true,
+  },
   plugins: [react(), tailwindcss(), viteSingleFile()],
   resolve: {
     alias: {

@@ -15,7 +15,7 @@ import {
   Settings2,
   Zap,
 } from "lucide-react";
-import type { Cabinet, ColumnSpec, Customer, ProjectInfo, Settings } from "./types";
+import type { Cabinet, ColumnSpec, Customer, PanelItem, ProjectInfo, Settings } from "./types";
 import {
   DEFAULT_SETTINGS,
   PROJECT_TYPES,
@@ -122,13 +122,10 @@ export default function App() {
   const [customers, setCustomersState] = useState<Customer[]>(persisted.customers);
   const [library, setLibraryState] = useState<LibraryItem[]>(persisted.library);
   const [grain, setGrainState] = useState<GrainOverrides>(persisted.grain);
-  const [panels, setPanels] = useState<PanelItem[]>(persisted.project.panels ?? []);
-  const setPanelsFn = useCallback((fn: (p: PanelItem[]) => PanelItem[]) => {
-    setPanels((prev) => {
-      const next = fn(prev);
-      setProjectState((p) => ({ ...p, panels: next }));
-      return next;
-    });
+  /** raw panels — SINGLE SOURCE OF TRUTH is `project.panels` (persisted with the project) */
+  const panels = project.panels ?? [];
+  const setPanels = useCallback((fn: (p: PanelItem[]) => PanelItem[]) => {
+    setProjectState((p) => ({ ...p, panels: fn(p.panels ?? []) }));
   }, []);
   const [tab, setTab] = useState<TabId>("project");
   const [selectedId, setSelectedId] = useState<string | null>(persisted.cabinets[0]?.id ?? null);
@@ -164,7 +161,7 @@ export default function App() {
       try {
         localStorage.setItem(
           LS_KEY,
-          JSON.stringify({ settings, cabinets, project, customers, panels: project.panels, library: library.filter((l) => !l.builtin), grain }),
+          JSON.stringify({ settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain }),
         );
       } catch {
         /* ignore */
@@ -188,8 +185,12 @@ export default function App() {
 
   const saveProject = (asNew = false) => {
     let name = (lastFileRef.current ?? project.name ?? "cabinet-project").replace(/[^\w\- ]+/g, "").trim() || "cabinet-project";
-    if (asNew) {
-      const input = window.prompt("Save project as…", project.name || "cabinet-project");
+    // rule K — quick Save is instant once the project has a real name (or a
+    // file was already saved this session); an "Untitled Project" asks for a
+    // name first. Save As ALWAYS asks.
+    const untitled = !project.name || project.name.trim() === "Untitled Project";
+    if (asNew || (untitled && !lastFileRef.current)) {
+      const input = window.prompt(asNew ? "Save project as…" : "Name this project…", project.name && !untitled ? project.name : "cabinet-project");
       if (input === null) return; // cancelled
       const trimmed = input.trim();
       if (trimmed) {
@@ -287,7 +288,7 @@ export default function App() {
                 <span><b className="text-amber-300">{stats.parts}</b> parts</span>
                 <span><b className="text-cyan-300">{stats.holes}</b> holes</span>
               </div>
-              <Btn size="sm" variant="ok" onClick={() => saveProject(false)} title="Save to the same file name again">
+              <Btn size="sm" variant="ok" onClick={() => saveProject(false)} title="Instant save to the same file — asks for a name first only while the project is still “Untitled Project”">
                 <Save size={14} /> {saveFlash ? "Saved!" : "Save"}
               </Btn>
               <Btn size="sm" onClick={() => saveProject(true)} title="Save as a new file (asks for a name)">
@@ -337,6 +338,8 @@ export default function App() {
             setCustomers={setCustomers}
             library={library}
             setLibrary={setLibraryState}
+            panels={panels}
+            setPanels={setPanels}
             onEdit={(id) => {
               setSelectedId(id);
               setTab("edit");
@@ -359,17 +362,18 @@ export default function App() {
               setCabinetsState((cs) => [...cs, dup]);
               setSelectedId(dup.id);
             }}
+            setLibrary={setLibraryState}
           />
         )}
-        {tab === "view3d" && <View3DTab cabinets={cabinets} settings={settings} setSettings={setSettingsState} />}
-        {tab === "view2d" && <View2DTab cabinets={cabinets} settings={settings} setCabinets={setCabinets} />}
-        {tab === "plan" && <PlanTab cabinets={cabinets} settings={settings} setCabinets={setCabinets} />}
-        {tab === "cut" && <CutListTab cabinets={cabinets} settings={settings} grain={grain} setGrain={setGrainState} />}
-        {tab === "nest" && <NestingTab cabinets={cabinets} settings={settings} grain={grain} setSettings={setSettingsState} />}
+        {tab === "view3d" && <View3DTab cabinets={cabinets} settings={settings} setSettings={setSettingsState} panels={panels} />}
+        {tab === "view2d" && <View2DTab cabinets={cabinets} settings={settings} setCabinets={setCabinets} panels={panels} />}
+        {tab === "plan" && <PlanTab cabinets={cabinets} settings={settings} setCabinets={setCabinets} panels={panels} />}
+        {tab === "cut" && <CutListTab cabinets={cabinets} settings={settings} grain={grain} setGrain={setGrainState} panels={panels} />}
+        {tab === "nest" && <NestingTab cabinets={cabinets} settings={settings} grain={grain} setSettings={setSettingsState} panels={panels} />}
         {tab === "drill" && <DrillTab cabinets={cabinets} settings={settings} />}
 
-        {tab === "dxf" && <DxfTab cabinets={cabinets} settings={settings} grain={grain} />}
-        {tab === "bom" && <BomTab cabinets={cabinets} settings={settings} />}
+        {tab === "dxf" && <DxfTab cabinets={cabinets} settings={settings} grain={grain} panels={panels} />}
+        {tab === "bom" && <BomTab cabinets={cabinets} settings={settings} panels={panels} grain={grain} />}
         {tab === "settings" && <SettingsTab settings={settings} setSettings={setSettingsState} />}
       </main>
 

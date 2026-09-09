@@ -1,6 +1,6 @@
-import type { Cabinet, PartMaterial, Settings } from "../types";
+import type { Cabinet, PanelItem, PartMaterial, Settings } from "../types";
 import { nestParts, placedOutline, rotPoint, type Sheet } from "./nesting";
-import { allParts, type GrainOverrides } from "./model";
+import { allParts, glassDoorRefs, type GrainOverrides } from "./model";
 import { DEFAULT_PLY_ID, plyMaterialsOf } from "./defaults";
 
 const LAYERS: [string, number][] = [
@@ -154,7 +154,7 @@ export interface DxfSheetRef {
 }
 
 /** Build a DXF from an explicit list of nested sheets (used for "export selected boards"). */
-export function buildDxfFromSheets(sel: DxfSheetRef[], S: Settings, labels: boolean): string {
+export function buildDxfFromSheets(sel: DxfSheetRef[], S: Settings, labels: boolean, extra = ""): string {
   let out = header();
   out += "0\nSECTION\n2\nENTITIES\n";
   const mx = S.nestFrom.includes("right");
@@ -209,17 +209,33 @@ export function buildDxfFromSheets(sel: DxfSheetRef[], S: Settings, labels: bool
     out += offsetEntities(body, xOffset, yOffset);
     out += offsetEntities(clamp, xOffset, yOffset);
   });
+  out += extra; // e.g. glass-door reference notes (rule H)
   out += "0\nENDSEC\n0\nEOF\n";
   return out;
 }
 
-export function buildDxf(cabs: Cabinet[], S: Settings, material: PartMaterial | null, labels: boolean, ov: GrainOverrides = {}, matId?: string | null): string {
-  const groups = nestParts(allParts(cabs, S, ov), S).filter(
-    (g) => (!material || g.material === material) && (material !== "plywood" || g.matId === (matId ?? null)),
+/** plywood group match: the group's matId equals the requested one — OR the
+ *  group is the DEFAULT ("def") group and the requested file is the default
+ *  plywood (rule J — default-matId parts, e.g. raw panels, must not be dropped
+ *  from the default plywood DXF). */
+const plyGroupMatch = (g: { matId: string | null }, matId: string | null | undefined) =>
+  g.matId === (matId ?? null) || (g.matId === null && matId === DEFAULT_PLY_ID);
+
+export function buildDxf(cabs: Cabinet[], S: Settings, material: PartMaterial | null, labels: boolean, ov: GrainOverrides = {}, matId?: string | null, panels: PanelItem[] = []): string {
+  const groups = nestParts(allParts(cabs, S, ov, panels), S).filter(
+    (g) => (!material || g.material === material) && (material !== "plywood" || plyGroupMatch(g, matId)),
   );
   const sel: DxfSheetRef[] = [];
   groups.forEach((g) => g.sheets.forEach((sheet) => sel.push({ key: g.key, sheet })));
-  return buildDxfFromSheets(sel, S, labels);
+  // rule H — glass-door reference notes: TEXT on the LABEL layer only (no
+  // geometry — the O35 cups stay excluded from the DXF), offset left of the
+  // sheet grid so they never overlap a sheet.
+  let extra = "";
+  glassDoorRefs(cabs, S).forEach((g, i) => {
+    const cups = g.holes.map((h) => `(${r(h.x)},${r(h.y)})`).join(" ");
+    extra += text("LABEL", -3200, 400 - i * 50, 35, `GLASS DOOR REF ${r(g.w)}x${r(g.h)} - ${g.holes.length} x O${S.hingeCupDiameter} cups @ ${cups} - NOT DRILLED (drill the glass at these positions)`);
+  });
+  return buildDxfFromSheets(sel, S, labels, extra);
 }
 
 /**

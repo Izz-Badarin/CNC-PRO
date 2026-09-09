@@ -1,9 +1,9 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { CircleStop, FileSpreadsheet, Package, PackageOpen, Play, TriangleAlert } from "lucide-react";
-import type { Cabinet, Settings } from "../types";
+import type { Cabinet, PanelItem, Settings } from "../types";
 import { MATERIAL_LABEL } from "../types";
 import { allPartsMerged, type GrainOverrides } from "../lib/model";
-import { plyMaterialById } from "../lib/defaults";
+import { DEFAULT_PLY_ID, plyMaterialById } from "../lib/defaults";
 import { runNesting, partColor, placedOutline, rotPoint, type NestGroup, type NestRunProgress, type PlacedPart, type Sheet } from "../lib/nesting";
 import NestWorker from "../lib/nesting.worker?worker&inline";
 import { buildDxf, buildDxfFromSheets, dxfFileDefs } from "../lib/dxf";
@@ -15,23 +15,62 @@ export function NestingTab({
   settings,
   grain = {},
   setSettings,
+  panels = [],
 }: {
   cabinets: Cabinet[];
   settings: Settings;
   grain?: GrainOverrides;
   setSettings?: (s: Settings) => void;
+  panels?: PanelItem[];
 }) {
-  const parts = useMemo(() => allPartsMerged(cabinets, settings, grain), [cabinets, settings, grain]);
+  const parts = useMemo(() => allPartsMerged(cabinets, settings, grain, panels), [cabinets, settings, grain, panels]);
   const partsSig = useMemo(() => parts.map((p) => `${p.name}:${p.w}x${p.h}:${p.qty}`).join("|"), [parts]);
   const [prog, setProg] = useState<NestRunProgress>({ running: false, phase: "Idle", done: 0, total: 0, groups: [] });
   const stopRef = useRef(false);
   const workerRef = useRef<Worker | null>(null);
   const timer = useRef<number | null>(null);
 
+  /* ---- rule N — nest ONE MATERIAL at a time (faster budget, cleaner DXF) ---- */
+  const groupKeyOf = (p: (typeof parts)[number]) => `${p.material}@${p.matId ?? "def"}`;
+  const matGroups = useMemo(() => {
+    const m = new Map<string, { material: (typeof parts)[number]["material"]; matId: string | null; count: number }>();
+    parts.forEach((p) => {
+      const k = groupKeyOf(p);
+      const e = m.get(k) ?? { material: p.material, matId: p.matId ?? null, count: 0 };
+      e.count += p.qty;
+      m.set(k, e);
+    });
+    return [...m.entries()];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parts]);
+  const [matSel, setMatSel] = useState("all");
+  const matSelEff = matSel !== "all" && !matGroups.some(([k]) => k === matSel) ? "all" : matSel;
+  const nestedParts = matSelEff === "all" ? parts : parts.filter((p) => groupKeyOf(p) === matSelEff);
+  const groupLabel = (k: string) => {
+    const [mat, mid] = k.split("@");
+    if (mat === "plywood") {
+      const m = plyMaterialById(settings, mid === "def" ? null : mid);
+      return m ? m.name : "Plywood";
+    }
+    return MATERIAL_LABEL[mat as keyof typeof MATERIAL_LABEL];
+  };
+
   const exportDxf = (labels: boolean) => {
     let n = 0;
-    dxfFileDefs(settings).forEach((d) => {
-      const dxf = buildDxf(cabinets, settings, d.material, labels, grain, d.matId);
+    const defs = dxfFileDefs(settings);
+    // one-material mode → export ONLY that material's file (the "def" group
+    // belongs to the default plywood file — same rule as buildDxf)
+    const defsToExport =
+      matSelEff === "all"
+        ? defs
+        : defs.filter((d) => {
+            const [mat, mid] = matSelEff.split("@");
+            if (d.material !== mat) return false;
+            if (mat !== "plywood") return true;
+            return d.matId === (mid === "def" ? DEFAULT_PLY_ID : mid);
+          });
+    defsToExport.forEach((d) => {
+      const dxf = buildDxf(cabinets, settings, d.material, labels, grain, d.matId, panels);
       if (dxf.includes("LINE")) {
         downloadRaw(`${d.filename}${labels ? "" : "_nolabel"}.dxf`, dxf);
         n++;
@@ -55,6 +94,7 @@ export function NestingTab({
   const start = (mode: Mode = "none") => {
     stopRef.current = false;
     setProg({ running: true, phase: "Starting…", done: 0, total: 0, groups: [] });
+    const run = (pp: typeof nestedParts) => runNesting(pp, settings, setProg, () => stopRef.current).then(() => finish(mode, stopRef.current));
     // preferred path: Web Worker (UI never freezes — the optimizer runs off-thread)
     try {
       const w = new NestWorker();
@@ -70,26 +110,26 @@ export function NestingTab({
           w.terminate();
           workerRef.current = null;
           // fall back to the in-thread engine
-          void runNesting(parts, settings, setProg, () => stopRef.current).then(() => finish(mode, stopRef.current));
+          void run(nestedParts);
         }
       };
       w.onerror = () => {
         w.terminate();
         workerRef.current = null;
-        void runNesting(parts, settings, setProg, () => stopRef.current).then(() => finish(mode, stopRef.current));
+        void run(nestedParts);
       };
-      w.postMessage({ type: "run", parts, settings });
+      w.postMessage({ type: "run", parts: nestedParts, settings });
       return;
     } catch {
       workerRef.current = null;
     }
     // fallback: in-thread async engine (yields between strategies)
-    void runNesting(parts, settings, setProg, () => stopRef.current).then(() => finish(mode, stopRef.current));
+    void run(nestedParts);
   };
 
-  // auto-run when parts change (debounced)
+  // auto-run when parts (or the selected material) change (debounced)
   useEffect(() => {
-    if (parts.length === 0) return;
+    if (nestedParts.length === 0) return;
     stopRef.current = true;
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => start("none"), 450);
@@ -103,12 +143,12 @@ export function NestingTab({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [partsSig, settings]);
+  }, [partsSig, matSelEff, settings]);
 
-  if (cabinets.length === 0) {
+  if (cabinets.length === 0 && panels.length === 0) {
     return (
       <div className="card p-4 anim-rise">
-        <Empty title="Nothing to nest" sub="Add cabinets, then generate optimized sheet layouts with live progress and offcut detection." icon={<PackageOpen size={26} />} />
+        <Empty title="Nothing to nest" sub="Add cabinets (or raw panels), then generate optimized sheet layouts with live progress and offcut detection." icon={<PackageOpen size={26} />} />
       </div>
     );
   }
@@ -182,11 +222,36 @@ export function NestingTab({
               <Btn size="sm" onClick={() => start("none")}>Optimize only</Btn>
             </>
           )}
-          <Btn size="sm" onClick={() => download("nesting.csv", nestingCsv(cabinets, settings), "text/csv")}>
+          <Btn size="sm" onClick={() => download("nesting.csv", nestingCsv(cabinets, settings, panels), "text/csv")}>
             <FileSpreadsheet size={14} /> Nesting CSV
           </Btn>
         </div>
       </div>
+
+      {/* rule N — nest one material at a time */}
+      {matGroups.length > 1 && (
+        <div className="mt-3 flex items-center gap-2 flex-wrap">
+          <span className="text-[11.5px] text-ink-400">Nest material:</span>
+          <select
+            className="inp !w-[240px] !py-1.5 text-[12px]"
+            value={matSelEff}
+            onChange={(e) => setMatSel(e.target.value)}
+            title="Nest and export ONE material at a time — the optimizer spends its full time budget on a single board size, and DXF export covers only that material"
+          >
+            <option value="all">All materials ({parts.reduce((a, p) => a + p.qty, 0)} parts)</option>
+            {matGroups.map(([k, e]) => (
+              <option key={k} value={k}>
+                {groupLabel(k)} {e.count} parts
+              </option>
+            ))}
+          </select>
+          {matSelEff !== "all" && (
+            <Chip tone="cyan">
+              nesting {nestedParts.reduce((a, p) => a + p.qty, 0)} parts · {groupLabel(matSelEff)}
+            </Chip>
+          )}
+        </div>
+      )}
 
       {/* quick-access toe kick toggle */}
       {setSettings && (

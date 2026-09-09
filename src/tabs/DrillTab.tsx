@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { CornerUpRight, Crosshair, FileSpreadsheet, Move, Plus, Minus, RotateCcw, RotateCw } from "lucide-react";
 import type { Cabinet, HoleKind, Part, Settings } from "../types";
 import { HOLE_COLOR, MATERIAL_LABEL } from "../types";
-import { allParts, drillOps } from "../lib/model";
+import { allParts, drillOps, glassDoorRefs } from "../lib/model";
 import { download, drillingCsv } from "../lib/export";
 import { Btn, Chip, Empty, Stat } from "../components/ui";
 import { useDebounced } from "../lib/useDebounced";
@@ -10,9 +10,19 @@ import { useDebounced } from "../lib/useDebounced";
 export function DrillTab({ cabinets, settings }: { cabinets: Cabinet[]; settings: Settings }) {
   const dCabinets = useDebounced(cabinets, 180);
   const dSettings = useDebounced(settings, 180);
-  const parts = useMemo(() => allParts(dCabinets, dSettings).filter((p) => p.holes.length > 0 || p.grooves.length > 0), [dCabinets, dSettings]);
+  // cut parts with holes/grooves + glass-door REFERENCE entries (rule H —
+  // dashed "not drilled"; never in the CSV)
+  const parts = useMemo(
+    () =>
+      allParts(dCabinets, dSettings)
+        .filter((p) => p.holes.length > 0 || p.grooves.length > 0)
+        .concat(glassDoorRefs(dCabinets, dSettings).filter((p) => p.holes.length > 0)),
+    [dCabinets, dSettings]
+  );
   const ops = useMemo(() => drillOps(dCabinets, dSettings), [dCabinets, dSettings]);
   const [sel, setSel] = useState(0);
+  /** cabinet filter (rule G) — "all" or a single cabinet id */
+  const [cabSel, setCabSel] = useState("all");
   /** selection by part identity — editing cabinets reorders the list but the
    * preview keeps showing the SAME part (index is only a keyboard-nav fallback). */
   const [selKey, setSelKey] = useState<string | null>(null);
@@ -34,10 +44,12 @@ export function DrillTab({ cabinets, settings }: { cabinets: Cabinet[]; settings
 
   const holeOps = ops.filter((o) => o.x >= 0);
   const count = (k: HoleKind) => holeOps.filter((o) => o.type === k).length;
+  // fall back to "all" if the picked cabinet was deleted
+  const cabSelEff = cabSel !== "all" && !dCabinets.some((c) => c.id === cabSel) ? "all" : cabSel;
   const needle = q.trim().toLowerCase();
-  const drilledParts = needle
-    ? parts.filter((p) => `${p.cabName} ${p.name}`.toLowerCase().includes(needle))
-    : parts;
+  const drilledParts = parts.filter(
+    (p) => (cabSelEff === "all" || p.cabId === cabSelEff) && (!needle || `${p.cabName} ${p.name}`.toLowerCase().includes(needle))
+  );
   const idxByKey = drilledParts.findIndex((p) => partKey(p) === selKey);
   const cur: Part | null =
     (idxByKey >= 0 ? drilledParts[idxByKey] : null) ?? drilledParts[Math.min(sel, drilledParts.length - 1)] ?? null;
@@ -70,9 +82,10 @@ export function DrillTab({ cabinets, settings }: { cabinets: Cabinet[]; settings
         <div>
           <h2 className="card-h"><Crosshair size={17} className="text-amber-400" /> Drilling Operations</h2>
           <p className="hint mt-1">
-            Shelf pins Ø{settings.holeDiameter}mm ({settings.shelfHolesPerSide}/side at {settings.shelfHoleCenter}mm offset) · drawer slide
-            patterns on mirrored L/R sides · {settings.grooveWidth}mm drawer grooves · {settings.slotWidth}mm linear slots. Datum
-            dimensions measure every hole from the panel edges — hover a hole for its exact position.
+            Shelf pins Ø{settings.holeDiameter}mm ({settings.shelfHolesPerSide}/side at {settings.shelfHoleCenter}mm offset) · rail-bracket
+            pilots Ø{settings.bitDiameter}mm (2 per rail) · drawer slide patterns on mirrored L/R sides · {settings.grooveWidth}mm drawer
+            grooves · {settings.slotWidth}mm linear slots. Glass doors appear as <b className="text-cyan-300">dashed REFERENCE entries</b>
+            (not drilled). Datum dimensions measure every hole from the panel edges — hover a hole for its exact position.
           </p>
         </div>
         <Btn size="sm" onClick={() => download("drilling.csv", drillingCsv(cabinets, settings), "text/csv")}>
@@ -101,12 +114,25 @@ export function DrillTab({ cabinets, settings }: { cabinets: Cabinet[]; settings
         }}
       >
         <div className="min-w-0">
-          <input
-            className="inp !py-1.5 text-[12px] mb-2"
-            placeholder="Search parts… (cabinet or part name)"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
+          <div className="flex gap-2 mb-2">
+            <select
+              className="inp !w-[190px] !py-1.5 text-[12px]"
+              title="Show drilling for a single cabinet (rule G)"
+              value={cabSelEff}
+              onChange={(e) => setCabSel(e.target.value)}
+            >
+              <option value="all">All cabinets ({dCabinets.length})</option>
+              {dCabinets.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+            <input
+              className="inp !py-1.5 text-[12px] flex-1"
+              placeholder="Search parts… (cabinet or part name)"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+          </div>
           <div className="overflow-x-auto rounded-xl border border-white/[0.07]">
           <table className="tbl w-full min-w-[520px]">
             <thead className="bg-ink-900/80">
@@ -129,8 +155,16 @@ export function DrillTab({ cabinets, settings }: { cabinets: Cabinet[]; settings
                   <td>
                     <span className="text-ink-300">{p.cabName} · </span>
                     {p.name}
+                    {p.reference && (
+                      <span className="ml-1.5 rounded border border-dashed border-cyan-400/50 px-1 text-[9px] font-semibold text-cyan-300 align-middle">
+                        REF
+                      </span>
+                    )}
                   </td>
-                  <td className="text-ink-300">{MATERIAL_LABEL[p.material]} {p.thickness}</td>
+                  <td className="text-ink-300">
+                    {MATERIAL_LABEL[p.material]}
+                    {p.reference ? "" : ` ${p.thickness}`}
+                  </td>
                   <td className="!text-right font-mono">{p.w}×{p.h}</td>
                   <td className="!text-right font-mono text-amber-300">{p.holes.filter((h) => h.kind === "shelf").length || "—"}</td>
                   <td className="!text-right font-mono text-sky-300">{p.holes.filter((h) => h.kind === "slide").length || "—"}</td>
@@ -150,6 +184,13 @@ export function DrillTab({ cabinets, settings }: { cabinets: Cabinet[]; settings
           <div className="text-[11px] text-ink-300 font-mono mb-2">
             {cur ? `${cur.cabName} · ${cur.name} — ${cur.w}×${cur.h}` : "select a part"}
           </div>
+          {cur?.reference && (
+            <div className="mb-2 rounded-md border border-dashed border-cyan-400/40 bg-cyan-400/[0.05] px-2.5 py-1.5 text-[11px] leading-relaxed text-cyan-100/90">
+              <Crosshair size={10} className="mr-1 inline -mt-0.5" />
+              <b>REFERENCE — NOT DRILLED.</b> Glass door hinge-cup positions (dashed). The glass is drilled on the glass line at these exact
+              X/Y values — nothing is drilled in the cabinet here.
+            </div>
+          )}
           {sideHint && (
             <div className="mb-2 rounded-md border border-amber-400/25 bg-amber-400/[0.06] px-2.5 py-1.5 text-[11px] font-semibold text-amber-100">
               {sideHint}
@@ -286,6 +327,7 @@ function VDim({ y1, y2, x, frame, sym }: { y1: number; y2: number; x: number; fr
 }
 
 function PartDrillPreview({ part, dimMode, grid32 }: { part: Part; dimMode: "chain" | "datum"; grid32: boolean }) {
+  const isRef = !!part.reference; // rule H — dashed, "not drilled"
   const [rot, setRot] = useState(0); // viewing rotation: 0 / 90 / 180 / 270 degrees
   const [hover, setHover] = useState<{ X: number; Y: number; kind: string; dia: number } | null>(null);
   const vw = 360;
@@ -546,6 +588,8 @@ function PartDrillPreview({ part, dimMode, grid32 }: { part: Part; dimMode: "cha
               fill="none"
               stroke={HOLE_COLOR[hl.kind]}
               strokeWidth="1.4"
+              strokeDasharray={isRef ? "3 2.5" : undefined}
+              opacity={isRef ? 0.85 : 1}
               onMouseEnter={() => setHover({ X: hl.X, Y: hl.Y, kind: hl.kind, dia: hl.dia })}
               onMouseLeave={() => setHover(null)}
               style={{ cursor: "crosshair" }}
@@ -592,8 +636,9 @@ function PartDrillPreview({ part, dimMode, grid32 }: { part: Part; dimMode: "cha
             <VDim key={`v${i}`} y1={sy(d.a)} y2={sy(d.b)} x={ox - 10 - i * vStep} frame={ox} sym={d.sym} />
           ))}
 
-          <text x={ox + w / 2} y={oy - 7} fill="#7d8ea6" fontSize="10" textAnchor="middle" fontFamily="JetBrains Mono, monospace">
+          <text x={ox + w / 2} y={oy - 7} fill={isRef ? "#7dd3fc" : "#7d8ea6"} fontSize="10" textAnchor="middle" fontFamily="JetBrains Mono, monospace">
             {effW} mm{rot > 0 ? ` · ${rot}°` : ""}
+            {isRef ? " · REFERENCE — NOT DRILLED" : ""}
           </text>
           <text x={ox + w + 18} y={oy + h / 2} fill="#7d8ea6" fontSize="10" fontFamily="JetBrains Mono, monospace" transform={`rotate(90 ${ox + w + 18} ${oy + h / 2})`}>
             {effH} mm

@@ -1,4 +1,4 @@
-import type { Banding, Cabinet, CabinetType, ColumnSpec, DoorSpec, MdfFinish, Part, RowSpec, Settings } from "../types";
+import type { Banding, Cabinet, CabinetType, ColumnSpec, DoorSpec, MdfFinish, PanelItem, Part, RowSpec, Settings } from "../types";
 import {
   DOOR_GAP_BETWEEN_DOUBLE,
   DRAWER_HEIGHT_INCREMENT,
@@ -60,6 +60,11 @@ export const stackTotal = (c: Cabinet): number => stackedHeights(c).reduce((a, h
 
 export const bandStr = (b: Banding) =>
   [b.top && "T", b.bottom && "B", b.left && "L", b.right && "R"].filter(Boolean).join(",") || "—";
+
+/** bend length (mm) — total length of ALL banded edges of a part, i.e. the
+ *  edge-banding tape a single piece needs (cut list column "Bend", rule I) */
+export const bandLengthMm = (p: Part) =>
+  (p.band.top ? p.w : 0) + (p.band.bottom ? p.w : 0) + (p.band.left ? p.h : 0) + (p.band.right ? p.h : 0);
 
 /** stable per-part key used for grain-lock overrides in the cut list */
 export function partId(p: Part): string {
@@ -231,14 +236,15 @@ export function drawerBank(col: ColumnSpec, rowH: number, S: Settings): { y: num
 /* ================= door math ================= */
 
 export function doorDims(faceW: number, rowH: number, door: DoorSpec, S: Settings): { w: number; h: number; count: number } {
+  // rule F — manual height override wins over the section-derived height
+  const hAuto = door.style === "inset" ? rowH - 2 * (S.bodyThk + S.doorGap) : rowH - 2 * S.doorGap;
+  const h = door.hOverride && door.hOverride > 0 ? Math.max(50, door.hOverride) : hAuto;
   if (door.style === "inset") {
     const total = faceW - 2 * (S.bodyThk + S.doorGap);
-    const h = rowH - 2 * (S.bodyThk + S.doorGap);
     if (door.type === "double" || door.type === "sliding") return { w: (total - DOOR_GAP_BETWEEN_DOUBLE) / 2, h, count: 2 };
     return { w: total, h, count: 1 };
   }
   const total = faceW - 2 * S.doorGap;
-  const h = rowH - 2 * S.doorGap;
   if (door.type === "double") return { w: (total - DOOR_GAP_BETWEEN_DOUBLE) / 2, h, count: 2 };
   if (door.type === "sliding") return { w: (total - DOOR_GAP_BETWEEN_DOUBLE) / 2 + 20, h, count: 2 };
   return { w: total, h, count: 1 };
@@ -932,33 +938,52 @@ function buildColumn(
     });
   }
 
-  /* ---- shelves above the hanging rail (real shelf parts + pin holes) ----
-   * #1 sits `railShelfGap` above the rail center; any extra shelves divide the
-   * remaining space above #1 evenly. Grain locked along the width. */
+  /* ---- hanging rail ---- */
   const rail = col.rail ?? "off";
+
+  /* ---- rail bracket pilot holes (rule A) ----
+   * One Ø4 (bitDiameter) pilot per rail end — 2 per rail — at the rail CENTER
+   * height, drilled into the same faces that carry the shelf pins (outer side
+   * panels or the column dividers). They are real drill ops: shown in the
+   * Drilling tab and exported to the DXF SHELF_HOLES layer. A "double" rail
+   * (suits + dresses) gets one pair per rail. */
+  if (rail !== "off") {
+    const rh0 = col.railHeight ?? (rail === "suits" ? S.railSuitsH : rail === "dresses" ? S.railDressesH : S.railDouble1);
+    const railHeights = rail === "double" ? [rh0, S.railDouble2] : [rh0];
+    railHeights.forEach((ry) => {
+      const yy = clamp(y0 + ry, 8, sides.L.h - 8);
+      drillLeft(S.shelfHoleCenter, yy, S.bitDiameter, "shelf");
+      drillRight(S.shelfHoleCenter, yy, S.bitDiameter, "shelf");
+    });
+  }
+
+  /* ---- shelves above the hanging rail (real shelf parts + pin holes) ----
+   * AUTO mode (default): the max shelf count that keeps EVERY gap ≥
+   * Settings.railShelfMinGap (250mm default) is placed evenly in the space
+   * above the rail. MANUAL mode: exact Y positions from the section bottom
+   * via shelfPositions (one per shelf). */
   if (rail !== "off" && col.railShelf) {
-    const rh = (col.railHeight ?? (rail === "suits" ? S.railSuitsH : rail === "dresses" ? S.railDressesH : S.railDouble1));
-    const count = Math.max(1, Math.round(col.railShelfCount ?? 1));
-    const firstY = rh + (S.railShelfGap || 60); // shelf #1 sits railShelfGap above the rail center
-    if (firstY < rowH - 10) {
-      const ys: number[] = [firstY];
-      const above = Math.max(0, rowH - firstY);
-      for (let k = 1; k < count; k++) ys.push(firstY + (above * k) / Math.max(1, count));
+    const ys = railShelfYs(col, S, rowH);
+    if (ys.length > 0) {
+      const mode = col.railShelfMode ?? "auto";
       mk({
         name: `Shelf above rail${tag}`,
         w: lay.w - S.shelfIncrease,
         h: D - S.shelfFrontSetback,
-        qty: count,
+        qty: ys.length,
         material: "plywood",
         thickness: T,
         band: { top: true },
-        note: `above ${rail} rail · #1 at ${Math.round(firstY)}mm + ${count - 1} more above · banding: front`,
+        note:
+          mode === "manual"
+            ? `above ${rail} rail · manual Y: ${ys.map((y) => Math.round(y)).join(", ")}mm · banding: front`
+            : `above ${rail} rail · auto ${ys.length} shelf${ys.length > 1 ? "s" : ""} (gap ≥ ${Math.max(50, S.railShelfMinGap || 250)}mm) · banding: front`,
         grain: true,
       });
       const n = Math.max(1, Math.round(S.shelfHolesPerSide));
-      for (let k = 0; k < count; k++) {
+      for (const y of ys) {
         for (let j = 0; j < n; j++) {
-          const yy = clamp(y0 + ys[k] + (j - (n - 1) / 2) * S.shelfHoleSpacing, S.bodyThk + 4, y0 + rowH - S.bodyThk - 4);
+          const yy = clamp(y0 + y + (j - (n - 1) / 2) * S.shelfHoleSpacing, S.bodyThk + 4, y0 + rowH - S.bodyThk - 4);
           [S.shelfHoleCenter, D - S.shelfHoleCenter].forEach((x) => {
             drillLeft(x, yy, S.holeDiameter, "shelf");
             drillRight(x, yy, S.holeDiameter, "shelf");
@@ -967,6 +992,31 @@ function buildColumn(
       }
     }
   }
+}
+
+/**
+ * Y positions (mm from the SECTION BOTTOM) of the shelves above a hanging rail
+ * (rule D). Shared by the part generator, the 2D front view and the 3D scene
+ * so previews always match the cut list.
+ *  · manual — exact `shelfPositions` (clamped into the space above the rail)
+ *  · auto   — max count with all gaps ≥ Settings.railShelfMinGap, evenly spaced
+ */
+export function railShelfYs(col: ColumnSpec, S: Settings, rowH: number): number[] {
+  const rail = col.rail ?? "off";
+  if (rail === "off" || !col.railShelf) return [];
+  const rh = col.railHeight ?? (rail === "suits" ? S.railSuitsH : rail === "dresses" ? S.railDressesH : S.railDouble1);
+  const space = Math.max(0, rowH - rh);
+  const lo = rh + 10;
+  const hi = Math.max(lo, rowH - 10);
+  if ((col.railShelfMode ?? "auto") === "manual" && (col.shelfPositions?.length ?? 0) > 0) {
+    const count = Math.max(1, Math.round(col.railShelfCount ?? (col.shelfPositions?.length ?? 1)));
+    return (col.shelfPositions ?? []).slice(0, count).map((y) => clamp(y, lo, hi));
+  }
+  const minGap = Math.max(50, S.railShelfMinGap || 250);
+  let n = Math.max(0, Math.floor(space / minGap) - 1);
+  if (n === 0 && space >= 120) n = 1; // small leftover — one middle shelf
+  if (n <= 0) return [];
+  return Array.from({ length: n }, (_, k) => rh + (space * (k + 1)) / (n + 1));
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), Math.max(lo, hi));
@@ -1133,6 +1183,78 @@ function genCabinetFullDoor(S: Settings, mk: MkFn, cab: Cabinet) {
  * Glass / aluminum doors produce NO cut part (purchased hardware), but keep the
  * hinge/handle info and still render in the 2D + 3D views.
  * A door flagged `full` spans the WHOLE carcass height (all rows / boxes). */
+
+/**
+ * Hinge-cup Y positions (mm from the door BOTTOM) for a leaf `dh` mm tall
+ * (rule E): first cup 140mm up, last cup 140mm down, extras evenly in
+ * between. Very short leaves (<300mm) fall back to 25% of the height so the
+ * cups stay inside the door.
+ */
+export function hingeCupYs(dh: number, nHinges: number): number[] {
+  const ys: number[] = [];
+  const cupIn = dh >= 300 ? 140 : Math.max(20, Math.round(dh * 0.25));
+  for (let k = 0; k < nHinges; k++) ys.push(nHinges === 1 ? dh / 2 : cupIn + (k * (dh - 2 * cupIn)) / (nHinges - 1));
+  return ys;
+}
+
+/**
+ * Reference parts for GLASS doors (rule H): glass doors buy in aluminum +
+ * glass (no cut part), but the operator still needs the hinge-cup positions.
+ * One reference part per leaf, flagged `reference: true` — rendered DASHED
+ * ("not drilled") in the Drilling tab and as a text note in the DXF, and
+ * excluded from drilling CSVs.
+ */
+export function glassDoorRefs(cabs: Cabinet[], S: Settings): Part[] {
+  const out: Part[] = [];
+  cabs.forEach((cab) => {
+    const kick = kickH(cab, S);
+    const stacked = stackOn(cab);
+    const heights = stacked ? stackedHeights(cab) : [cab.height];
+    const fullH = heights.reduce((a, h) => a + h, 0) - kick; // full-door span (all boxes)
+    heights.forEach((_bh, bi) => {
+      const rowsForBox = stacked ? cab.rows.filter((r) => (r.box ?? 0) === bi) : cab.rows;
+      rowsForBox.forEach((r) => {
+        const lays = columnLayout(cab, r, S);
+        lays.forEach((lay, ci) => {
+          const col = lay.col;
+          const door = col.door;
+          if (door && door.material === "glass" && (col.rows ?? []).length === 0 && door.type !== "sliding") {
+            const faceW = lays.length === 1 ? cab.width : columnFaceWidth(cab, lay, S);
+            const leafH = door.full ? fullH : r.h;
+            const tag = lays.length > 1 ? ` · ${cab.name} C${ci + 1}` : "";
+            const { w: dw, h: dh, count } = doorDims(faceW, leafH, door, S);
+            const nHinges = Math.min(6, Math.max(1, doorHingeCount(dh))); // glass: never has a handle
+            const cupYs = hingeCupYs(dh, nHinges);
+            const wR = Math.max(5, Math.round(dw * 10) / 10);
+            for (let j = 0; j < count; j++) {
+              const hingedLeft = count === 1 ? door.swing === "left" : j === 0;
+              out.push({
+                cabId: cab.id,
+                cabName: `${cab.name}_${Math.round(cab.width)}x${Math.round(cab.height)}`,
+                name: `Glass door${tag}${count === 2 ? (j === 0 ? " L" : " R") : ""} (reference)`,
+                w: wR,
+                h: Math.max(5, Math.round(dh * 10) / 10),
+                qty: 1,
+                material: "glass",
+                thickness: 0,
+                band: {},
+                holes: cupYs.map((y) => ({ x: hingedLeft ? S.hingeCupEdge : wR - S.hingeCupEdge, y, dia: S.hingeCupDiameter, depth: S.hingeCupDepth, kind: "hinge" as const })),
+                grooves: [],
+                shape: "rect",
+                outline: [],
+                grain: false,
+                note: `REFERENCE — glass door, NOT drilled here · ${nHinges} × Ø${S.hingeCupDiameter} cups · drill the glass at these positions`,
+                reference: true,
+              });
+            }
+          }
+        });
+      });
+    });
+  });
+  return out;
+}
+
 function genDoor(S: Settings, mk: MkFn, door: DoorSpec, faceW: number, rowH: number, tag: string) {
   if (door.material === "glass") return; // aluminum + glass — purchased, nothing to cut
   const { w: dw, h: dh, count } = doorDims(faceW, rowH, door, S);
@@ -1145,10 +1267,8 @@ function genDoor(S: Settings, mk: MkFn, door: DoorSpec, faceW: number, rowH: num
   const finishNote = door.material === "mdf" ? (finish === "oak" ? " · MDF oak · banding: LWLW" : " · MDF white · no banding") : " · banding: LWLW";
   // universal 35mm hinge — cups are bored in the DOOR (never the side panels)
   const nHinges = effectiveHingeCount(door, dh);
-  // hinge Y positions measured from the door BOTTOM: spread between 70mm from
-  // each edge (2 → 70/h−70 · 3 → 70/h/2/h−70 · n → evenly spread in between)
-  const cupYs: number[] = [];
-  for (let k = 0; k < nHinges; k++) cupYs.push(nHinges === 1 ? dh / 2 : 70 + (k * (dh - 140)) / (nHinges - 1));
+  // hinge Y positions from the door bottom (rule E) — see hingeCupYs()
+  const cupYs = hingeCupYs(dh, nHinges);
   // cup X: on the hinged edge of each leaf (L leaf → left edge, R leaf → right edge)
   const cupX = (j: number) => {
     const hingedLeft = count === 1 ? door.swing === "left" : j === 0;
@@ -1172,7 +1292,7 @@ function genDoor(S: Settings, mk: MkFn, door: DoorSpec, faceW: number, rowH: num
       band,
       grain,
       holes,
-      note: `${door.style} · ${matNote}${nHinges ? ` · ${nHinges}× Universal 35mm hinge Ø${S.hingeCupDiameter} cup` : " · sliding track"}${door.hasHandle ? " · handle" : ""}${finishNote}${fullNote}`,
+      note: `${door.style} · ${matNote}${nHinges ? ` · ${nHinges}× Universal 35mm hinge Ø${S.hingeCupDiameter} cup` : " · sliding track"}${finishNote}${fullNote}`,
     });
   }
 }
@@ -1305,15 +1425,64 @@ export function applyGrain(parts: Part[], S: Settings, ov: GrainOverrides = {}):
   });
 }
 
-export function allParts(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}): Part[] {
+/**
+ * Raw project panels (PanelItem — "Add panel" feature): real cut parts that sit
+ * OUTSIDE any cabinet (an oak MDF panel, a plyboard panel, any user rectangle).
+ * They flow through the cut list, nesting, DXF and BOM exactly like cabinet
+ * parts, but have no rows / columns / drawers / doors — just one piece.
+ *
+ * Rules:
+ *  · thickness 0 = auto → plywood: bodyThk (16.5) · MDF: mdfThk (19) · back: backThk (5)
+ *  · MDF banding follows the finish (oak = banded, white = none); plywood is banded
+ *  · grain lock: plywood always; MDF only when oak (or an explicit PanelItem.grain)
+ */
+export function generatePanelParts(panels: PanelItem[], S: Settings): Part[] {
+  const out: Part[] = [];
+  for (const pn of panels ?? []) {
+    if (!pn || !(pn.w > 0) || !(pn.h > 0)) continue;
+    const mat = pn.material ?? "plywood";
+    const autoThk = mat === "mdf" ? S.mdfThk : mat === "back" ? S.backThk : S.bodyThk;
+    const thk = pn.thk > 0 ? Math.round(pn.thk * 10) / 10 : autoThk;
+    const finish: MdfFinish = mat === "mdf" ? (pn.finish ?? S.mdfFinish) : "white";
+    const grain = pn.grain ?? (mat === "plywood" || finish === "oak");
+    out.push({
+      cabId: `panel:${pn.id}`,
+      cabName: "Panel",
+      name: (pn.name || "Panel").trim() || "Panel",
+      w: Math.max(5, Math.round(pn.w * 10) / 10),
+      h: Math.max(5, Math.round(pn.h * 10) / 10),
+      qty: 1,
+      material: mat,
+      thickness: thk,
+      // panels may pick ANY plywood material (matId); undefined = project default →
+      // nesting groups it as "def" (the default-plywood group)
+      matId: mat === "plywood" ? (pn.matId ?? undefined) : undefined,
+      band: mat === "plywood" ? { top: true, bottom: true, left: true, right: true } : mat === "mdf" ? mdfBand(S, finish) : {},
+      holes: [],
+      grooves: [],
+      shape: "rect",
+      outline: [],
+      grain,
+      note:
+        mat === "mdf"
+          ? `raw panel · MDF ${thk}mm · ${finish === "oak" ? "oak · banding: LWLW" : "white · no banding"}`
+          : mat === "back"
+            ? `raw panel · veneer ${thk}mm`
+            : `raw panel · plywood ${thk}mm · banding: LWLW`,
+    });
+  }
+  return out;
+}
+
+export function allParts(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = []): Part[] {
   // panels are top-level project parts (oak MDF panel, plyboard panel, etc.) that sit
   // outside any cabinet — they flow through cut list / nesting / DXF / BOM like cabinet parts.
-  const panelParts = generatePanelParts(S).map(rotatePartOnce);
+  const panelParts = generatePanelParts(panels, S).map(rotatePartOnce);
   const rotated = cabs.flatMap((c) => generateCabinetParts(c, S)).map(rotatePartOnce);
   return applyGrain([...panelParts, ...rotated], S, ov);
 }
-export function allPartsMerged(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}): Part[] {
-  return mergePieces(allParts(cabs, S, ov));
+export function allPartsMerged(cabs: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = []): Part[] {
+  return mergePieces(allParts(cabs, S, ov, panels));
 }
 
 /* ================= drilling ================= */

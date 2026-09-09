@@ -3,7 +3,7 @@ export const LAYERS: { key: string; label: string }[] = [
   { key: "drawer", label: "Drawers" },
   { key: "shelf", label: "Shelves" },
   { key: "back", label: "Backs" },
-  { key: "handle", label: "Handles" },
+  { key: "panel", label: "Panels" },
   { key: "kick", label: "Kick" },
 ];
 

@@ -1,8 +1,8 @@
 import { useMemo } from "react";
 import { Download, FileSpreadsheet, FileText, LayoutList, Printer, Tags, Lock } from "lucide-react";
-import type { Cabinet, Settings } from "../types";
+import type { Cabinet, PanelItem, Settings } from "../types";
 import { MATERIAL_LABEL } from "../types";
-import { allPartsMerged, bandStr, partId, type GrainOverrides } from "../lib/model";
+import { allPartsMerged, bandLengthMm, bandStr, partId, type GrainOverrides } from "../lib/model";
 import { plyMaterialById } from "../lib/defaults";
 import { cutListCsv, cutListHtml, download, labelsHtml, openPrintWindow } from "../lib/export";
 import { partColor } from "../lib/nesting";
@@ -31,6 +31,7 @@ const L: Record<string, string> = {
   width: "Width",
   qty: "Qty",
   banding: "Banding",
+  bend: "Bend (m)",
   shape: "Shape",
   polygon: "polygon",
   rect: "rect",
@@ -43,16 +44,19 @@ export function CutListTab({
   settings,
   grain,
   setGrain,
+  panels = [],
 }: {
   cabinets: Cabinet[];
   settings: Settings;
   grain: GrainOverrides;
   setGrain: (fn: (g: GrainOverrides) => GrainOverrides) => void;
+  panels?: PanelItem[];
 }) {
   // heavy recompute — let typing settle first
   const dCabinets = useDebounced(cabinets, 180);
   const dSettings = useDebounced(settings, 180);
-  const parts = useMemo(() => allPartsMerged(dCabinets, dSettings, grain), [dCabinets, dSettings, grain]);
+  const dPanels = useDebounced(panels, 180);
+  const parts = useMemo(() => allPartsMerged(dCabinets, dSettings, grain, dPanels), [dCabinets, dSettings, grain, dPanels]);
 
   const byMat = useMemo(() => {
     const m = new Map<string, typeof parts>();
@@ -65,7 +69,7 @@ export function CutListTab({
     return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [parts]);
 
-  if (cabinets.length === 0) {
+  if (cabinets.length === 0 && panels.length === 0) {
     return (
       <div className="card p-4 anim-rise">
         <Empty title={t(lang, "noParts")} sub={t(lang, "addCabinetsFirst")} icon={<LayoutList size={26} />} />
@@ -93,16 +97,16 @@ export function CutListTab({
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <Btn size="sm" onClick={() => download("cut-list.csv", cutListCsv(cabinets, settings, grain), "text/csv")}>
+          <Btn size="sm" onClick={() => download("cut-list.csv", cutListCsv(cabinets, settings, grain, panels), "text/csv")}>
             <FileSpreadsheet size={14} /> {t(lang, "csv")}
           </Btn>
-          <Btn size="sm" variant="ok" onClick={() => openPrintWindow(cutListHtml(cabinets, settings, grain))}>
+          <Btn size="sm" variant="ok" onClick={() => openPrintWindow(cutListHtml(cabinets, settings, grain, panels))}>
             <FileText size={14} /> {t(lang, "print")}
           </Btn>
-          <Btn size="sm" variant="warn" onClick={() => openPrintWindow(cutListHtml(cabinets, settings, grain))}>
+          <Btn size="sm" variant="warn" onClick={() => openPrintWindow(cutListHtml(cabinets, settings, grain, panels))}>
             <Printer size={14} /> {t(lang, "pdf")}
           </Btn>
-          <Btn size="sm" onClick={() => openPrintWindow(labelsHtml(cabinets, settings, grain))}>
+          <Btn size="sm" onClick={() => openPrintWindow(labelsHtml(cabinets, settings, grain, panels))}>
             <Tags size={14} /> {t(lang, "labels")}
           </Btn>
         </div>
@@ -134,6 +138,15 @@ export function CutListTab({
         const ply = mat === "plywood" ? plyMaterialById(settings, mid === "def" ? null : mid) : null;
         const matLabel = ply ? ply.name : MATERIAL_LABEL[mat as keyof typeof MATERIAL_LABEL];
         const area = list.reduce((a, p) => a + (p.w * p.h * p.qty) / 1e6, 0);
+        // rule R — one checkbox locks/unlocks the grain of the WHOLE group
+        const groupLocked = list.every((p) => p.grain);
+        const groupSome = list.some((p) => p.grain);
+        const setGroupGrain = (v: boolean) =>
+          setGrain((g) => {
+            const ng = { ...g };
+            list.forEach((p) => (ng[partId(p)] = v));
+            return ng;
+          });
         return (
           <div key={key} className="mt-6">
             <div className="flex items-center gap-2 mb-2">
@@ -152,11 +165,22 @@ export function CutListTab({
                     <th>#</th>
                     <th>{t(lang, "cabinets")}</th>
                     <th>{t(lang, "part")}</th>
-                    <th className="!text-center" title={t(lang, "grainHint")}>{t(lang, "grain")}</th>
+                    <th className="!text-center" title={`${t(lang, "grainHint")} (group — toggles every row below)`}>
+                      <input
+                        type="checkbox"
+                        className="chk"
+                        checked={groupLocked}
+                        ref={(el) => {
+                          if (el) el.indeterminate = groupSome && !groupLocked;
+                        }}
+                        onChange={(e) => setGroupGrain(e.target.checked)}
+                      />
+                    </th>
                     <th className="!text-right">{t(lang, "length")}</th>
                     <th className="!text-right">{t(lang, "width")}</th>
                     <th className="!text-right">{t(lang, "qty")}</th>
                     <th>{t(lang, "banding")}</th>
+                    <th className="!text-right" title="Total banded-edge length for this row (incl. qty) — edge-banding tape to buy">{t(lang, "bend")}</th>
                     <th className="!text-right">{t(lang, "holes")}</th>
                     <th>{t(lang, "shape")}</th>
                   </tr>
@@ -187,6 +211,7 @@ export function CutListTab({
                         <td className="!text-right font-mono">{p.h}</td>
                         <td className="!text-right font-mono text-amber-300">{p.qty}</td>
                         <td className="font-mono text-[11px] text-ink-300">{bandStr(p.band)}</td>
+                        <td className="!text-right font-mono">{bandLengthMm(p) > 0 ? ((bandLengthMm(p) * p.qty) / 1000).toFixed(2) : "—"}</td>
                         <td className="!text-right font-mono">{p.holes.length * p.qty || "—"}</td>
                         <td className="text-[11px] text-ink-400">{p.shape === "poly" ? `${t(lang, "polygon")} (${p.outline.length})` : t(lang, "rect")}</td>
                       </tr>

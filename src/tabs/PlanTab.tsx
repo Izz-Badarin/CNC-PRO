@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDownUp, Download, FileOutput, RotateCcw } from "lucide-react";
-import type { Cabinet, Settings } from "../types";
+import type { Cabinet, PanelItem, Settings } from "../types";
 import { isCorner } from "../lib/model";
 import { Btn, Chip } from "../components/ui";
 
@@ -33,10 +33,12 @@ export function PlanTab({
   cabinets,
   settings,
   setCabinets,
+  panels = [],
 }: {
   cabinets: Cabinet[];
   settings: Settings;
   setCabinets: (fn: (cs: Cabinet[]) => Cabinet[]) => void;
+  panels?: PanelItem[];
 }) {
   const [zoom, setZoom] = useState(1);
   const [drag, setDrag] = useState<{ id: string; dx: number; dz: number; ox: number; oz: number } | null>(null);
@@ -52,6 +54,19 @@ export function PlanTab({
       return { cab: c, x, z: c.plan ? c.plan.z : 0, w: c.width, d: c.depth };
     });
   }, [cabinets]);
+
+  // raw project panels — standing w × thk footprints (auto-flow after the
+  // rightmost cabinet, or manual layout.x), against the front wall (z = 0)
+  const panelPlan = useMemo(() => {
+    const right = planPos.length ? Math.max(...planPos.map((p) => p.x + p.w)) : 0;
+    let cursor = right + 40;
+    return panels.map((pn) => {
+      const x = pn.layout ? pn.layout.x : cursor;
+      if (!pn.layout) cursor += Math.max(60, pn.w) + 40;
+      const thk = pn.thk > 0 ? pn.thk : pn.material === "plywood" ? settings.bodyThk : pn.material === "back" ? settings.backThk : settings.mdfThk;
+      return { pn, x, z: 0, w: pn.w, d: Math.max(thk, 10), h: pn.h };
+    });
+  }, [planPos, panels, settings]);
 
   const commit = (id: string, x: number, z: number) =>
     setCabinets((cs) => cs.map((c) => (c.id === id ? { ...c, plan: { x: Math.round(x), z: Math.round(z) } } : c)));
@@ -113,7 +128,7 @@ const active = planPos.map((p) => ({
     z: p.cab.id === drag?.id ? drag.oz + drag.dz : p.z,
   }));
 
-  const maxX = Math.max(5, ...active.map((p) => p.x + p.w)) + 200;
+  const maxX = Math.max(5, ...active.map((p) => p.x + p.w), ...panelPlan.map((p) => p.x + p.w)) + 200;
   const minZ = Math.min(0, ...active.map((p) => p.z - 60));
   const maxZ = Math.max(60, ...active.map((p) => p.z + p.d)) + 200;
   const W = maxX * SCALE * zoom;
@@ -129,7 +144,12 @@ const active = planPos.map((p) => ({
       const shape = isCorner(p.cab.type) ? rect + ` M${px},${py} L${px + w},${py + d}` : rect;
       return `<path d="${shape}" fill="none" stroke="#22314a" stroke-width="1.2"/><text x="${px + 6}" y="${py + 16}" font-size="9">${esc(p.cab.name)}</text><text x="${px + 6}" y="${py + 28}" font-size="8">${Math.round(p.w)} x ${Math.round(p.d)}</text>`;
     }).join("");
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><rect width="${W}" height="${H}" fill="#fff"/><g transform="translate(0,${OFZ}) scale(${SCALE * zoom})">${body}</g></svg>`;
+    const bodyPanels = panelPlan.map((p) => {
+      const px = p.x * SCALE, py = (p.z - minZ) * SCALE;
+      const w = p.w * SCALE, d = Math.max(p.d * SCALE, 2.5);
+      return `<rect x="${px}" y="${py}" width="${w}" height="${d}" fill="none" stroke="#0e7490" stroke-width="1.4" stroke-dasharray="5 3"/><text x="${px + 4}" y="${py - 4}" font-size="8" fill="#0e7490">${esc(p.pn.name)} ${Math.round(p.w)}x${Math.round(p.h)}</text>`;
+    }).join("");
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><rect width="${W}" height="${H}" fill="#fff"/><g transform="translate(0,${OFZ}) scale(${SCALE * zoom})">${body}${bodyPanels}</g></svg>`;
     const a = document.createElement("a");
     a.href = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
     a.download = "plan-view.svg";
@@ -173,6 +193,24 @@ return (
                   {Math.round(p.w)}×{Math.round(p.d)} · h {p.cab.height}
                 </text>
                 <line x1={px + w / 2 - 12} y1={py} x2={px + w / 2 + 12} y2={py} stroke="#7dd3fc" strokeWidth={1.4} />
+              </g>
+            );
+          })}
+          {/* raw project panels — standing w×thk footprints */}
+          {panelPlan.map((p) => {
+            const px = p.x * SCALE * zoom;
+            const py = OFZ + (p.z - minZ) * SCALE * zoom;
+            const w = Math.max(2, p.w * SCALE * zoom);
+            const d = Math.max(2.5, p.d * SCALE * zoom);
+            return (
+              <g key={p.pn.id}>
+                <rect x={px} y={py} width={w} height={d} rx={1.5} fill="#0b2f3f" stroke="#22d3ee" strokeWidth={1.3} strokeDasharray="5 3" />
+                <text x={px + 4} y={py - 5} fill="#22d3ee" fontSize={10}>
+                  {p.pn.name}
+                </text>
+                <text x={px + 4} y={py + 14} fill="#7dd3fc" fontSize={9}>
+                  {Math.round(p.w)}×{Math.round(p.h)} (standing)
+                </text>
               </g>
             );
           })}

@@ -356,10 +356,14 @@ export function SettingsTab({ settings, setSettings }: { settings: Settings; set
           <Field label="Double rail — upper (mm)">
             <Num className="!w-full" value={settings.railDouble2} onChange={(v) => setSettings({ ...settings, railDouble2: Math.max(0, Math.round(v)) })} />
           </Field>
-          <Field label="Shelf gap above rail (mm)">
-            <Num className="!w-full" value={settings.railShelfGap} onChange={(v) => setSettings({ ...settings, railShelfGap: Math.max(0, Math.round(v)) })} />
+          <Field label="Auto shelves above rail — min gap (mm)">
+            <Num className="!w-full" value={settings.railShelfMinGap} onChange={(v) => setSettings({ ...settings, railShelfMinGap: Math.max(50, Math.round(v)) })} />
           </Field>
         </div>
+        <p className="hint mt-3">
+          AUTO mode (default) fits as many shelves above the rail as possible while keeping EVERY gap — rail → shelf, shelf → shelf and shelf → top — at
+          least this value, then spaces them evenly. MANUAL mode in a column's editor sets exact Y positions.
+        </p>
       </div>
 
       {/* ---- glass door appearance ---- */}
@@ -400,6 +404,9 @@ export function SettingsTab({ settings, setSettings }: { settings: Settings; set
           <li>• Drawer box (standard) <span className="text-amber-300">outer W − 33 − 49</span> · (hidden) <span className="text-amber-300">− 50 more</span></li>
           <li>• Drawer groove <span className="text-amber-300">{settings.grooveWidth}mm × (slider − {settings.grooveShorter}mm), {settings.grooveFromBottom}mm from bottom</span></li>
           <li>• Shelf pins <span className="text-amber-300">Ø{settings.holeDiameter}</span> · slide holes <span className="text-amber-300">Ø{settings.slideHoleDiameter}</span></li>
+          <li>• Hanging rail: <span className="text-amber-300">2× Ø{settings.bitDiameter} pilot</span> per rail (one per rail end, at rail center height)</li>
+          <li>• Hinge auto: <span className="text-amber-300">≤1000→2 · ≤1500→3 · ≤2000→4 · ≤2400→5 · &gt;2400→6</span> · cups 140mm from top &amp; bottom</li>
+          <li>• Cover thickness: <span className="text-amber-300">0 = auto</span> (plywood {settings.bodyThk}mm / MDF {settings.mdfThk}mm)</li>
           <li>• New cabinets: <span className="text-amber-300">600 × 720 × 560</span>, toe kick OFF, MDF fronts OFF</li>
           <li>• Cut list: every piece is <span className="text-amber-300">rotated once (L↔W)</span>, then grain lock applies</li>
         </ul>
