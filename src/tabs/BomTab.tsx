@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { allParts, bandingByMaterial, columnFaceWidth, columnLayout, doorDims, drillOps, effectiveHingeCount, generatePanelParts, glassDoorRefs, kickH, stackOn, stackedHeights, columnHasDrawers, type RotationOverrides } from "../lib/model";
+import { allParts, bandingByMaterial, columnFaceWidth, columnLayout, doorDims, effectiveHingeCount, generatePanelParts, glassDoorRefs, kickH, stackOn, stackedHeights, columnHasDrawers, type RotationOverrides } from "../lib/model";
 import { nestParts } from "../lib/nesting";
-import { applyWaste, plyMaterialById, wastePctOf } from "../lib/defaults";
+import { bomOrderQty, plyMaterialById, wastePctOf } from "../lib/defaults";
 import type { Cabinet, Customer, PanelItem, ProjectInfo, Settings } from "../types";
 import { Btn, Chip } from "../components/ui";
 import { bomReportHtml, download, openPrintWindow } from "../lib/export";
@@ -46,7 +46,7 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, rotation =
 
   const bom = useMemo(() => {
     const rows: BomRow[] = [];
-    let hinges = 0, hangingRails = 0;
+    let hinges = 0, railMm = 0;
     // shelf PINS are hardware: 4 per shelf (2 per side), independent of how many
     // holes are drilled — the Drilling tab keeps the hole-op count (e.g. 132)
     const allForPins = allParts(cabinets, settings, grain, panels, rotation);
@@ -65,9 +65,11 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, rotation =
     generatePanelParts(panels, settings).forEach(addArea);
     cabinets.forEach((cab) => {
       allParts([cab], settings, grain, [], rotation).forEach(addArea);
-      drillOps([cab], settings, grain, [], rotation).forEach((op) => {
-        if (op.type === "hinge") hinges++;
-      });
+      // HINGES are counted ONCE, from the door definitions below (loop + full
+      // door). drillOps() is NOT used for the BOM count — its hinge cups are
+      // the same cups the door loop counts, so adding both doubled the BOM
+      // (14 doors × 2 hinges showed 56 instead of 28).
+      const qty = cab.qty ?? 1;
       const kick = kickH(cab, settings);
       const fullSpan = (stackOn(cab) ? stackedHeights(cab).reduce((a, h) => a + h, 0) : cab.height) - kick;
       // a cabinet-level full door (stacked cabinets) suppresses EVERY
@@ -84,14 +86,19 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, rotation =
               const lay = lays.find((l) => l.col.id === col.id) ?? lays[ci];
               const faceW = lays.length === 1 ? cab.width : columnFaceWidth(cab, lay, settings);
               const dd = doorDims(faceW, col.door.full ? fullSpan : row.h, col.door, settings);
-              hinges += dd.count * effectiveHingeCount(col.door, dd.h);
+              hinges += qty * dd.count * effectiveHingeCount(col.door, dd.h);
             }
           }
           col.drawers.forEach((dr) => {
             const cm = Math.round(dr.slideDepthCm);
-            slides[cm] = (slides[cm] ?? 0) + 1;
+            slides[cm] = (slides[cm] ?? 0) + qty;
           });
-          if (col.rail && col.rail !== "off") hangingRails += col.rail === "double" ? 2 : 1;
+          if (col.rail && col.rail !== "off") {
+            // hanging rails are sold BY THE METER: each rail spans the column's
+            // clear width (lays[ci].w), a "double" rail is 2 rails, × cabinet qty
+            const rails = col.rail === "double" ? 2 : 1;
+            railMm += rails * (cab.qty ?? 1) * (lays[ci]?.w ?? cab.width - 2 * settings.bodyThk);
+          }
         });
       });
       if (fullDoorActive) {
@@ -101,7 +108,7 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, rotation =
         const fdType = fdSuffix === "double" ? "double" : fdSuffix === "left" || fdSuffix === "right" ? "single" : cab.width > 620 ? "double" : "single";
         const fdSpec: any = { type: fdType, style: "overlay", swing: fdSuffix === "right" ? "right" : "left", material: raw.startsWith("glass") ? "glass" : "mdf", mdfThk: settings.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true, hingeCount: cab.fullDoorHinges };
         const dd = doorDims(cab.width, fullSpan, fdSpec, settings);
-        hinges += dd.count * effectiveHingeCount(fdSpec, dd.h);
+        hinges += qty * dd.count * effectiveHingeCount(fdSpec, dd.h);
       }
     });
     const sheetCount: Record<string, number> = {};
@@ -155,18 +162,18 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, rotation =
     Object.keys(slides).map(Number).sort((a, b) => a - b).forEach((cm) => {
       if (slides[cm] > 0) rows.push({category:"Hardware",item:`Drawer slides ${cm}0mm`,qty:slides[cm],unit:"pairs",note:"1 pair per drawer, by real drawer depth"});
     });
-    if (hangingRails>0) rows.push({category:"Hardware",item:"Hanging rails",qty:hangingRails,unit:"pcs"});
+    if (railMm>0) rows.push({category:"Hardware",item:"Hanging rails",qty:Math.round((railMm/1000)*10)/10,unit:"m",note:"ordered per meter · each rail spans the column width · suits/dresses"});
     if (shelfPins>0) rows.push({category:"Hardware",item:"Shelf pins (32mm)",qty:shelfPins,unit:"pcs",note:`${totalShelves} shelves ×4`});
     return rows;
   }, [cabinets, settings, panels, grain, rotation]);
 
   const exportCsv = () => {
     const h = `Category,Item,Net qty,Order qty (+${wastePct}% waste),Unit,Note`;
-    const l = bom.map((r) => `${r.category},${r.item},${r.qty},${applyWaste(r.qty, r.unit, wastePct)},${r.unit},${r.note??""}`);
+    const l = bom.map((r) => `${r.category},${r.item},${r.qty},${bomOrderQty(r.qty, r.unit, r.item, wastePct)},${r.unit},${r.note??""}`);
     download("bom.csv", [h,...l].join("\n"), "text/csv");
   };
   const exportHtml = () => {
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>BOM</title><style>body{font-family:Arial,sans-serif;padding:20px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:6px 10px;text-align:left}th{background:#eee}</style></head><body><h1>Bill of Materials</h1><p>Net = real quantity · Order = net + ${wastePct}% waste/loss allowance (what to buy).</p><table><thead><tr><th>Category</th><th>Item</th><th>Net</th><th>Order (+${wastePct}%)</th><th>Unit</th><th>Note</th></tr></thead><tbody>${bom.map((r)=>`<tr><td>${r.category}</td><td>${r.item}</td><td>${r.qty}</td><td><b>${applyWaste(r.qty, r.unit, wastePct)}</b></td><td>${r.unit}</td><td>${r.note??""}</td></tr>`).join("")}</tbody></table></body></html>`;
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>BOM</title><style>body{font-family:Arial,sans-serif;padding:20px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:6px 10px;text-align:left}th{background:#eee}</style></head><body><h1>Bill of Materials</h1><p>Order = net + ${wastePct}% waste only for edge banding, shelf pins and hinges — all other items are ordered at the exact net quantity.</p><table><thead><tr><th>Category</th><th>Item</th><th>Net</th><th>Order (+${wastePct}%)</th><th>Unit</th><th>Note</th></tr></thead><tbody>${bom.map((r)=>`<tr><td>${r.category}</td><td>${r.item}</td><td>${r.qty}</td><td><b>${bomOrderQty(r.qty, r.unit, r.item, wastePct)}</b></td><td>${r.unit}</td><td>${r.note??""}</td></tr>`).join("")}</tbody></table></body></html>`;
     download("bom.html", html, "text/html");
   };
 
@@ -256,8 +263,8 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, rotation =
 
       <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
         <table className="tbl w-full">
-          <thead className="bg-ink-900/80 text-ink-300"><tr><th>Category</th><th>Item</th><th className="!text-right" title="Real (net) quantity">Net</th><th className="!text-right" title={`Order quantity = net + ${wastePct}% waste/loss — what to buy (Settings → BOM)`}>Order (+{wastePct}%)</th><th>Unit</th><th>Note</th></tr></thead>
-          <tbody>{bom.map((r,i) => (<tr key={i} className="border-t border-white/[0.04] hover:bg-ink-900/40"><td className="text-ink-400">{r.category}</td><td>{r.item}</td><td className="!text-right font-mono text-ink-300">{r.qty}</td><td className="!text-right font-mono font-semibold text-emerald-300">{applyWaste(r.qty, r.unit, wastePct)}</td><td className="text-ink-400">{r.unit}</td><td className="text-ink-500 text-[11px]">{r.note??""}</td></tr>))}</tbody>
+          <thead className="bg-ink-900/80 text-ink-300"><tr><th>Category</th><th>Item</th><th className="!text-right" title="Real (net) quantity">Net</th><th className="!text-right" title={`Order = net + ${wastePct}% waste ONLY for edge banding, shelf pins and hinges; all other items are ordered at the exact net (Settings → BOM)`}>Order (+{wastePct}%)</th><th>Unit</th><th>Note</th></tr></thead>
+          <tbody>{bom.map((r,i) => (<tr key={i} className="border-t border-white/[0.04] hover:bg-ink-900/40"><td className="text-ink-400">{r.category}</td><td>{r.item}</td><td className="!text-right font-mono text-ink-300">{r.qty}</td><td className="!text-right font-mono font-semibold text-emerald-300">{bomOrderQty(r.qty, r.unit, r.item, wastePct)}</td><td className="text-ink-400">{r.unit}</td><td className="text-ink-500 text-[11px]">{r.note??""}</td></tr>))}</tbody>
         </table>
       </div>
     </div>

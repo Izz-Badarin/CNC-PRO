@@ -91,6 +91,7 @@ const DEFAULT_SETTINGS_FALLBACK: Settings = {
   defaultPlyId: "ply-default",
   slideHolePatterns: { "25": [39, 71, 167, 231], "30": [39, 71, 167, 231], "35": [39, 71, 167, 231], "40": [39, 71, 167, 263], "45": [39, 71, 167, 263], "50": [39, 71, 263, 341], kitchen: [38, 61, 261.5, 294.5] },
   drawerHoleYStart: 60, drawerHoleYStep: 55,
+  kitchenHoleYStart: 75, kitchenHoleLastOffset: 55,
   drawerBoxFrontDeduct: 33, drawerBoxBackDeduct: 49, drawerBoxHiddenExtra: 50, drawerBoxDepthFix: 7,
   bomWastePct: 10,
 };
@@ -714,7 +715,8 @@ function buildColumn3D(
         dg.add(mf);
       }
       if (cab.isKitchen) {
-        const bd = Math.min(495, d - 60);
+        const slideCm = Math.round(dr.slideDepthCm ?? 50);
+        const bd = Math.min(Math.max(60, slideCm * 10 - 5), d - 60);
         const bot = box(w - 108, S.bodyThk * 0.8, bd, drawerBoxMat, "drawer", false);
         bot.position.set(0, -fh / 2 + 34, -S.mdfThk / 2 - gap - bd / 2);
         dg.add(bot);

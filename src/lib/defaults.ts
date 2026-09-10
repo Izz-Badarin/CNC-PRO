@@ -193,6 +193,9 @@ export const DEFAULT_SETTINGS: Settings = {
   slideHolePatterns: DEFAULT_SLIDE_HOLE_PATTERNS,
   drawerHoleYStart: 60,
   drawerHoleYStep: 55,
+  // kitchen drawers use their own hole-height rule (industry pattern)
+  kitchenHoleYStart: 75,
+  kitchenHoleLastOffset: 55,
   drawerBoxFrontDeduct: 33,
   drawerBoxBackDeduct: 49,
   drawerBoxHiddenExtra: 50,
@@ -226,6 +229,26 @@ export function applyWaste(net: number, unit: string, pct: number): number {
   }
   if (u === "m" || u === "meter" || u === "meters") return Math.ceil(gross * 10 - 1e-9) / 10;
   return Math.ceil(gross * 100 - 1e-9) / 100;
+}
+
+/**
+ * Which BOM items keep the waste/loss allowance on their "Order" quantity.
+ * Only edge banding, shelf pins and universal hinges get the +% on top —
+ * everything else (sheets, glass doors, drawer slides, hanging rails, …)
+ * must be ordered at the EXACT net quantity.
+ */
+export function bomWasteItem(item: string): boolean {
+  const s = (item || "").toLowerCase();
+  return s.includes("edge banding") || s.includes("shelf pin") || s.includes("hinge");
+}
+
+/**
+ * "Order" quantity for a BOM row. Waste is applied ONLY to the items that
+ * need it (edge banding, shelf pins, hinges — see bomWasteItem); every other
+ * row is ordered at the real net quantity.
+ */
+export function bomOrderQty(net: number, unit: string, item: string, pct: number): number {
+  return bomWasteItem(item) ? applyWaste(net, unit, pct) : net;
 }
 
 
@@ -685,6 +708,8 @@ export const SETTINGS_META: { key: keyof Settings; label: string; unit: string; 
   { key: "slotFromFront", label: "Linear slot center from front edge", unit: "mm", group: "Drilling" },
   { key: "drawerHoleYStart", label: "First drawer slide-hole Y (from bottom)", unit: "mm", group: "Drilling" },
   { key: "drawerHoleYStep", label: "Drawer slide-hole Y step", unit: "mm", group: "Drilling" },
+  { key: "kitchenHoleYStart", label: "Kitchen drawer — first slide-hole Y (from bottom)", unit: "mm", group: "Kitchen drawer" },
+  { key: "kitchenHoleLastOffset", label: "Kitchen drawer — last slide-hole offset", unit: "mm", group: "Kitchen drawer" },
   { key: "drawerBoxFrontDeduct", label: "Drawer box width − front (divider)", unit: "mm", group: "Drilling" },
   { key: "drawerBoxBackDeduct", label: "Drawer box width − back", unit: "mm", group: "Drilling" },
   { key: "drawerBoxHiddenExtra", label: "Drawer box width − extra (hidden)", unit: "mm", group: "Drilling" },

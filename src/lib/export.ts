@@ -20,7 +20,7 @@ import {
 } from "./model";
 import { nestParts } from "./nesting";
 import { layoutCabs, panelPositions } from "./layout2d";
-import { plyMaterialById, partMatName, SETTINGS_VERSION, wastePctOf, applyWaste, type LibraryItem } from "./defaults";
+import { plyMaterialById, partMatName, SETTINGS_VERSION, wastePctOf, applyWaste, bomOrderQty, type LibraryItem } from "./defaults";
 
 const allParts = (c: Cabinet[], S: Settings, ov: GrainOverrides = {}, panels: PanelItem[] = [], rot: RotationOverrides = {}) =>
   allPartsMerged(c, S, ov, panels, rot);
@@ -446,7 +446,7 @@ export function bomReportHtml(
   const wastePct = wastePctOf(settings);
 
   let hinges = 0,
-    hangingRails = 0;
+    railMm = 0;
   const slides: Record<number, number> = {};
   const materials: Record<string, number> = {};
   // veneer back area tracked PER PLYWOOD MATERIAL — the back follows the
@@ -465,7 +465,11 @@ export function bomReportHtml(
   };
   modelPanelParts(panels, settings).forEach(addArea);
   cabinets.forEach((cab) => {
+    const qty = cab.qty ?? 1;
     allParts([cab], settings).forEach(addArea);
+    // mdf/plywood door hinge cups (incl. full doors) — drillOps already
+    // multiplies by qty; glass doors are reference parts NOT in drillOps,
+    // so they are counted separately below (also × qty).
     modelDrillOps([cab], settings).forEach((op) => {
       if (op.type === "hinge") hinges++;
     });
@@ -479,13 +483,18 @@ export function bomReportHtml(
         if (col.door && !fullDoorActive && col.door.material === "glass" && col.door.type !== "sliding") {
           const faceW = lays.length === 1 ? cab.width : columnFaceWidth(cab, lays[ci], settings);
           const leafH = doorDims(faceW, col.door.full ? fullSpan : row.h, col.door, settings).h;
-          hinges += Math.min(6, Math.max(1, col.door.hingeCount ?? doorHingeCount(leafH)));
+          hinges += qty * Math.min(6, Math.max(1, col.door.hingeCount ?? doorHingeCount(leafH)));
         }
         col.drawers.forEach((dr) => {
           const cm = Math.round(dr.slideDepthCm);
-          slides[cm] = (slides[cm] ?? 0) + 1;
+          slides[cm] = (slides[cm] ?? 0) + qty;
         });
-        if (col.rail && col.rail !== "off") hangingRails += col.rail === "double" ? 2 : 1;
+        if (col.rail && col.rail !== "off") {
+          // hanging rails are sold BY THE METER: each rail spans the column's
+          // clear width (lays[ci].w), a "double" rail is 2 rails, × cabinet qty
+          const rails = col.rail === "double" ? 2 : 1;
+          railMm += rails * (cab.qty ?? 1) * (lays[ci]?.w ?? cab.width - 2 * settings.bodyThk);
+        }
       });
     });
     if ((cab.fullDoor as string)?.startsWith("glass")) {
@@ -499,7 +508,7 @@ export function bomReportHtml(
         { type: fdType, style: "overlay", swing: fdSuffix === "right" ? "right" : "left", material: "glass", mdfThk: settings.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: true, hingeCount: cab.fullDoorHinges } as any,
         settings,
       ).h;
-      hinges += Math.min(6, Math.max(1, cab.fullDoorHinges ?? doorHingeCount(leafH)));
+      hinges += qty * Math.min(6, Math.max(1, cab.fullDoorHinges ?? doorHingeCount(leafH)));
     }
   });
   const sheetCount: Record<string, number> = {};
@@ -558,7 +567,7 @@ export function bomReportHtml(
     .forEach((cm) => {
       if (slides[cm] > 0) bomRows.push({ category: "Hardware", item: `Drawer slides ${cm}0mm`, qty: slides[cm], unit: "pairs", note: "1 pair per drawer, by real drawer depth" });
     });
-  if (hangingRails > 0) bomRows.push({ category: "Hardware", item: "Hanging rails", qty: hangingRails, unit: "pcs" });
+  if (railMm > 0) bomRows.push({ category: "Hardware", item: "Hanging rails", qty: Math.round((railMm / 1000) * 10) / 10, unit: "m", note: "ordered per meter · each rail spans the column width · suits/dresses" });
   if (shelfPins > 0) bomRows.push({ category: "Hardware", item: "Shelf pins (32mm)", qty: shelfPins, unit: "pcs", note: `${totalShelves} shelves x4 - 2 pins per side` });
 
   const materialsByKey = new Map<string, typeof merged>();
@@ -633,10 +642,11 @@ export function bomReportHtml(
     })
     .join("");
 
-  // every BOM line shows the NET (real) quantity and the ORDER quantity with
-  // the waste/loss allowance on top — what to actually buy to stay safe
+  // every BOM line shows the NET (real) quantity and the ORDER quantity. The
+  // waste/loss allowance is added ONLY to edge banding, shelf pins and hinges;
+  // every other line is ordered at the exact net quantity.
   const bomTable = bomRows
-    .map((r) => `<tr><td>${escH(r.category)}</td><td>${escH(r.item)}</td><td class="num">${r.qty}</td><td class="num"><b>${applyWaste(r.qty, r.unit, wastePct)}</b></td><td>${escH(r.unit)}</td><td class="small">${escH(r.note || "")}</td></tr>`)
+    .map((r) => `<tr><td>${escH(r.category)}</td><td>${escH(r.item)}</td><td class="num">${r.qty}</td><td class="num"><b>${bomOrderQty(r.qty, r.unit, r.item, wastePct)}</b></td><td>${escH(r.unit)}</td><td class="small">${escH(r.note || "")}</td></tr>`)
     .join("");
 
   const cutByMat = [...materialsByKey.entries()]
@@ -659,7 +669,7 @@ export function bomReportHtml(
       const sheets = g.sheets.length;
       const util = (g.avgUtil * 100).toFixed(1);
       const offcuts = g.sheets.flatMap((s) => s.offcuts).length;
-      return `<tr><td>${escH(g.key)}</td><td class="num">${sheets}</td><td class="num"><b>${applyWaste(sheets, "sheets", wastePct)}</b></td><td class="num">${g.partCount}</td><td class="num">${(g.totalArea / 1e6).toFixed(2)} m2</td><td class="num">${util}%</td><td>${escH(g.strategy || "")} - ${offcuts} offcuts</td><td class="num">${g.unplaced}</td></tr>`;
+      return `<tr><td>${escH(g.key)}</td><td class="num">${sheets}</td><td class="num">${g.partCount}</td><td class="num">${(g.totalArea / 1e6).toFixed(2)} m2</td><td class="num">${util}%</td><td>${escH(g.strategy || "")} - ${offcuts} offcuts</td><td class="num">${g.unplaced}</td></tr>`;
     })
     .join("");
 
@@ -719,7 +729,7 @@ export function bomReportHtml(
 
   <div class="page" id="p4">
     <h2>Bill of Materials - Materials and Hardware (M + U + L)</h2>
-    <p class="small">Sheet counts from actual nesting output. Slides counted per drawer at real slide depth (pairs/drawer). Hinges from new rule incl. glass and full doors. Handles removed everywhere. Net = real quantity · Order = net + ${wastePct}% waste/loss allowance (what to buy).</p>
+    <p class="small">Sheet counts from actual nesting output. Slides counted per drawer at real slide depth (pairs/drawer). Hinges from new rule incl. glass and full doors. Handles removed everywhere. Net = real quantity · Order = net + ${wastePct}% waste ONLY for edge banding, shelf pins and hinges — every other item is ordered at the exact net.</p>
     <table><thead><tr><th>Category</th><th>Item</th><th>Net</th><th>Order (+${wastePct}%)</th><th>Unit</th><th>Note</th></tr></thead><tbody>${bomTable}</tbody></table>
     <div class="footer"><span>${escH(projName)} - BOM</span><span>Page 4 / 7</span></div>
   </div>
@@ -733,7 +743,7 @@ export function bomReportHtml(
 
   <div class="page" id="p6">
     <h2>Nesting Summary - One-material-at-a-time (N) + Strategies</h2>
-    <table><thead><tr><th>Group</th><th>Sheets (net)</th><th>Order (+${wastePct}%)</th><th>Parts</th><th>Area</th><th>Avg util</th><th>Strategy / Offcuts</th><th>Unplaced</th></tr></thead><tbody>${nestingTable || '<tr><td colspan="8">No nesting</td></tr>'}</tbody></table>
+    <table><thead><tr><th>Group</th><th>Sheets</th><th>Parts</th><th>Area</th><th>Avg util</th><th>Strategy / Offcuts</th><th>Unplaced</th></tr></thead><tbody>${nestingTable || '<tr><td colspan="7">No nesting</td></tr>'}</tbody></table>
     <h3>Sheet size rules</h3>
     <div class="card small">Plywood / Veneer back: 2440x1220 locked. MDF: ${escH(settings.mdfSheet)} (auto = tall >2420 on 3050x1220 else 2440x1220). Margin ${settings.sheetMargin}mm - clearance ${settings.partClearance}mm - min offcut ${settings.minOffcut}mm - max sheets ${settings.maxSheets} - grainLock ${settings.grainLock ? "ON" : "OFF"} - nestFrom ${escH(settings.nestFrom)} - direction ${escH(settings.nestDirection)}</div>
     <div class="footer"><span>${escH(projName)} - Nesting - ${totalSheets} sheets</span><span>Page 6 / 7</span></div>

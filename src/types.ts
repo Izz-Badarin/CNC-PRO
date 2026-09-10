@@ -412,6 +412,10 @@ export interface Settings {
   drawerHoleYStart: number;
   /** Y step added to each subsequent drawer's slide holes */
   drawerHoleYStep: number;
+  /** kitchen drawer: Y of the FIRST kitchen drawer's slide holes, measured from the panel bottom (kitchen banks use their own rule) */
+  kitchenHoleYStart: number;
+  /** kitchen drawer: Y offset of the LAST drawer in a kitchen bank */
+  kitchenHoleLastOffset: number;
   /** drawer box width deduction (front divider) — "outer W − 33" */
   drawerBoxFrontDeduct: number;
   /** drawer box width deduction (back) — "outer W − 49" */
@@ -421,7 +425,7 @@ export interface Settings {
   /** drawer box depth = slide length − this offset */
   drawerBoxDepthFix: number;
   /* ---- BOM waste / loss allowance ---- */
-  /** waste % added on TOP of every net BOM quantity (edge banding, sheets, hardware) → the "order" qty */
+  /** waste % added on the "Order" qty — applied ONLY to edge banding, shelf pins and universal hinges; every other BOM line is ordered at exact net */
   bomWastePct: number;
 }
 

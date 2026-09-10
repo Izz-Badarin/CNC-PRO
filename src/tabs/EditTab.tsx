@@ -222,7 +222,7 @@ export function EditTab({
                 <span className={`block font-display text-[14px] font-bold ${cab.isKitchen ? "text-emerald-200" : "text-ink-200"}`}>
                   {t(lang, "kitchenMode")}
                 </span>
-                <span className="block text-[10.5px] text-ink-400">500mm slides · no hidden drawers</span>
+                <span className="block text-[10.5px] text-ink-400">slides &amp; holes follow each drawer's chosen depth · no hidden drawers</span>
               </span>
             </span>
             <span
@@ -1029,13 +1029,15 @@ function ColumnEditor({
                   {t(lang, "hidden")}
                 </label>
               )}
-              {!cab.isKitchen && (
-                <select className="inp !w-[86px] !py-1 !px-1.5 text-[11px]" value={d.slideDepthCm}
-                  onChange={(e) => patchDrawer(r.id, col.id, d.id, { slideDepthCm: parseInt(e.target.value) })}>
-                  {AVAILABLE_DRAWER_DEPTHS.map((cm) => <option key={cm} value={cm}>{cm * 10}mm</option>)}
-                </select>
-              )}
-              {cab.isKitchen && <Chip tone="green">500mm</Chip>}
+              <select
+                className="inp !w-[86px] !py-1 !px-1.5 text-[11px]"
+                value={d.slideDepthCm}
+                onChange={(e) => patchDrawer(r.id, col.id, d.id, { slideDepthCm: parseInt(e.target.value) })}
+                title={cab.isKitchen ? "Kitchen drawer slide depth — the X hole pattern follows this depth" : "Slide depth — the X hole pattern follows this depth"}
+              >
+                {AVAILABLE_DRAWER_DEPTHS.map((cm) => <option key={cm} value={cm}>{cm * 10}mm</option>)}
+              </select>
+              {cab.isKitchen && <Chip tone="green">{d.slideDepthCm * 10}mm</Chip>}
               {/* MDF fronts are opt-in for EVERY drawer (hidden or not) */}
               <label
                 className={`flex items-center gap-1 cursor-pointer rounded-md border px-1.5 py-0.5 ${
@@ -1507,6 +1509,14 @@ function ColumnEditor({
                             {t(lang, "hidden")}
                           </label>
                         )}
+                        <select
+                          className="inp !w-[80px] !py-1 !px-1.5 text-[11px]"
+                          value={d.slideDepthCm}
+                          onChange={(e) => setSub({ drawers: sub.drawers.map((x) => (x.id === d.id ? { ...x, slideDepthCm: parseInt(e.target.value) } : x)) })}
+                          title="Slide depth — the X hole pattern follows this depth"
+                        >
+                          {AVAILABLE_DRAWER_DEPTHS.map((cm) => <option key={cm} value={cm}>{cm * 10}mm</option>)}
+                        </select>
                         <label
                           className={`flex items-center gap-1 cursor-pointer rounded-md border px-1.5 py-0.5 ${
                             d.frontMdf ? "border-amber-400/40 bg-amber-400/10 text-amber-200" : "border-white/[0.07]"

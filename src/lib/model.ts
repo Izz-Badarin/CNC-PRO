@@ -265,11 +265,13 @@ export function drawerHoleHeights(drawers: { frontHeight: number }[], S: Setting
   });
 }
 
-function kitchenHoleHeights(drawers: { frontHeight: number }[]): number[] {
+function kitchenHoleHeights(drawers: { frontHeight: number }[], S: Settings): number[] {
   const n = drawers.length;
+  const start = S.kitchenHoleYStart ?? KITCHEN_FIRST_HOLE_Y;
+  const last = S.kitchenHoleLastOffset ?? KITCHEN_LAST_DRAWER_OFFSET;
   let cum = 0;
   return drawers.map((d, i) => {
-    const y = i === 0 ? KITCHEN_FIRST_HOLE_Y : i === n - 1 ? cum + KITCHEN_LAST_DRAWER_OFFSET : KITCHEN_FIRST_HOLE_Y + cum;
+    const y = i === 0 ? start : i === n - 1 ? cum + last : start + cum;
     cum += d.frontHeight;
     return y;
   });
@@ -277,7 +279,7 @@ function kitchenHoleHeights(drawers: { frontHeight: number }[]): number[] {
 
 /** auto slide-hole Y (from the row/bank bottom) for the drawer at index i, honoring kitchen mode */
 export function autoDrawerHoleY(drawers: { frontHeight: number }[], isKitchen: boolean, i: number, S: Settings): number {
-  const ys = isKitchen ? kitchenHoleHeights(drawers) : drawerHoleHeights(drawers, S);
+  const ys = isKitchen ? kitchenHoleHeights(drawers, S) : drawerHoleHeights(drawers, S);
   return ys[Math.min(i, Math.max(0, ys.length - 1))];
 }
 
@@ -948,10 +950,16 @@ function buildColumn(
     col.drawers.forEach((dr0, i) => {
       // kitchen mode has no hidden drawers
       const dr = cab.isKitchen ? { ...dr0, hidden: false } : dr0;
+      const pats = normalizeSlidePatterns(S.slideHolePatterns);
+      const dCm = Math.round(dr.slideDepthCm);
+      // Kitchen drawers at the kitchen-native slide depth (50cm) use the
+      // dedicated kitchen pattern; any OTHER chosen slider depth follows the
+      // same per-depth X table as standard drawers — so changing the slider
+      // really moves the holes.
       const pattern =
-        cab.isKitchen
-          ? (normalizeSlidePatterns(S.slideHolePatterns)["kitchen"] ?? KITCHEN_SLIDE_PATTERN)
-          : normalizeSlidePatterns(S.slideHolePatterns)[String(Math.round(dr.slideDepthCm))] ?? getDrawerHolePattern(dr.slideDepthCm);
+        cab.isKitchen && dCm === KITCHEN_SLIDE_CM
+          ? (pats["kitchen"] ?? KITCHEN_SLIDE_PATTERN)
+          : pats[String(dCm)] ?? getDrawerHolePattern(dCm);
       // manual per-drawer Y override wins; otherwise the automatic stack rule.
       // Y is measured from the BANK bottom (which itself may be lifted by the
       // column's drawerAlign), so the holes follow the bank wherever it sits.
@@ -1276,12 +1284,13 @@ function genStandardDrawer(
 function genKitchenDrawer(
   S: Settings,
   mk: MkFn,
-  dr: { frontHeight: number; hidden: boolean; frontMdf?: boolean },
+  dr: { frontHeight: number; hidden: boolean; frontMdf?: boolean; slideDepthCm?: number },
   faceW: number,
   tag: string,
   i: number,
 ) {
   const label = dr.hidden ? "Hidden kitchen drawer" : "Kitchen drawer";
+  const slideCm = Math.round(dr.slideDepthCm ?? KITCHEN_SLIDE_CM);
   // MDF front only when the user explicitly enables it
   if (dr.frontMdf)
     mk({
@@ -1297,11 +1306,11 @@ function genKitchenDrawer(
   mk({
     name: `${label} bottom${tag} #${i + 1}`,
     w: Math.max(120, faceW - 108 - (dr.hidden ? 50 : 0)),
-    h: 495,
+    h: Math.max(60, slideCm * 10 - 5),
     material: "plywood",
     thickness: S.bodyThk,
     grain: false,
-    note: `forced ${KITCHEN_SLIDE_CM * 10}mm slide`,
+    note: `${slideCm * 10}mm slide (by chosen depth)`,
   });
   mk({
     name: `${label} back${tag} #${i + 1}`,
@@ -1901,7 +1910,7 @@ export function validateCabinet(c: Cabinet, S: Settings): { level: "err" | "warn
         const fh = col.drawers.reduce((a, d) => a + d.frontHeight, 0);
         if (Math.abs(fh - r.h) > 20) out.push({ level: "warn", msg: `${label}: drawer fronts Σ${Math.round(fh)}mm vs row ${Math.round(r.h)}mm` });
         col.drawers.forEach((d) => {
-          if (!c.isKitchen && d.slideDepthCm * 10 > c.depth) out.push({ level: "warn", msg: `${label}: ${d.slideDepthCm * 10}mm slide deeper than cabinet (${c.depth}mm)` });
+          if (d.slideDepthCm * 10 > c.depth) out.push({ level: "warn", msg: `${label}: ${d.slideDepthCm * 10}mm slide deeper than cabinet (${c.depth}mm)` });
         });
         if (findNearestDrawerDepth(c.depth) < 25) out.push({ level: "warn", msg: `${label}: too shallow for any slide` });
       } else if (col.door && !col.fixed) {

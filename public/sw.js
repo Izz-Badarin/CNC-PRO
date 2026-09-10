@@ -1,10 +1,10 @@
 /* CNC Cabinet Designer Pro — offline service worker v3
-   v3: cache-name bump so shop PCs running the installed PWA drop the old shell and pick up
-       the exploded per-cabinet report + full-door / back-material phases (was v2).
+   v4: cache-name bump (BOM hinge double-count fix + kitchen drawer settings) so shop PCs running the installed PWA drop the old shell and pick up
+       the exploded per-cabinet report + full-door / back-material phases (was v3).
    Robust offline for plane mode: cache-first, navigation fallback, background sync safe.
    Works when served via http(s) — file:// can't use SW, but single-file build works there without SW.
 */
-const CACHE = "cnc-cabinet-designer-v3";
+const CACHE = "cnc-cabinet-designer-v4";
 const PRECACHE = ["./", "./index.html", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", (event) => {
