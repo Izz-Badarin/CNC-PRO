@@ -853,34 +853,26 @@ function buildColumn(
 
       // lay out the columns inside this sub-row across the parent column's width
       const subLays = columnLayoutIn(lay.w, sub.columns, S);
-      const subDvs: (Part | null)[] = [];
       subLays.forEach((sl, sci) => {
-        // divider between this sub-column and the next one — the sub-column's
-        // own drilling (drawers / shelves / rails) must land HERE, not on the
-        // parent column's dividers (which belong to the neighbouring sub-row).
-        const subDv: Part | null = sl.last
-          ? null
-          : mk({
-              name: `Sub col divider${tag}.${si + 1}C${sci + 1}`,
-              w: D,
-              h: Math.max(20, subH - S.dividerDeduct),
-              material: "plywood",
-              thickness: T,
-              band: { right: true },
-              note: "row → column divider · banding: front",
-              grain: true,
-            });
-        subDvs.push(subDv);
+        if (!sl.last)
+          mk({
+            name: `Sub col divider${tag}.${si + 1}C${sci + 1}`,
+            w: D,
+            h: Math.max(20, subH - S.dividerDeduct),
+            material: "plywood",
+            thickness: T,
+            band: { right: true },
+            note: "row → column divider · banding: front",
+            grain: true,
+          });
         const subFaceW = subLays.length === 1 ? lay.w : sl.w + T;
         buildColumn(cab, S, mk, sl, subFaceW, subH, sy, `${tag}.${si + 1}${subLays.length > 1 ? `C${sci + 1}` : ""}`, {
           L: sides.L,
           R: sides.R,
           first: sides.first && sl.first,
           last: sides.last && sl.last,
-          // left boundary: the outer side panel for the first sub-column, else
-          // the divider created to its left; right boundary mirrors that.
-          dividerL: sci === 0 ? sides.dividerL ?? null : subDvs[sci - 1],
-          dividerR: sl.last ? sides.dividerR ?? null : subDv,
+          dividerL: sides.dividerL,
+          dividerR: sides.dividerR,
           rowY: sy,
         });
       });
@@ -998,17 +990,14 @@ function buildColumn(
       const dr = cab.isKitchen ? { ...dr0, hidden: false } : dr0;
       const pats = normalizeSlidePatterns(S.slideHolePatterns);
       const dCm = Math.round(dr.slideDepthCm);
-      // Per-drawer custom X pattern (different slide hardware) wins first; then
-      // kitchen drawers at the kitchen-native slide depth (50cm) use the
+      // Kitchen drawers at the kitchen-native slide depth (50cm) use the
       // dedicated kitchen pattern; any OTHER chosen slider depth follows the
       // same per-depth X table as standard drawers — so changing the slider
       // really moves the holes.
       const pattern =
-        dr.holePatternX && dr.holePatternX.length
-          ? dr.holePatternX
-          : cab.isKitchen && dCm === KITCHEN_SLIDE_CM
-            ? (pats["kitchen"] ?? KITCHEN_SLIDE_PATTERN)
-            : pats[String(dCm)] ?? getDrawerHolePattern(dCm);
+        cab.isKitchen && dCm === KITCHEN_SLIDE_CM
+          ? (pats["kitchen"] ?? KITCHEN_SLIDE_PATTERN)
+          : pats[String(dCm)] ?? getDrawerHolePattern(dCm);
       // manual per-drawer Y override wins; otherwise the automatic stack rule.
       // Y is measured from the BANK bottom (which itself may be lifted by the
       // column's drawerAlign), so the holes follow the bank wherever it sits.
@@ -1019,7 +1008,7 @@ function buildColumn(
         drillRight(xL, y, S.slideHoleDiameter, "slide");
       });
       if (cab.isKitchen) genKitchenDrawer(S, mk, dr, faceW, tag, i);
-      else genStandardDrawer(S, mk, dr, faceW, tag, i, lay.w, cab);
+      else genStandardDrawer(S, mk, dr, faceW, tag, i, cab.width, lay.w, cab);
     });
   }
 
@@ -1030,27 +1019,10 @@ function buildColumn(
     subs.forEach((sub, si) => {
       const stag = `${tag}.${si + 1}`;
       if (sub.drawers.length > 0) {
-        // slide holes for sub-section drawers — previously MISSING entirely
-        // (the drawer boxes were cut, but no slide-mounting holes were drilled)
-        const subBank = drawerBank(sub, subH, S);
         sub.drawers.forEach((dr, di) => {
           const d2 = cab.isKitchen ? { ...dr, hidden: false } : dr;
-          const pats = normalizeSlidePatterns(S.slideHolePatterns);
-          const dCm = Math.round(d2.slideDepthCm);
-          const pattern =
-            d2.holePatternX && d2.holePatternX.length
-              ? d2.holePatternX
-              : cab.isKitchen && dCm === KITCHEN_SLIDE_CM
-                ? (pats["kitchen"] ?? KITCHEN_SLIDE_PATTERN)
-                : pats[String(dCm)] ?? getDrawerHolePattern(dCm);
-          const ySub = clamp(y0 + si * subH + subBank.y + effectiveDrawerHoleY(d2, sub.drawers, cab.isKitchen, di, S), 12, sides.L.h - 12);
-          pattern.forEach((p) => {
-            const xL = D - p; // measured from the front edge
-            drillLeft(xL, ySub, S.slideHoleDiameter, "slide");
-            drillRight(xL, ySub, S.slideHoleDiameter, "slide");
-          });
           if (cab.isKitchen) genKitchenDrawer(S, mk, d2, lay.w, stag, di);
-          else genStandardDrawer(S, mk, d2, lay.w, stag, di, undefined, cab);
+          else genStandardDrawer(S, mk, d2, lay.w, stag, di, undefined, undefined, cab);
         });
       } else if (sub.fixed) {
         mk({
@@ -1250,13 +1222,15 @@ function genStandardDrawer(
   faceW: number,
   tag: string,
   i: number,
+  cabOuterW?: number,
   sectionW?: number,
   cab?: Cabinet,
 ) {
-  const { boxW, boxD, sideH, fbH, slideMm } = drawerBoxDims(faceW, dr, S);
+  const { boxD, sideH, fbH, slideMm } = drawerBoxDims(faceW, dr, S);
   const dt = S.drawerThk;
   const label = dr.hidden ? "Hidden drawer" : "Drawer";
   const secW = sectionW ?? faceW;
+  const outerW = cabOuterW ?? faceW;
 
   // ---- front (MDF) ----
   // No MDF front is generated for ANY drawer unless the user enables "Front MDF".
@@ -1306,19 +1280,15 @@ function genStandardDrawer(
   const gy = S.grooveFromBottom;
   side.grooves.push({ x1: gInset, y1: gy, x2: gInset + grooveLen, y2: gy + S.grooveWidth, width: S.grooveWidth });
 
-  // plywood box front/back — the drawer runs inside its OWN section: the box
-  // width follows the box sides (section width − body thickness − back deduct,
-  // − 50 more when hidden), NOT the whole cabinet outer width. Multi-column
-  // rows previously produced fronts/backs as wide as the whole cabinet, which
-  // physically cannot slide in their narrow section.
-  const fbW = Math.max(60, boxW + (S.drawerBoxFrontDeduct ?? 0) - (dr.hidden ? S.drawerBoxHiddenExtra : 0));
+  // plywood box front/back = cabinet OUTER width − 33 − 49 (− 50 more when hidden)
+  const fbW = Math.max(60, outerW - S.drawerBoxFrontDeduct - S.drawerBoxBackDeduct - (dr.hidden ? S.drawerBoxHiddenExtra : 0));
   const back = mk({
     name: `${label} box back${tag} #${i + 1}`,
     w: fbW,
     h: fbH,
     material: "plywood",
     thickness: dt,
-    note: `box width − ${S.drawerBoxBackDeduct}${dr.hidden ? ` − ${S.drawerBoxHiddenExtra} (hidden)` : ""} · fits section ${Math.round(secW)}mm`,
+    note: `outer width − ${S.drawerBoxFrontDeduct} − ${S.drawerBoxBackDeduct}${dr.hidden ? ` − ${S.drawerBoxHiddenExtra} (hidden)` : ""}`,
   });
   // 6mm corner connector holes
   back.holes.push({ x: 7, y: 7, dia: 6, depth: dt, kind: "shelf" });
@@ -1329,7 +1299,7 @@ function genStandardDrawer(
     h: fbH,
     material: "plywood",
     thickness: dt,
-    note: `box width − ${S.drawerBoxBackDeduct}${dr.hidden ? ` − ${S.drawerBoxHiddenExtra} (hidden)` : ""}`,
+    note: `outer width − 33 − 49${dr.hidden ? " − 50 (hidden)" : ""}`,
   });
   // drawer bottom = veneer that FOLLOWS the cabinet's plywood material (an oak
   // cabinet gets oak drawer bottoms, a white cabinet white ones) — exactly
@@ -1649,7 +1619,7 @@ function buildCorner(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
       sh.outline = pentagonOutline(sh.w, sh.h, K);
     }
     if (col.door) genDoor(S, mk, col.door, Ld, row.h, ` R${ri + 1}`);
-    if (columnHasDrawers(col)) col.drawers.forEach((dr, i) => genStandardDrawer(S, mk, dr, Ld, ` R${ri + 1}`, i, undefined, cab));
+    if (columnHasDrawers(col)) col.drawers.forEach((dr, i) => genStandardDrawer(S, mk, dr, Ld, ` R${ri + 1}`, i, undefined, undefined, cab));
   });
 }
 
@@ -2024,20 +1994,6 @@ export function validateCabinet(c: Cabinet, S: Settings): { level: "err" | "warn
         col.drawers.forEach((d) => {
           if (d.slideDepthCm * 10 > c.depth) out.push({ level: "warn", msg: `${label}: ${d.slideDepthCm * 10}mm slide deeper than cabinet (${c.depth}mm)` });
         });
-        // slide-hole sanity — the pattern must fit the carcass and the holes
-        // must stay on the side panel (they used to be silently clamped away)
-        {
-          const patsV = normalizeSlidePatterns(S.slideHolePatterns);
-          const Dv = carcassDepth(c, S);
-          const bkV = drawerBank(col, r.h, S);
-          col.drawers.forEach((d, di) => {
-            const pat = d.holePatternX?.length ? d.holePatternX : patsV[String(Math.round(d.slideDepthCm))] ?? getDrawerHolePattern(d.slideDepthCm);
-            const maxX = Math.max(...pat);
-            if (maxX > Dv) out.push({ level: "warn", msg: `${label}: drawer ${di + 1} slide-hole X ${maxX}mm exceeds carcass depth ${Math.round(Dv)}mm — holes would miss the panel` });
-            const hy = bkV.y + effectiveDrawerHoleY(d, col.drawers, c.isKitchen, di, S);
-            if (hy > r.h - 12) out.push({ level: "warn", msg: `${label}: drawer ${di + 1} slide holes at Y ${Math.round(hy)}mm fall outside the row (${Math.round(r.h)}mm)` });
-          });
-        }
         if (findNearestDrawerDepth(c.depth) < 25) out.push({ level: "warn", msg: `${label}: too shallow for any slide` });
       } else if (col.door && !col.fixed) {
         const { w: dw, h: dh } = doorDims(faceW, r.h, col.door, S);

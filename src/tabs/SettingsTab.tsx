@@ -1,7 +1,7 @@
 import { Plus, RotateCcw, Save, Settings2, Palette, Trash2, MoveVertical, Sparkles, HardDrive, ShieldCheck, WifiOff, Download, Trash, Upload, Users as UsersIcon, UserRound } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import type { PlywoodMaterial, Settings, User } from "../types";
-import { DEFAULT_SETTINGS, DEFAULT_SLIDE_HOLE_PATTERNS, AVAILABLE_DRAWER_DEPTHS, SETTINGS_META, normalizeSlidePatterns, plyMaterialsOf, uid, SETTINGS_VERSION } from "../lib/defaults";
+import { DEFAULT_SETTINGS, AVAILABLE_DRAWER_DEPTHS, SETTINGS_META, normalizeSlidePatterns, plyMaterialsOf, uid, SETTINGS_VERSION } from "../lib/defaults";
 import { Btn, Field, Num } from "../components/ui";
 import { storageInfo, listBackups, loadRaw, saveRaw, safeParse } from "../lib/storage";
 import { userStorageKey } from "../lib/users";
@@ -248,13 +248,6 @@ export function SettingsTab({
                       }}
                       placeholder="39, 71, 167, 231"
                     />
-                    <Btn
-                      size="sm"
-                      title={`Reset every depth to the factory pattern (each depth drills its own distinct holes)`}
-                      onClick={() => setSettings({ ...settings, slideHolePatterns: { ...DEFAULT_SLIDE_HOLE_PATTERNS } })}
-                    >
-                      <RotateCcw size={12} />
-                    </Btn>
                   </div>
                 </Field>
               )}

@@ -1,14 +1,19 @@
 import { modelBounds } from "../src/three/bounds";
 import { layout3DCabs } from "../src/lib/layout3d";
-import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, applyWaste, bomOrderQty, bomWasteItem, doorHingeCount, findNearestDrawerDepth, makeCabinet, migrateSettings, plyMaterialById, slideDepthForCabinet, wastePctOf } from "../src/lib/defaults";
+import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, applyWaste, bomOrderQty, bomWasteItem, doorHingeCount, makeCabinet, migrateSettings, plyMaterialById, wastePctOf } from "../src/lib/defaults";
 import { buildDxf, buildDxfForSheet } from "../src/lib/dxf";
 import { buildSideSvg, layoutCabs, overlapBoxes, panelPositions } from "../src/tabs/View2DTab";
 import { bomReportHtml, frontElevationHtml, frontElevationDxf, frontElevationSvg, projectJson, readProjectFile } from "../src/lib/export";
 import { explodedReportHtml } from "../src/lib/explodedReport";
 import * as THREE from "three";
 import { OBJExporter } from "three/examples/jsm/exporters/OBJExporter.js";
+<<<<<<< HEAD
 import { allParts, allPartsMerged, applyManualRotation, backThkOf, bandLengthMm, canonicalPartId, carcassDepth, coverCenterX, coverPanelDims, doorDims, doorMaterial, drillOps, frontThk, fullDoorAutoDims, generateCabinetParts, generatePanelParts, glassDoorRefs, kickH, railShelfYs, rotatePartManual, rotatePartOnce, stackOn, stackedHeights, totalBandingM, validateCabinet } from "../src/lib/model";
 import type { Cabinet, PanelItem, Part } from "../src/types";
+=======
+import { allParts, allPartsMerged, applyManualRotation, bandLengthMm, canonicalPartId, carcassDepth, coverCenterX, coverPanelDims, doorDims, drillOps, fullDoorAutoDims, generateCabinetParts, glassDoorRefs, kickH, railShelfYs, rotatePartManual, rotatePartOnce, stackOn, stackedHeights, totalBandingM, validateCabinet } from "../src/lib/model";
+import type { Cabinet, Part } from "../src/types";
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
 import { nestParts, layoutIsValid, sheetDimsFor } from "../src/lib/nesting";
 import type { Settings } from "../src/types";
 import { buildCabinetGroup } from "../src/three/scene";
@@ -653,19 +658,10 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   // rotated L: front edge (x=D) maps to y'=0 = BOTTOM; mirrored R: front (x=0) maps to y'=D = TOP
   check("band L: front edge = bottom after rotation", L.band.bottom === true && !L.band.top, JSON.stringify(L.band));
   check("band R: front edge = top after rotation (mirrored)", R.band.top === true && !R.band.bottom, JSON.stringify(R.band));
-  const pat35 = [...S.slideHolePatterns["35"]].sort((a, b) => a - b);
   const slideY = L.holes.filter((h) => h.kind === "slide").map((h) => h.y);
-  // L reads distances-from-front directly; the rear holes legitimately travel
-  // deeper along the slide (mid-slide + near the back end) — what matters is
-  // that the FRONT brackets anchor at the banded edge and the full pattern is there
-  const offL = [...new Set(slideY.map((v) => Math.round(v * 10) / 10))].sort((a, b) => a - b);
-  check("band L: slide holes ride the banded front edge (front brackets ≤75mm, full pattern)",
-    slideY.length === pat35.length && offL.length === pat35.length && Math.min(...offL) < 75 && JSON.stringify(offL) === JSON.stringify(pat35), slideY.slice(0, 4).join(","));
+  check("band L: slide holes hug the same (front) edge as the banding", slideY.length > 0 && Math.min(...slideY) < 60 && Math.max(...slideY) < L.h / 2, slideY.slice(0, 4).join(","));
   const slideYR = R.holes.filter((h) => h.kind === "slide").map((h) => h.y);
-  const Dp = carcassDepth(c, S);
-  const offR = [...new Set(slideYR.map((v) => Math.round((Dp - v) * 10) / 10))].sort((a, b) => a - b);
-  check("band R: slide holes ride the banded (mirrored) front edge",
-    slideYR.length === pat35.length && offR.length === pat35.length && Dp - Math.max(...slideYR) < 75 && JSON.stringify(offR) === JSON.stringify(pat35), slideYR.slice(0, 4).join(","));
+  check("band R: slide holes hug the banded top edge", slideYR.length > 0 && Math.max(...slideYR) > R.h - 60 && Math.min(...slideYR) > R.h / 2, slideYR.slice(0, 4).join(","));
 }
 
 /* 25 — span panels keep grain along the span (no auto-rotation); oak backs lock
@@ -1287,167 +1283,6 @@ const roundTripPanels = (async () => {
   const mq = htmlQty.match(/<td>Hinges - Universal 35mm<\/td><td class="num">(\d+)<\/td>/);
   check("BOM hinges: qty 2 cabinet → 8", !!mq && mq[1] === "8", mq?.[1] ?? "row missing");
 }
-
-/* ============ drawers: every slide depth gets its OWN hole pattern ============ */
-{
-  // side panels are auto-rotated in the cut list: the L panel reads
-  // distances-from-front directly, the R panel is mirrored — normalize both
-  // back to "mm from the front edge" before comparing with the pattern table
-  const offsFor = (cm: number, panel: "L" | "R") => {
-    const c = makeCabinet("base", 600, 720, 560, "Pat" + cm);
-    const z = c.rows[0].columns[0];
-    z.drawers = [{ id: "d1", hidden: false, frontHeight: 220, slideDepthCm: cm, frontMdf: true }];
-    z.door = null;
-    const D = carcassDepth(c, S);
-    const p = allParts([c], S).find((q) => q.name === `Side panel ${panel}`)!;
-    const hs = p.holes.filter((h) => h.kind === "slide");
-    const useX = new Set(hs.map((h) => h.x)).size >= new Set(hs.map((h) => h.y)).size;
-    const vals = (useX ? hs.map((h) => h.x) : hs.map((h) => h.y)).map((v) => Math.round(v * 10) / 10);
-    const offs = panel === "L" ? vals : vals.map((v) => Math.round((D - v) * 10) / 10);
-    return [...new Set(offs)].sort((a, b) => a - b);
-  };
-  const depths = [25, 30, 35, 40, 45, 50];
-  const pats = depths.map((cm) => offsFor(cm, "L"));
-  const expected = depths.map((cm) => [...S.slideHolePatterns[String(cm)]].sort((a, b) => a - b));
-  check("each slide depth drills exactly its own pattern", JSON.stringify(pats) === JSON.stringify(expected), JSON.stringify(pats));
-  check("slide patterns mirrored correctly on the R panel", JSON.stringify(depths.map((cm) => offsFor(cm, "R"))) === JSON.stringify(expected), JSON.stringify(depths.map((cm) => offsFor(cm, "R"))));
-  const uniq = new Set(depths.map((cm) => JSON.stringify(S.slideHolePatterns[String(cm)])));
-  check("slide patterns differ per depth (no more 'same holes for every slider')", uniq.size === 6, `${uniq.size}`);
-  depths.forEach((cm, i) => {
-    check(`slide ${cm}cm: rear hole hugs the slide's back end`, Math.abs(pats[i][3] - (cm * 10 - 33)) < 0.01, `${pats[i][3]} vs ${cm * 10 - 33}`);
-  });
-}
-
-/* ============ per-drawer custom X pattern (different slide hardware) ============ */
-{
-  const c = makeCabinet("base", 600, 720, 560, "CustomPat");
-  c.rows[0].h = 620;
-  const z = c.rows[0].columns[0];
-  z.drawers = [
-    { id: "d1", hidden: false, frontHeight: 300, slideDepthCm: 35, frontMdf: true },
-    { id: "d2", hidden: false, frontHeight: 320, slideDepthCm: 35, frontMdf: true, holePatternX: [50, 150, 300] },
-  ];
-  z.door = null;
-  const p = allParts([c], S).find((q) => q.name === "Side panel L")!;
-  const hs = p.holes.filter((h) => h.kind === "slide");
-  const useX = new Set(hs.map((h) => h.x)).size >= new Set(hs.map((h) => h.y)).size;
-  const offs = (useX ? hs.map((h) => h.x) : hs.map((h) => h.y)).map((v) => Math.round(v * 10) / 10);
-  const rows = (useX ? hs.map((h) => h.y) : hs.map((h) => h.x)).map((v) => Math.round(v * 10) / 10);
-  const offSet = new Set(offs);
-  check("per-drawer override drills the custom X holes", [50, 150, 300].every((x) => offSet.has(x)), [...offSet].sort((a, b) => a - b).join(","));
-  check("per-drawer override keeps the auto holes for the sibling drawer", [...S.slideHolePatterns["35"]].every((x) => offSet.has(x)));
-  // the custom holes must sit on the SECOND drawer's row (auto Y 55+300=355),
-  // a different row from the first drawer's
-  const custom = [50, 150, 300];
-  const rowOfCustom = rows.filter((_, i2) => custom.includes(offs[i2]));
-  const rowOfFirst = rows.filter((_, i2) => offs[i2] === Math.min(...S.slideHolePatterns["35"]));
-  check("override holes land on the 2nd drawer's row",
-    rowOfCustom.length === 3 && new Set(rowOfCustom).size === 1 && Math.abs(rowOfCustom[0] - rowOfFirst[0]) > 200,
-    `custom=${rowOfCustom.join(",")} first=${rowOfFirst.join(",")}`);
-}
-
-/* ============ sub-section drawers now get slide holes ============ */
-{
-  const c = makeCabinet("base", 600, 720, 560, "SubDrw");
-  c.hasToeKick = true; // rows already sum to the box height with the kick on
-  const rh = c.rows[0].h;
-  const z = c.rows[0].columns[0];
-  z.door = null;
-  z.sub = [{ id: "s1", width: 0, shelves: 0, door: null, drawers: [{ id: "sd1", hidden: false, frontHeight: rh, slideDepthCm: 35, frontMdf: true }] }];
-  const sides = allParts([c], S).filter((p) => p.name === "Side panel L" || p.name === "Side panel R");
-  const slideOps = drillOps([c], S).filter((o) => o.type === "slide");
-  check("sub-section drawer: slide holes drilled (pattern × 2 panels)", slideOps.length === S.slideHolePatterns["35"].length * 2, `${slideOps.length}`);
-  check("sub-section drawer: holes live on both side panels", sides.every((p) => p.holes.filter((h) => h.kind === "slide").length === S.slideHolePatterns["35"].length), sides.map((p) => p.holes.filter((h) => h.kind === "slide").length).join(","));
-  check("sub-section drawer: no validation errors", validateCabinet(c, S).filter((v) => v.level === "err").length === 0, validateCabinet(c, S).map((v) => v.msg).join(" | "));
-}
-
-
-/* ============ nested sub-rows: drawers drill into their own dividers ============ */
-{
-  const c = makeCabinet("base", 900, 2000, 560, "NestedDrw");
-  c.hasToeKick = true; // rows already sum to the box height with the kick on
-  const z = c.rows[0].columns[0];
-  z.door = null;
-  // sub-row 1 holds TWO drawer columns → a "Sub col divider" is created between
-  // them; its slide holes must land on that divider, never on the parent's.
-  // A shared divider is drilled from BOTH faces (left drawer's right slide +
-  // right drawer's left slide) → 2 × pattern holes on it.
-  z.rows = [
-    {
-      id: "nr1",
-      h: 950,
-      columns: [
-        { id: "nc1", width: 0, shelves: 0, door: null, drawers: [{ id: "nd1", hidden: false, frontHeight: 300, slideDepthCm: 35, frontMdf: true }] },
-        { id: "nc2", width: 0, shelves: 0, door: null, drawers: [{ id: "nd2", hidden: false, frontHeight: 300, slideDepthCm: 35, frontMdf: true }] },
-      ],
-    },
-    { id: "nr2", h: 950, columns: [{ id: "nc3", width: 0, shelves: 0, door: null, drawers: [{ id: "nd3", hidden: false, frontHeight: 400, slideDepthCm: 40, frontMdf: true }] }] },
-  ];
-  const parts = allParts([c], S);
-  const subDvs = parts.filter((p) => p.name.startsWith("Sub col divider"));
-  check("nested: sub col divider created between the sub-columns", subDvs.length === 1, `${subDvs.length}`);
-  check("nested: the sub col divider carries the sub-drawers' slide holes (both faces)",
-    subDvs.length === 1 && subDvs[0].holes.filter((h) => h.kind === "slide").length === S.slideHolePatterns["35"].length * 2,
-    `${subDvs[0]?.holes.filter((h) => h.kind === "slide").length ?? 0}`);
-  // nc1: L + divider · nc2: divider + R · nc3: L + R
-  const expected = S.slideHolePatterns["35"].length * 4 + S.slideHolePatterns["40"].length * 2;
-  const slideOps = drillOps([c], S).filter((o) => o.type === "slide");
-  check("nested: drawers in every sub-column get slide holes", slideOps.length === expected, `${slideOps.length} vs ${expected}`);
-  check("nested: no validation errors", validateCabinet(c, S).filter((v) => v.level === "err").length === 0, validateCabinet(c, S).map((v) => v.msg).join(" | "));
-}
-
-/* ============ multi-column rows: drawer box follows its own SECTION ============ */
-{
-  const c = makeCabinet("base", 900, 720, 560, "MultiDrw");
-  c.rows[0].h = 620;
-  c.rows[0].columns = [
-    { id: "mc1", width: 0, shelves: 0, door: null, drawers: [{ id: "md1", hidden: false, frontHeight: 620, slideDepthCm: 35, frontMdf: true }] },
-    { id: "mc2", width: 0, shelves: 0, door: null, drawers: [{ id: "md2", hidden: false, frontHeight: 620, slideDepthCm: 35, frontMdf: true }] },
-  ];
-  const backs = allParts([c], S).filter((p) => p.name.includes("box back"));
-  check("multi-column: 2 drawer boxes", backs.length === 2, `${backs.length}`);
-  check("multi-column: box back sized to its section, not the cabinet", backs.every((p) => Math.min(p.w, p.h) < 500), backs.map((p) => p.w).join(","));
-  check("multi-column: both boxes equal width", backs.length === 2 && Math.abs(backs[0].w - backs[1].w) < 0.01, `${backs[0]?.w} vs ${backs[1]?.w}`);
-}
-
-/* ============ settings migration: per-depth patterns survive ============ */
-{
-  const legacy = migrateSettings({ slideHolePattern: [10, 20, 30, 40] } as any);
-  check("legacy single pattern migrates to every depth", JSON.stringify(legacy.slideHolePatterns["35"]) === "[10,20,30,40]");
-  const kept = migrateSettings({ slideHolePattern: [10, 20, 30, 40], slideHolePatterns: { "35": [1, 2] } } as any);
-  check("saved per-depth patterns survive migration", JSON.stringify(kept.slideHolePatterns["35"]) === "[1,2]");
-  check("legacy pattern does NOT clobber depths missing from the save", JSON.stringify(kept.slideHolePatterns["50"]) === JSON.stringify(DEFAULT_SETTINGS.slideHolePatterns["50"]), JSON.stringify(kept.slideHolePatterns["50"]));
-  check("findNearestDrawerDepth: 0 when nothing fits", findNearestDrawerDepth(150) === 0, `${findNearestDrawerDepth(150)}`);
-  check("slideDepthForCabinet: clamps to the smallest slide when too shallow", slideDepthForCabinet(150) === 25, `${slideDepthForCabinet(150)}`);
-}
-
-/* ============ validation catches impossible slides / holes ============ */
-{
-  const c = makeCabinet("base", 600, 720, 200, "TooShallow");
-  c.rows[0].h = 620;
-  const z = c.rows[0].columns[0];
-  z.drawers = [{ id: "ts1", hidden: false, frontHeight: 620, slideDepthCm: 25, frontMdf: true }];
-  z.door = null;
-  check("200mm cabinet: 'too shallow for any slide' warning raised", validateCabinet(c, S).some((v) => v.msg.includes("too shallow for any slide")));
-  // 2 stacked drawers in a 300mm row: the 2nd drawer's auto Y (55+300=355)
-  // would put the holes off the panel — must be a warning, not silent clamping
-  const c2 = makeCabinet("base", 600, 720, 560, "BadY");
-  c2.rows[0].h = 300;
-  const z2 = c2.rows[0].columns[0];
-  z2.drawers = [
-    { id: "by1", hidden: false, frontHeight: 300, slideDepthCm: 35, frontMdf: true },
-    { id: "by2", hidden: false, frontHeight: 0, slideDepthCm: 35, frontMdf: true },
-  ];
-  z2.door = null;
-  check("drawer holes outside the row raise a warning", validateCabinet(c2, S).some((v) => v.msg.includes("fall outside the row")));
-  // pattern deeper than the carcass — holes would miss the panel entirely
-  const c3 = makeCabinet("base", 600, 720, 560, "BadX");
-  const z3 = c3.rows[0].columns[0];
-  z3.drawers = [{ id: "bx1", hidden: false, frontHeight: 620, slideDepthCm: 35, frontMdf: true, holePatternX: [39, 71, 600] }];
-  z3.door = null;
-  check("pattern deeper than the carcass raises a warning", validateCabinet(c3, S).some((v) => v.msg.includes("exceeds carcass depth")));
-}
-
 
 Promise.all([autoShotTest, roundTripPanels]).then(() => {
   if (failures) {

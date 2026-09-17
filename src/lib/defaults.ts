@@ -61,18 +61,14 @@ export const partMatName = (S: Settings, p: { material: string; matId?: string |
  * Drawer slide-hole X pattern by slide depth (cm), measured mm from the FRONT
  * edge of the side panel. These are the physical hole locations along the
  * slider rail — one key per slide depth, editable in Settings → Drilling.
- *
- * Every slide depth gets its OWN distinct pattern: the front bracket pair is
- * always 39 / 71mm from the front, the middle hole sits at mid-slide and the
- * rear hole 33mm from the slide's back end (L = depth cm × 10).
  */
 export const DEFAULT_SLIDE_HOLE_PATTERNS: Record<string, number[]> = {
-  "25": [39, 71, 125, 217],
-  "30": [39, 71, 150, 267],
-  "35": [39, 71, 175, 317],
-  "40": [39, 71, 200, 367],
-  "45": [39, 71, 225, 417],
-  "50": [39, 71, 250, 467],
+  "25": [39, 71, 167, 231],
+  "30": [39, 71, 167, 231],
+  "35": [39, 71, 167, 231],
+  "40": [39, 71, 167, 263],
+  "45": [39, 71, 167, 263],
+  "50": [39, 71, 263, 341],
   // kitchen-mode drawers use a dedicated industry pattern (always 50cm slide)
   kitchen: [38, 61, 261.5, 294.5],
 };
@@ -91,11 +87,7 @@ export function normalizeSlidePatterns(p?: Record<string, number[]> | null): Rec
 export function migrateSettings(raw: Partial<Settings> | undefined | null): Settings {
   const base = { ...DEFAULT_SETTINGS, ...(raw ?? {}) } as Settings;
   const patArr = (raw as { slideHolePattern?: unknown } | null | undefined)?.slideHolePattern;
-  // legacy single-pattern saves only migrate when NO per-depth patterns were
-  // saved — otherwise the old array would clobber the user's per-depth table
-  const savedPats = (raw as { slideHolePatterns?: unknown } | null | undefined)?.slideHolePatterns;
-  const hasPerDepth = !!savedPats && typeof savedPats === "object" && Object.keys(savedPats as object).length > 0;
-  if (Array.isArray(patArr) && patArr.length && !hasPerDepth) {
+  if (Array.isArray(patArr) && patArr.length) {
     base.slideHolePatterns = Object.fromEntries(AVAILABLE_DRAWER_DEPTHS.map((k) => [String(k), patArr.map(Number)])) as Record<string, number[]>;
   }
   base.slideHolePatterns = normalizeSlidePatterns(base.slideHolePatterns);
@@ -268,10 +260,14 @@ export function bomOrderQty(net: number, unit: string, item: string, pct: number
 export const AVAILABLE_DRAWER_DEPTHS = [25, 30, 35, 40, 45, 50];
 export const DEFAULT_SLIDE_CM = 50;
 
-/** fallback X-pattern table — derived from the defaults so both stay in sync */
-export const DRAWER_HOLE_PATTERNS: Record<number, number[]> = Object.fromEntries(
-  Object.entries(DEFAULT_SLIDE_HOLE_PATTERNS).filter(([k]) => k !== "kitchen"),
-) as Record<number, number[]>;
+export const DRAWER_HOLE_PATTERNS: Record<number, number[]> = {
+  25: [39, 71, 167, 231],
+  30: [39, 71, 167, 231],
+  35: [39, 71, 167, 231],
+  40: [39, 71, 167, 263],
+  45: [39, 71, 167, 263],
+  50: [39, 71, 263, 341],
+};
 
 export const FIRST_DRAWER_HOLE_HEIGHT = 60;
 export const DRAWER_HEIGHT_INCREMENT = 55;
@@ -283,14 +279,10 @@ export function getDrawerHolePattern(slideDepthCm: number): number[] {
   return DRAWER_HOLE_PATTERNS[lower ?? AVAILABLE_DRAWER_DEPTHS[0]];
 }
 
-/**
- * Nearest available slide depth (cm) that fits `depthMm`, rounding DOWN —
- * 0 when the cabinet is too shallow for ANY slide (caller decides what to do).
- */
 export function findNearestDrawerDepth(depthMm: number): number {
   const cm = depthMm / 10;
   for (let i = AVAILABLE_DRAWER_DEPTHS.length - 1; i >= 0; i--) if (AVAILABLE_DRAWER_DEPTHS[i] <= cm) return AVAILABLE_DRAWER_DEPTHS[i];
-  return 0;
+  return AVAILABLE_DRAWER_DEPTHS[0];
 }
 
 /* ================= kitchen drawer system ================= */
@@ -310,9 +302,7 @@ export const KITCHEN_LAST_DRAWER_OFFSET = 55;
  */
 export function slideDepthForCabinet(carcassDepthMm: number, isKitchen = false): number {
   if (isKitchen) return KITCHEN_SLIDE_CM;
-  // too shallow for any slide → clamp to the smallest available so the UI stays
-  // functional; validateCabinet raises the "too shallow" warning separately.
-  return findNearestDrawerDepth(Math.max(0, carcassDepthMm - 15)) || AVAILABLE_DRAWER_DEPTHS[0];
+  return findNearestDrawerDepth(Math.max(0, carcassDepthMm - 15));
 }
 
 /* ================= doors ================= */
@@ -503,9 +493,6 @@ const stripDraw = (d: DrawerSpec) => ({
   hidden: d.hidden,
   slideDepthCm: d.slideDepthCm,
   frontMdf: !!d.frontMdf,
-  // per-drawer overrides must survive save / load / library dedup
-  yOffset: d.yOffset,
-  holePatternX: d.holePatternX,
 });
 const stripCol = (col: ColumnSpec): any => ({
   width: col.width,

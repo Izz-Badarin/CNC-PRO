@@ -1061,18 +1061,6 @@ function ColumnEditor({
                 {AVAILABLE_DRAWER_DEPTHS.map((cm) => <option key={cm} value={cm}>{cm * 10}mm</option>)}
               </select>
               {cab.isKitchen && <Chip tone="green">{d.slideDepthCm * 10}mm</Chip>}
-              {/* per-drawer custom X pattern — different slide hardware drills
-                  differently at the same nominal depth; empty = follow Settings */}
-              <input
-                className="inp !w-[130px] !py-1 !px-1.5 text-[10.5px] font-mono"
-                value={(d.holePatternX ?? []).join(", ")}
-                placeholder={`${settings.slideHolePatterns?.[String(d.slideDepthCm)]?.join(", ") ?? ""} (auto)`}
-                title={`Custom slide-hole X pattern for THIS drawer only (mm from front). Empty = follow Settings → Drilling for a ${d.slideDepthCm}cm slide. Use this when different slide hardware drills different holes at the same depth.`}
-                onChange={(e) => {
-                  const nums = (e.target.value.match(/\d+(\.\d+)?/g) ?? []).map((n) => parseFloat(n));
-                  patchDrawer(r.id, col.id, d.id, { holePatternX: nums.length ? nums : undefined });
-                }}
-              />
               {/* MDF fronts are opt-in for EVERY drawer (hidden or not) */}
               <label
                 className={`flex items-center gap-1 cursor-pointer rounded-md border px-1.5 py-0.5 ${
