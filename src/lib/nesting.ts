@@ -747,13 +747,16 @@ function nestGroupSync(items: Item[], key: string, S: Settings): NestGroup {
 
 function groupParts(parts: Part[], S?: Settings): Map<string, Part[]> {
   const groups = new Map<string, Part[]>();
+  // drop parts the user unchecked in the cut list ("In nesting") - they stay in
+  // the cut list/BOM but skip sheet packing (covers sync + Web-Worker paths)
+  const pool = parts.filter((p) => p.skipNest !== true);
   // MDF "auto" usable areas (a part that fits NEITHER board stays in the 2440
   // group so it is reported unplaced with a reason instead of vanishing)
   const m = S?.sheetMargin ?? 10;
   const uw24 = 2440 - 2 * m, uh = 1220 - 2 * m, uw30 = 3050 - 2 * m;
   const fits = (w: number, h: number, UW: number, UH: number, locked: boolean) =>
     (w <= UW + 1e-6 && h <= UH + 1e-6) || (!locked && h <= UW + 1e-6 && w <= UH + 1e-6);
-  parts.forEach((p) => {
+  pool.forEach((p) => {
     // third segment = plywood material id so different plywoods never share a sheet
     let key = `${p.material}@${p.thickness}@${p.matId ?? "def"}`;
     // MDF auto: tall parts that only fit the big board get their own 3050 group

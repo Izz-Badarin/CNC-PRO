@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { Cabinet, ColumnSpec, CoverPanel, DoorSpec, PanelItem, PlywoodMaterial, Settings } from "../types";
 import {
+  backThkOf,
   boxHeight,
   carcassDepth,
   columnFaceWidth,
@@ -70,7 +71,7 @@ function getWoodTexture(): THREE.CanvasTexture {
 }
 
 const DEFAULT_SETTINGS_FALLBACK: Settings = {
-  bodyThk: 16.5, mdfThk: 19, backThk: 5, drawerThk: 16.5,
+  bodyThk: 16.5, mdfThk: 19, backThk: 5, glassThk: 19, drawerThk: 16.5,
   bitDiameter: 4, holeDiameter: 4.9, slideHoleDiameter: 4.9, shelfGapMin: 300, shelfGapMax: 350, shelfGapTarget: 325,
   shelfIncrease: 0.5, shelfFrontSetback: 5, shelfHoleCenter: 39, shelfHoleSpacing: 32, shelfHolesPerSide: 3,
   kickHeight: 100, kickDepth: 50, doorGap: 3, dividerDeduct: 33, grooveWidth: 5.7, grooveFromBottom: 12, grooveShorter: 20,
@@ -89,8 +90,9 @@ const DEFAULT_SETTINGS_FALLBACK: Settings = {
     { id: "ply-grain", name: "Plywood (grain)", color: "#b78a58", opacity: 1 },
   ],
   defaultPlyId: "ply-default",
-  slideHolePatterns: { "25": [39, 71, 167, 231], "30": [39, 71, 167, 231], "35": [39, 71, 167, 231], "40": [39, 71, 167, 263], "45": [39, 71, 167, 263], "50": [39, 71, 263, 341], kitchen: [38, 61, 261.5, 294.5] },
+  slideHolePatterns: { "25": [39, 71, 125, 217], "30": [39, 71, 150, 267], "35": [39, 71, 175, 317], "40": [39, 71, 200, 367], "45": [39, 71, 225, 417], "50": [39, 71, 250, 467], kitchen: [38, 61, 261.5, 294.5] },
   drawerHoleYStart: 60, drawerHoleYStep: 55,
+  kitchenHoleYStart: 75, kitchenHoleLastOffset: 55,
   drawerBoxFrontDeduct: 33, drawerBoxBackDeduct: 49, drawerBoxHiddenExtra: 50, drawerBoxDepthFix: 7,
   bomWastePct: 10,
 };
@@ -466,9 +468,11 @@ function buildWing3D(
     // along its LONG SIDE) — same pipeline as the carcass, matching the cut-list
     // part (Back · matId = cabinet plywood, grain locked, long side along the
     // sheet length). tall backs run the grain vertically, wide backs keep it
-    // along the span. Geometry/position/layer unchanged.
-    const back = box(w - 2, BH - 2, S.backThk, woodMat(w, BH, ply, BH > w, BH <= w), "back", false);
-    back.position.set(w / 2, BH / 2, -S.backThk / 2);
+    // along the span. When the user switches this cabinet's back to plywood the
+    // back is drawn at the FULL carcass thickness (backThkOf) to match the part.
+    const backT = backThkOf(cab, S);
+    const back = box(w - 2, BH - 2, backT, woodMat(w, BH, ply, BH > w, BH <= w), "back", false);
+    back.position.set(w / 2, BH / 2, -backT / 2);
     wg.add(back);
   }
 
@@ -714,7 +718,8 @@ function buildColumn3D(
         dg.add(mf);
       }
       if (cab.isKitchen) {
-        const bd = Math.min(495, d - 60);
+        const slideCm = Math.round(dr.slideDepthCm ?? 50);
+        const bd = Math.min(Math.max(60, slideCm * 10 - 5), d - 60);
         const bot = box(w - 108, S.bodyThk * 0.8, bd, drawerBoxMat, "drawer", false);
         bot.position.set(0, -fh / 2 + 34, -S.mdfThk / 2 - gap - bd / 2);
         dg.add(bot);
@@ -794,7 +799,7 @@ function buildDoor3D(
 ) {
   const baseX = faceCx - w / 2;
   const { w: dw, h: dh, count } = doorDims(w, rowH, door, S);
-  const thk = door.material === "glass" ? 10 : door.material === "mdf" ? door.mdfThk || S.mdfThk : S.bodyThk;
+  const thk = door.material === "glass" ? S.glassThk : door.material === "mdf" ? door.mdfThk || S.mdfThk : S.bodyThk;
   // MDF oak doors get the oak grain texture (vertical — along the door height);
   // white MDF stays flat; plywood doors get the plywood grain along H, never D.
   const finish = door.material === "mdf" ? door.finish ?? S.mdfFinish : "white";

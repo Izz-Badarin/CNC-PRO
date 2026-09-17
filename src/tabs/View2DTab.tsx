@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, FileImage, Layers2, RotateCcw, RotateCw, Ruler } from "lucide-react";
 import type { Cabinet, PanelItem, Settings } from "../types";
-import { columnHasDrawers, columnLayout, coverPanelDims, drawerBank, hasKick, railShelfYs, stackOn, stackedHeights } from "../lib/model";
+import { backThkOf, columnHasDrawers, columnLayout, coverPanelDims, drawerBank, hasKick, railShelfYs, stackOn, stackedHeights } from "../lib/model";
 import { Btn, Empty } from "../components/ui";
 import { downloadRaw, frontElevationDxf, frontElevationHtml, openPrintWindow } from "../lib/export";
 import { layoutCabs, panelPositions, type CabPos } from "../lib/layout2d";
@@ -969,9 +969,12 @@ export function buildSideSvg(cabs: Cabinet[], S: Settings, panels: PanelItem[] =
 
     // silhouette (carcass) — amber outline like the front view
     out += `<rect x="${f(x)}" y="${f(top)}" width="${f(dw)}" height="${f(Hc * sc)}" fill="#14202f" stroke="#f5b33c" stroke-width="1.6"/>`;
-    // veneer back at the rear
-    if (cab.hasBack !== false)
-      out += `<rect x="${f(x)}" y="${f(top)}" width="${f(S.backThk * sc)}" height="${f((Hc - kick) * sc)}" fill="#0c141f" stroke="#3d5878" stroke-width="0.7"/>`;
+    // back at the rear — thin veneer sheet, or full plywood thickness when this
+    // cabinet's back material is switched to plywood (matches the cut part)
+    if (cab.hasBack !== false) {
+      const backT = backThkOf(cab, S);
+      out += `<rect x="${f(x)}" y="${f(top)}" width="${f(backT * sc)}" height="${f((Hc - kick) * sc)}" fill="#0c141f" stroke="#3d5878" stroke-width="0.7"/>`;
+    }
     // overlay front plane (door / drawer faces)
     if (frontThk > 0) {
       out += `<rect x="${f(x + bodyW)}" y="${f(top)}" width="${f(frontThk * sc)}" height="${f((Hc - kick) * sc)}" fill="#22364e" stroke="#7ea3cc" stroke-width="1"/>`;

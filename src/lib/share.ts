@@ -13,6 +13,10 @@ export interface SharePayload {
   grain: unknown;
   /** cut-list manual 90° rotations (optional — old links predate it) */
   rotation?: unknown;
+  /** per-part nesting exclusions (optional — old links predate it) */
+  skipNest?: unknown;
+  /** per-part nest-only size overrides (optional — old links predate it) */
+  sizeOverride?: unknown;
 }
 
 /**

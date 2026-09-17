@@ -5,6 +5,7 @@ import {
   Briefcase,
   ChevronDown,
   Copy,
+  Hash,
   Layers,
   Library,
   Pencil,
@@ -256,6 +257,15 @@ export function ProjectTab({
                   S={settings}
                   onChange={(patch) => setPanels?.((ps) => ps.map((x) => (x.id === p.id ? { ...x, ...patch } : x)))}
                   onDelete={() => setPanels?.((ps) => ps.filter((x) => x.id !== p.id))}
+                  onDuplicate={() =>
+                    setPanels?.((ps) => {
+                      const i = ps.findIndex((x) => x.id === p.id);
+                      const copy: PanelItem = { ...p, id: uid(), name: nextCopyName(p.name, ps.map((x) => x.name)) };
+                      const out = [...ps];
+                      out.splice(i + 1, 0, copy);
+                      return out;
+                    })
+                  }
                 />
               ))}
             </div>
@@ -493,11 +503,13 @@ function PanelEditor({
   S,
   onChange,
   onDelete,
+  onDuplicate,
 }: {
   p: PanelItem;
   S: Settings;
   onChange: (patch: Partial<PanelItem>) => void;
   onDelete: () => void;
+  onDuplicate: () => void;
 }) {
   const plys = plyMaterialsOf(S);
   const autoThk = p.material === "plywood" ? S.bodyThk : p.material === "back" ? S.backThk : S.mdfThk;
@@ -556,6 +568,34 @@ function PanelEditor({
           <input type="checkbox" className="chk !h-3 !w-3" checked={p.grain ?? false} onChange={(e) => onChange({ grain: e.target.checked })} />
           grain
         </label>
+        {/* cut-list part number — duplicate numbers auto-suffix to P5-A / P5-B … */}
+        <label className="flex items-center gap-1 cursor-pointer text-[11px] text-ink-300" title="Cut-list part number — shows as P<n> on the part (duplicates get -A / -B suffixes)">
+          <Hash size={12} className="text-ink-500" />
+          <Num
+            className="!w-[56px] !py-1 !px-2"
+            min={0}
+            max={9999}
+            value={(p.number ?? 0) as number}
+            onChange={(v) => onChange({ number: Math.max(0, Math.round(v)) > 0 ? Math.max(0, Math.round(v)) : null })}
+          />
+          <span className="text-[10px] text-ink-500">no.</span>
+        </label>
+        {/* pack — how many identical pieces to cut (flows into the part qty) */}
+        <label className="flex items-center gap-1 cursor-pointer text-[11px] text-ink-300" title="Pack — how many identical pieces to cut">
+          <Layers size={12} className="text-ink-500" />
+          <Num
+            className="!w-[56px] !py-1 !px-2"
+            min={1}
+            max={999}
+            value={(p.pack ?? 1) as number}
+            onChange={(v) => onChange({ pack: Math.max(1, Math.round(v)) })}
+          />
+          <span className="text-[10px] text-ink-500">pack</span>
+        </label>
+        {/* duplicate — copy this panel (new id, same config, Copy suffix) */}
+        <Btn size="sm" title="Duplicate panel" onClick={onDuplicate}>
+          <Copy size={11} />
+        </Btn>
         <Btn size="sm" variant="danger" className="ml-auto" onClick={onDelete}>
           <Trash2 size={11} />
         </Btn>

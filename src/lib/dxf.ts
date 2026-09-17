@@ -1,6 +1,6 @@
 import type { Cabinet, PanelItem, PartMaterial, Settings } from "../types";
 import { nestParts, placedOutline, rotPoint, type Sheet } from "./nesting";
-import { allParts, type GrainOverrides, type RotationOverrides } from "./model";
+import { allParts, type GrainOverrides, type RotationOverrides, type SizeOverrides, type SkipNestOverrides } from "./model";
 import { partMatName, plyMaterialsOf } from "./defaults";
 
 const LAYERS: [string, number][] = [
@@ -245,8 +245,8 @@ export function buildDxfFromSheets(sel: DxfSheetRef[], S: Settings, labels: bool
 export const plyGroupMatch = (g: { matId: string | null }, matId: string | null | undefined, defId: string) =>
   g.matId === (matId ?? null) || (g.matId === null && matId === defId);
 
-export function buildDxf(cabs: Cabinet[], S: Settings, material: PartMaterial | null, labels: boolean, ov: GrainOverrides = {}, matId?: string | null, panels: PanelItem[] = [], rot: RotationOverrides = {}): string {
-  const groups = nestParts(allParts(cabs, S, ov, panels, rot), S).filter(
+export function buildDxf(cabs: Cabinet[], S: Settings, material: PartMaterial | null, labels: boolean, ov: GrainOverrides = {}, matId?: string | null, panels: PanelItem[] = [], rot: RotationOverrides = {}, skip: SkipNestOverrides = {}, size: SizeOverrides = {}): string {
+  const groups = nestParts(allParts(cabs, S, ov, panels, rot, skip, size), S).filter(
     (g) =>
       (!material || g.material === material) &&
       // veneer back follows the cabinet plywood — split per material just like plywood
