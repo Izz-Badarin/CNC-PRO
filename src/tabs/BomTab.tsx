@@ -114,7 +114,11 @@ export function BomTab({ cabinets, settings, panels = [], grain = {}, rotation =
       }
     });
     const sheetCount: Record<string, number> = {};
-    nestParts(allParts(cabinets, settings, grain, panels, rotation), settings).forEach((g) => {
+    // sheet counts reflect the CURRENT cutting batch: skipped parts and
+    // nest-only size overrides are honored exactly like the Nesting tab.
+    // (The material-area lines above still count every part — a part cut
+    // outside the nesting batch still consumes board.)
+    nestParts(allParts(cabinets, settings, grain, panels, rotation, skipNest, sizeOverride), settings).forEach((g) => {
       const k = `${g.material}@${g.matId ?? "def"}`;
       sheetCount[k] = (sheetCount[k] ?? 0) + g.sheets.length;
     });

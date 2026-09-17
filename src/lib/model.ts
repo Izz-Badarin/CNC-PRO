@@ -330,6 +330,24 @@ export function drawerBank(col: ColumnSpec, rowH: number, S: Settings): { y: num
   return { y, h };
 }
 
+/**
+ * ONE slide-hole X resolver used by every drilling path AND validation —
+ * precedence: per-drawer override (DrawerSpec.holePatternX) → kitchen drawer
+ * at the kitchen-native slide depth (50cm, dedicated pattern) → per-depth
+ * Settings → Drilling table → geometric fallback.
+ */
+export function resolveSlidePatternX(
+  dr: { slideDepthCm: number; holePatternX?: number[] },
+  isKitchen: boolean,
+  S: Settings,
+): number[] {
+  const pats = normalizeSlidePatterns(S.slideHolePatterns);
+  const dCm = Math.round(dr.slideDepthCm);
+  if (dr.holePatternX && dr.holePatternX.length) return dr.holePatternX;
+  if (isKitchen && dCm === KITCHEN_SLIDE_CM) return pats["kitchen"] ?? KITCHEN_SLIDE_PATTERN;
+  return pats[String(dCm)] ?? getDrawerHolePattern(dCm);
+}
+
 /* ================= door math ================= */
 
 export function doorDims(faceW: number, rowH: number, door: DoorSpec, S: Settings): { w: number; h: number; count: number; wAuto: number; hAuto: number } {
@@ -988,16 +1006,9 @@ function buildColumn(
     col.drawers.forEach((dr0, i) => {
       // kitchen mode has no hidden drawers
       const dr = cab.isKitchen ? { ...dr0, hidden: false } : dr0;
-      const pats = normalizeSlidePatterns(S.slideHolePatterns);
-      const dCm = Math.round(dr.slideDepthCm);
-      // Kitchen drawers at the kitchen-native slide depth (50cm) use the
-      // dedicated kitchen pattern; any OTHER chosen slider depth follows the
-      // same per-depth X table as standard drawers — so changing the slider
-      // really moves the holes.
-      const pattern =
-        cab.isKitchen && dCm === KITCHEN_SLIDE_CM
-          ? (pats["kitchen"] ?? KITCHEN_SLIDE_PATTERN)
-          : pats[String(dCm)] ?? getDrawerHolePattern(dCm);
+      // ONE shared resolver — per-drawer X override → kitchen@50cm → per-depth
+      // settings table → geometric fallback (same precedence as validation).
+      const pattern = resolveSlidePatternX(dr, cab.isKitchen, S);
       // manual per-drawer Y override wins; otherwise the automatic stack rule.
       // Y is measured from the BANK bottom (which itself may be lifted by the
       // column's drawerAlign), so the holes follow the bank wherever it sits.
@@ -1019,8 +1030,18 @@ function buildColumn(
     subs.forEach((sub, si) => {
       const stag = `${tag}.${si + 1}`;
       if (sub.drawers.length > 0) {
+        // slide holes for sub-section drawers — previously MISSING entirely
+        // (the drawer boxes were cut, but no slide-mounting holes were drilled)
+        const subBank = drawerBank(sub, subH, S);
         sub.drawers.forEach((dr, di) => {
           const d2 = cab.isKitchen ? { ...dr, hidden: false } : dr;
+          const pattern = resolveSlidePatternX(d2, cab.isKitchen, S);
+          const ySub = clamp(y0 + si * subH + subBank.y + effectiveDrawerHoleY(d2, sub.drawers, cab.isKitchen, di, S), 12, sides.L.h - 12);
+          pattern.forEach((p) => {
+            const xL = D - p; // measured from the front edge
+            drillLeft(xL, ySub, S.slideHoleDiameter, "slide");
+            drillRight(xL, ySub, S.slideHoleDiameter, "slide");
+          });
           if (cab.isKitchen) genKitchenDrawer(S, mk, d2, lay.w, stag, di);
           else genStandardDrawer(S, mk, d2, lay.w, stag, di, undefined, undefined, cab);
         });
@@ -1972,6 +1993,12 @@ export function validateCabinet(c: Cabinet, S: Settings): { level: "err" | "warn
   }
   if (c.width <= 0 || c.height <= 0 || c.depth <= 0) out.push({ level: "err", msg: "Dimensions must be greater than zero" });
   if (c.rows.length === 0) out.push({ level: "warn", msg: "No rows defined — empty carcass" });
+  // unsupported combinations — the generator silently picks corner geometry
+  // over stacked boxes, and stacked L/C bodies lose their side notch
+  if (stackOn(c) && isCorner(c.type))
+    out.push({ level: "err", msg: "Stacked boxes are not supported on corner cabinets" });
+  else if (stackOn(c) && isNotched(c.type))
+    out.push({ level: "warn", msg: "Stacked boxes drop the L/C side notch — use one box" });
   if (isNotched(c.type)) {
     if (c.type === "L" && (c.lCutW <= 0 || c.lCutH <= 0)) out.push({ level: "warn", msg: "L notch is zero — panel will be a plain rectangle" });
     if (c.type === "C" && c.cCutOffsetFromBottom + c.cCutMidH > BH - c.cCutTopH)
@@ -1994,6 +2021,22 @@ export function validateCabinet(c: Cabinet, S: Settings): { level: "err" | "warn
         col.drawers.forEach((d) => {
           if (d.slideDepthCm * 10 > c.depth) out.push({ level: "warn", msg: `${label}: ${d.slideDepthCm * 10}mm slide deeper than cabinet (${c.depth}mm)` });
         });
+        // slide-hole sanity — resolved with the SAME resolver as the drilling;
+        // holes that would miss the panel or fall outside the row must be
+        // flagged, not silently clamped away
+        {
+          const Dv = carcassDepth(c, S);
+          const bkV = drawerBank(col, r.h, S);
+          col.drawers.forEach((d, di) => {
+            const pat = resolveSlidePatternX(d, c.isKitchen, S);
+            const bad = pat.filter((v) => !Number.isFinite(v) || v < 0);
+            if (bad.length) out.push({ level: "warn", msg: `${label}: drawer ${di + 1} slide-hole X has invalid values (${bad.join(", ")}) — check Settings → Drilling` });
+            const maxX = Math.max(...pat);
+            if (Number.isFinite(maxX) && maxX > Dv) out.push({ level: "warn", msg: `${label}: drawer ${di + 1} slide-hole X ${maxX}mm exceeds carcass depth ${Math.round(Dv)}mm — holes would miss the panel` });
+            const hy = bkV.y + effectiveDrawerHoleY(d, col.drawers, c.isKitchen, di, S);
+            if (hy > r.h - 12) out.push({ level: "warn", msg: `${label}: drawer ${di + 1} slide holes at Y ${Math.round(hy)}mm fall outside the row (${Math.round(r.h)}mm)` });
+          });
+        }
         if (findNearestDrawerDepth(c.depth) < 25) out.push({ level: "warn", msg: `${label}: too shallow for any slide` });
       } else if (col.door && !col.fixed) {
         const { w: dw, h: dh } = doorDims(faceW, r.h, col.door, S);

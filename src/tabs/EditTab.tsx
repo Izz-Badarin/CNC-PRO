@@ -1061,6 +1061,21 @@ function ColumnEditor({
                 {AVAILABLE_DRAWER_DEPTHS.map((cm) => <option key={cm} value={cm}>{cm * 10}mm</option>)}
               </select>
               {cab.isKitchen && <Chip tone="green">{d.slideDepthCm * 10}mm</Chip>}
+              {/* per-drawer slide-hole X override (mm from the front edge,
+                  comma-separated) — empty = follow the slide-depth pattern */}
+              <input
+                key={`${d.id}-hx`}
+                type="text"
+                className="inp !w-[150px] !py-1 !px-2 font-mono text-[11px]"
+                placeholder="auto"
+                defaultValue={(d.holePatternX ?? []).join(", ")}
+                onBlur={(e) => {
+                  const vals = e.target.value.split(/[,\s]+/).map((s) => parseFloat(s)).filter((v) => Number.isFinite(v) && v > 0);
+                  patchDrawer(r.id, col.id, d.id, { holePatternX: vals.length ? vals : undefined });
+                  e.target.value = vals.length ? vals.join(", ") : "";
+                }}
+                title={`Custom slide-hole X positions in mm from the front edge (e.g. 39, 71, 225, 417) — empty uses the ${Math.round(d.slideDepthCm * 10)}mm slide pattern`}
+              />
               {/* MDF fronts are opt-in for EVERY drawer (hidden or not) */}
               <label
                 className={`flex items-center gap-1 cursor-pointer rounded-md border px-1.5 py-0.5 ${

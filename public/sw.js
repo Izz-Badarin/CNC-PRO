@@ -1,10 +1,11 @@
-/* CNC Cabinet Designer Pro — offline service worker v3
-   v4: cache-name bump (BOM hinge double-count fix + kitchen drawer settings) so shop PCs running the installed PWA drop the old shell and pick up
-       the exploded per-cabinet report + full-door / back-material phases (was v3).
+/* CNC Cabinet Designer Pro — offline service worker v5
+   v5: cache cleanup is scoped to CNC-PRO caches only (never deletes other
+       apps' caches on a shared origin). Previous notes:
+   v4: cache-name bump (BOM hinge double-count fix + kitchen drawer settings).
    Robust offline for plane mode: cache-first, navigation fallback, background sync safe.
    Works when served via http(s) — file:// can't use SW, but single-file build works there without SW.
 */
-const CACHE = "cnc-cabinet-designer-v4";
+const CACHE = "cnc-cabinet-designer-v5";
 const PRECACHE = ["./", "./index.html", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -21,7 +22,11 @@ self.addEventListener("activate", (event) => {
     caches
       .keys()
       .then((keys) =>
-        Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
+        Promise.all(
+          // delete ONLY this app's obsolete caches — a shared origin (e.g. a
+          // shop server hosting several tools) must keep its other caches
+          keys.filter((k) => k !== CACHE && k.startsWith("cnc-")).map((k) => caches.delete(k))
+        )
       )
       .then(() => self.clients.claim())
   );

@@ -1,19 +1,14 @@
 import { modelBounds } from "../src/three/bounds";
 import { layout3DCabs } from "../src/lib/layout3d";
-import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, applyWaste, bomOrderQty, bomWasteItem, doorHingeCount, makeCabinet, migrateSettings, plyMaterialById, wastePctOf } from "../src/lib/defaults";
+import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, applyWaste, bomOrderQty, bomWasteItem, doorHingeCount, duplicateCabinet, makeCabinet, migrateSettings, plyMaterialById, wastePctOf } from "../src/lib/defaults";
 import { buildDxf, buildDxfForSheet } from "../src/lib/dxf";
 import { buildSideSvg, layoutCabs, overlapBoxes, panelPositions } from "../src/tabs/View2DTab";
 import { bomReportHtml, frontElevationHtml, frontElevationDxf, frontElevationSvg, projectJson, readProjectFile } from "../src/lib/export";
 import { explodedReportHtml } from "../src/lib/explodedReport";
 import * as THREE from "three";
 import { OBJExporter } from "three/examples/jsm/exporters/OBJExporter.js";
-<<<<<<< HEAD
-import { allParts, allPartsMerged, applyManualRotation, backThkOf, bandLengthMm, canonicalPartId, carcassDepth, coverCenterX, coverPanelDims, doorDims, doorMaterial, drillOps, frontThk, fullDoorAutoDims, generateCabinetParts, generatePanelParts, glassDoorRefs, kickH, railShelfYs, rotatePartManual, rotatePartOnce, stackOn, stackedHeights, totalBandingM, validateCabinet } from "../src/lib/model";
+import { allParts, allPartsMerged, applyManualRotation, backThkOf, bandLengthMm, canonicalPartId, carcassDepth, coverCenterX, coverPanelDims, doorDims, doorMaterial, drillOps, frontThk, fullDoorAutoDims, generateCabinetParts, generatePanelParts, glassDoorRefs, kickH, railShelfYs, resolveSlidePatternX, rotatePartManual, rotatePartOnce, stackOn, stackedHeights, totalBandingM, validateCabinet } from "../src/lib/model";
 import type { Cabinet, PanelItem, Part } from "../src/types";
-=======
-import { allParts, allPartsMerged, applyManualRotation, bandLengthMm, canonicalPartId, carcassDepth, coverCenterX, coverPanelDims, doorDims, drillOps, fullDoorAutoDims, generateCabinetParts, glassDoorRefs, kickH, railShelfYs, rotatePartManual, rotatePartOnce, stackOn, stackedHeights, totalBandingM, validateCabinet } from "../src/lib/model";
-import type { Cabinet, Part } from "../src/types";
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
 import { nestParts, layoutIsValid, sheetDimsFor } from "../src/lib/nesting";
 import type { Settings } from "../src/types";
 import { buildCabinetGroup } from "../src/three/scene";
@@ -658,10 +653,16 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   // rotated L: front edge (x=D) maps to y'=0 = BOTTOM; mirrored R: front (x=0) maps to y'=D = TOP
   check("band L: front edge = bottom after rotation", L.band.bottom === true && !L.band.top, JSON.stringify(L.band));
   check("band R: front edge = top after rotation (mirrored)", R.band.top === true && !R.band.bottom, JSON.stringify(R.band));
-  const slideY = L.holes.filter((h) => h.kind === "slide").map((h) => h.y);
-  check("band L: slide holes hug the same (front) edge as the banding", slideY.length > 0 && Math.min(...slideY) < 60 && Math.max(...slideY) < L.h / 2, slideY.slice(0, 4).join(","));
-  const slideYR = R.holes.filter((h) => h.kind === "slide").map((h) => h.y);
-  check("band R: slide holes hug the banded top edge", slideYR.length > 0 && Math.max(...slideYR) > R.h - 60 && Math.min(...slideYR) > R.h / 2, slideYR.slice(0, 4).join(","));
+  // slide holes are measured FROM the front edge: on the rotated L panel the
+  // front edge is the bottom (ascending Y = the X pattern); on the mirrored R
+  // panel it is the top (descending Y = the X pattern). The rear bracket hole
+  // legitimately sits past mid-depth (depth×10−33), so compare against the
+  // pattern itself instead of "all holes in the front half".
+  const pat35 = [...S.slideHolePatterns["35"]].sort((a, b) => a - b);
+  const slideY = L.holes.filter((h) => h.kind === "slide").map((h) => h.y).sort((a, b) => a - b);
+  check("band L: slide holes measured from the front edge (bottom) = 35cm pattern", JSON.stringify(slideY.map((v) => Math.round(v))) === JSON.stringify(pat35), slideY.join(","));
+  const slideYR = R.holes.filter((h) => h.kind === "slide").map((h) => R.h - h.y).sort((a, b) => a - b);
+  check("band R: mirrored slide holes measured from the front edge (top) = 35cm pattern", JSON.stringify(slideYR.map((v) => Math.round(v))) === JSON.stringify(pat35), slideYR.join(","));
 }
 
 /* 25 — span panels keep grain along the span (no auto-rotation); oak backs lock
@@ -1284,7 +1285,85 @@ const roundTripPanels = (async () => {
   check("BOM hinges: qty 2 cabinet → 8", !!mq && mq[1] === "8", mq?.[1] ?? "row missing");
 }
 
-Promise.all([autoShotTest, roundTripPanels]).then(() => {
+/* ==== drawer drilling regressions: override, sub-sections, persistence, validation ==== */
+const drawerRegression = (async () => {
+  const mkDr = (fh: number, o: Record<string, unknown> = {}) => ({
+    id: "d" + Math.random().toString(36).slice(2, 8),
+    hidden: false,
+    frontHeight: fh,
+    slideDepthCm: 35,
+    frontMdf: false,
+    ...o,
+  });
+
+  // 1 — shared resolver precedence
+  check("resolver: per-drawer override wins", JSON.stringify(resolveSlidePatternX({ slideDepthCm: 35, holePatternX: [50, 120, 300] }, false, S)) === JSON.stringify([50, 120, 300]));
+  check("resolver: kitchen@50cm uses the kitchen pattern (38 first)", resolveSlidePatternX({ slideDepthCm: 50 }, true, S)[0] === 38);
+  check("resolver: kitchen drawer on OTHER depth follows the per-depth table", resolveSlidePatternX({ slideDepthCm: 40 }, true, S)[3] === 367);
+  check("resolver: standard drawer follows the per-depth table", resolveSlidePatternX({ slideDepthCm: 40 }, false, S)[3] === 367);
+  // every slide depth must have its OWN distinct pattern (a merge once
+  // regressed 25/30/35 and 40/45 back to identical rows)
+  const patsList = ["25", "30", "35", "40", "45", "50"].map((k) => JSON.stringify(S.slideHolePatterns[k]));
+  check("per-depth patterns are ALL distinct", new Set(patsList).size === 6, patsList.join(" vs "));
+
+  // 2 — per-drawer override reaches the drill operations (3 X × 2 sides)
+  const c1 = makeCabinet("base", 600, 720, 560, "DrwOverride");
+  c1.rows[0].columns[0].drawers = [mkDr(620, { holePatternX: [50, 120, 300] })] as any;
+  const ops1 = drillOps([c1], S).filter((o) => o.type === "slide" && o.x >= 0);
+  check("per-drawer override: 6 slide ops (3 per side)", ops1.length === 6, String(ops1.length));
+
+  // 3 — sub-section drawers drill slide holes (4-hole pattern × 2 sides)
+  const c2 = makeCabinet("base", 600, 720, 560, "DrwSub");
+  c2.rows[0].columns[0].drawers = [];
+  (c2.rows[0].columns[0] as any).sub = [
+    { shelves: 0, drawers: [mkDr(300)] },
+    { shelves: 0, drawers: [mkDr(300)] },
+  ];
+  const subSlide = drillOps([c2], S).filter((o) => o.type === "slide" && o.x >= 0);
+  check("sub-section drawers drill slide holes (2 drawers × 4 × 2 sides = 16)", subSlide.length === 16, String(subSlide.length));
+  check("sub-section slide X stays on the panel (≥0)", subSlide.every((o) => o.x >= 0));
+
+  // 4 — per-drawer yOffset + holePatternX survive duplication / library save
+  const c3 = makeCabinet("base", 600, 720, 560, "DrwDup");
+  c3.rows[0].columns[0].drawers = [mkDr(620, { yOffset: 42, holePatternX: [45, 99] })] as any;
+  const dup = duplicateCabinet(c3);
+  const dd0: any = dup.rows[0].columns[0].drawers[0];
+  check("duplicate keeps drawer yOffset", dd0.yOffset === 42, String(dd0.yOffset));
+  check("duplicate keeps drawer holePatternX", JSON.stringify(dd0.holePatternX) === JSON.stringify([45, 99]), JSON.stringify(dd0.holePatternX ?? null));
+
+  // 5 — validation flags holes that would miss the panel / invalid values
+  const c4 = makeCabinet("base", 600, 720, 560, "DrwWarn1");
+  c4.rows[0].columns[0].drawers = [mkDr(620, { holePatternX: [600, 700] })] as any;
+  const w1 = validateCabinet(c4, S).map((v) => v.msg).join(" | ");
+  check("validate flags slide-hole X beyond carcass depth", w1.includes("exceeds carcass depth"), w1);
+  const c5 = makeCabinet("base", 600, 720, 560, "DrwWarn2");
+  c5.rows[0].columns[0].drawers = [mkDr(620, { holePatternX: [-5, 100] })] as any;
+  const w2 = validateCabinet(c5, S).map((v) => v.msg).join(" | ");
+  check("validate flags invalid pattern values", w2.includes("invalid values"), w2);
+
+  // 6 — stacked corner cabinet is an explicit ERROR (generator ignores stack there)
+  const c6 = makeCabinet("cornerBase", 600, 720, 560, "StackedCorner");
+  c6.stack = [400, 320];
+  const w6 = validateCabinet(c6, S).find((v) => v.msg.includes("Stacked boxes are not supported on corner"));
+  check("validate errors on stacked corner cabinets", !!w6, w6?.msg ?? "no error");
+})();
+
+/* ==== project file round-trip: cut-list overrides survive Save/Open ==== */
+const overrideRoundTrip = (async () => {
+  const c = makeCabinet("base", 600, 720, 560, "OvrRT");
+  const skip = { [`${c.id}|Side panel L`]: true };
+  const size = { [`${c.id}|Side panel L`]: { w: 560, h: 700 } };
+  const json = projectJson([c], S, { name: "OvrRT" } as any, [], [], {}, {}, skip, size);
+  const data = JSON.parse(json);
+  check("save json includes skipNest overrides", !!data.skipNest && Object.keys(data.skipNest).length === 1);
+  check("save json includes sizeOverride entries", !!data.sizeOverride && Object.keys(data.sizeOverride).length === 1);
+  const loaded = await readProjectFile(new File([json], "project.json", { type: "application/json" }));
+  check("load returns skipNest overrides", !!loaded.skipNest && Object.keys(loaded.skipNest).length === 1);
+  check("load returns sizeOverride entries", !!loaded.sizeOverride && Object.keys(loaded.sizeOverride).length === 1);
+  check("load sizeOverride value intact", JSON.stringify(Object.values(loaded.sizeOverride ?? {})[0]) === JSON.stringify({ w: 560, h: 700 }));
+})();
+
+Promise.all([autoShotTest, roundTripPanels, drawerRegression, overrideRoundTrip]).then(() => {
   if (failures) {
     console.log(`\n${failures} test(s) FAILED`);
     process.exit(1);

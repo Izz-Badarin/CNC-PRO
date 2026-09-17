@@ -32739,12 +32739,12 @@ var partMatName = (S2, p) => {
   return p.material;
 };
 var DEFAULT_SLIDE_HOLE_PATTERNS = {
-  "25": [39, 71, 167, 231],
-  "30": [39, 71, 167, 231],
-  "35": [39, 71, 167, 231],
-  "40": [39, 71, 167, 263],
-  "45": [39, 71, 167, 263],
-  "50": [39, 71, 263, 341],
+  "25": [39, 71, 125, 217],
+  "30": [39, 71, 150, 267],
+  "35": [39, 71, 175, 317],
+  "40": [39, 71, 200, 367],
+  "45": [39, 71, 225, 417],
+  "50": [39, 71, 250, 467],
   // kitchen-mode drawers use a dedicated industry pattern (always 50cm slide)
   kitchen: [38, 61, 261.5, 294.5]
 };
@@ -32791,11 +32791,8 @@ var DEFAULT_SETTINGS = {
   bodyThk: 16.5,
   mdfThk: 19,
   backThk: 5,
-<<<<<<< HEAD
   glassThk: 19,
   // glass / aluminum door front thickness (deducted from carcass depth)
-=======
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   drawerThk: 16.5,
   bitDiameter: 4,
   holeDiameter: 4.9,
@@ -32902,12 +32899,12 @@ function bomOrderQty(net, unit, item, pct) {
 }
 var AVAILABLE_DRAWER_DEPTHS = [25, 30, 35, 40, 45, 50];
 var DRAWER_HOLE_PATTERNS = {
-  25: [39, 71, 167, 231],
-  30: [39, 71, 167, 231],
-  35: [39, 71, 167, 231],
-  40: [39, 71, 167, 263],
-  45: [39, 71, 167, 263],
-  50: [39, 71, 263, 341]
+  25: [39, 71, 125, 217],
+  30: [39, 71, 150, 267],
+  35: [39, 71, 175, 317],
+  40: [39, 71, 200, 367],
+  45: [39, 71, 225, 417],
+  50: [39, 71, 250, 467]
 };
 var FIRST_DRAWER_HOLE_HEIGHT = 60;
 var DRAWER_HEIGHT_INCREMENT = 55;
@@ -33054,6 +33051,38 @@ function makeCabinet(type, w, h, d, name) {
     rows: defaultRows(type, H, W),
     ...DEFAULT_CUTS
   };
+}
+var reId = (c) => ({
+  ...c,
+  id: uid(),
+  rows: c.rows.map((r3) => ({
+    ...r3,
+    id: uid(),
+    columns: r3.columns.map((col) => ({
+      ...col,
+      id: uid(),
+      door: col.door ? { ...col.door } : null,
+      drawers: col.drawers.map((d) => ({ ...d, id: uid() }))
+    }))
+  }))
+});
+var duplicateCabinet = (c, name) => ({
+  ...reId(c),
+  name: name ?? nextCopyName(c.name),
+  qty: 1
+});
+function nextCopyName(name, taken = []) {
+  const m2 = name.match(/^(.*?)(\d+)(\D*)$/);
+  const build = (n2) => {
+    if (!m2) return `${name}-${n2}`;
+    const pad = m2[2].length;
+    return `${m2[1]}${String(n2).padStart(pad, "0")}${m2[3]}`;
+  };
+  let n = m2 ? parseInt(m2[2], 10) + 1 : 2;
+  const used = new Set(taken);
+  let out = build(n);
+  while (used.has(out)) out = build(++n);
+  return out;
 }
 var SETTINGS_VERSION = 14;
 
@@ -33614,20 +33643,12 @@ var hasKick = (c, S2) => {
 };
 var kickH = (c, S2) => hasKick(c) ? S2.kickHeight : 0;
 var boxHeight = (c, S2) => c.height - kickH(c, S2);
-<<<<<<< HEAD
 var backThkOf = (c, S2) => c.hasBack !== false && c.backMaterial === "plywood" ? S2.bodyThk : S2.backThk;
 var carcassDepth = (c, S2) => Math.max(40, c.depth - (c.hasFronts !== false ? frontThk(c, S2) : 0) - (c.hasBack !== false ? backThkOf(c, S2) : 0));
 function frontThk(c, S2) {
   for (const r3 of c.rows) for (const col of r3.columns) if (col.door) {
     const d = col.door;
     if (d.material === "glass") return S2.glassThk;
-=======
-var carcassDepth = (c, S2) => Math.max(40, c.depth - (c.hasFronts !== false ? frontThk(c, S2) : 0) - (c.hasBack !== false ? S2.backThk : 0));
-function frontThk(c, S2) {
-  for (const r3 of c.rows) for (const col of r3.columns) if (col.door) {
-    const d = col.door;
-    if (d.material === "glass") return 10;
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
     return d.material === "mdf" ? d.mdfThk || S2.mdfThk : S2.bodyThk;
   }
   return S2.mdfThk;
@@ -33790,6 +33811,13 @@ function drawerBank(col, rowH, S2) {
   const y = align === "top" ? maxY : align === "custom" ? Math.min(Math.max(0, col.drawerOffsetY ?? 0), maxY) : 0;
   return { y, h };
 }
+function resolveSlidePatternX(dr, isKitchen, S2) {
+  const pats = normalizeSlidePatterns(S2.slideHolePatterns);
+  const dCm = Math.round(dr.slideDepthCm);
+  if (dr.holePatternX && dr.holePatternX.length) return dr.holePatternX;
+  if (isKitchen && dCm === KITCHEN_SLIDE_CM) return pats["kitchen"] ?? KITCHEN_SLIDE_PATTERN;
+  return pats[String(dCm)] ?? getDrawerHolePattern(dCm);
+}
 function doorDims(faceW, rowH, door, S2) {
   const hAuto = door.style === "inset" ? rowH - 2 * (S2.bodyThk + S2.doorGap) : rowH - 2 * S2.doorGap;
   const h = door.hOverride && door.hOverride > 0 ? Math.max(50, door.hOverride) : hAuto;
@@ -33819,11 +33847,7 @@ function fullDoorAutoDims(cab, S2) {
   return { wAuto, hAuto };
 }
 function doorMaterial(door, S2) {
-<<<<<<< HEAD
   if (door.material === "glass") return { mat: "mdf", thk: S2.glassThk };
-=======
-  if (door.material === "glass") return { mat: "mdf", thk: 10 };
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   return door.material === "mdf" ? { mat: "mdf", thk: S2.mdfThk } : { mat: "plywood", thk: S2.bodyThk };
 }
 function effectiveHingeCount(door, leafH) {
@@ -33965,13 +33989,9 @@ function buildBody(cab, S2, mk, T) {
       note: "full-depth side"
     });
   }
-<<<<<<< HEAD
   if (cab.hasBack !== false) {
     const plyBack = cab.backMaterial === "plywood";
     const backT = plyBack ? T : S2.backThk;
-=======
-  if (cab.hasBack !== false)
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
     mk({
       name: "Back",
       // oriented LONG side along the grain (Length): tall backs span the sheet
@@ -33979,26 +33999,16 @@ function buildBody(cab, S2, mk, T) {
       // the length and the part fits the 2440×1220 board whenever possible
       w: Math.max(W - 2, BH - 2),
       h: Math.min(W - 2, BH - 2),
-<<<<<<< HEAD
       material: plyBack ? "plywood" : "back",
       thickness: backT,
-=======
-      material: "back",
-      thickness: S2.backThk,
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
       matId: cabinetPly.id,
       // oak rule: a back cut from a grain-visible plywood locks its grain like
       // every other grain part (white/solid boards stay free to rotate)
       grain: cabinetPly.solid !== true,
       noRotate: true,
-<<<<<<< HEAD
       note: plyBack ? `full cabinet back \xB7 PLYWOOD ${backT}mm \xB7 follows ${cabinetPly.name}${cabinetPly.solid !== true ? " \xB7 grain locked" : ""}` : `full cabinet back \xB7 follows ${cabinetPly.name} \xB7 ${S2.backThk}mm${cabinetPly.solid !== true ? " \xB7 grain locked" : ""}`
     });
   }
-=======
-      note: `full cabinet back \xB7 follows ${cabinetPly.name} \xB7 ${S2.backThk}mm${cabinetPly.solid !== true ? " \xB7 grain locked" : ""}`
-    });
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   const fullDoorCols = fullDoorColumns(cab);
   let y0 = 0;
   cab.rows.forEach((row2, ri) => {
@@ -34108,18 +34118,13 @@ function buildStackedBody(cab, S2, mk, T) {
         note: "full-depth side"
       });
     }
-<<<<<<< HEAD
     if (cab.hasBack !== false) {
       const plyBack = cab.backMaterial === "plywood";
       const backT = plyBack ? T : S2.backThk;
-=======
-    if (cab.hasBack !== false)
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
       mk({
         name: `Back${bTag}`,
         w: Math.max(W - 2, bH - 2),
         h: Math.min(W - 2, bH - 2),
-<<<<<<< HEAD
         material: plyBack ? "plywood" : "back",
         thickness: backT,
         matId: cabinetPly.id,
@@ -34128,15 +34133,6 @@ function buildStackedBody(cab, S2, mk, T) {
         note: plyBack ? `box ${bi + 1} back \xB7 PLYWOOD ${backT}mm \xB7 follows ${cabinetPly.name}${cabinetPly.solid !== true ? " \xB7 grain locked" : ""}` : `box ${bi + 1} back \xB7 follows ${cabinetPly.name}${cabinetPly.solid !== true ? " \xB7 grain locked" : ""}`
       });
     }
-=======
-        material: "back",
-        thickness: S2.backThk,
-        matId: cabinetPly.id,
-        grain: cabinetPly.solid !== true,
-        noRotate: true,
-        note: `box ${bi + 1} back \xB7 follows ${cabinetPly.name}${cabinetPly.solid !== true ? " \xB7 grain locked" : ""}`
-      });
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
     const rows = cab.rows.map((r3, i) => ({ r: r3, i })).filter(({ r: r3 }) => (r3.box ?? 0) === bi);
     let y0 = 0;
     rows.forEach(({ r: r3, i }, idx) => {
@@ -34321,9 +34317,7 @@ function buildColumn(cab, S2, mk, lay, faceW, rowH, y0, tag, sides) {
   if (hasDr) {
     col.drawers.forEach((dr0, i) => {
       const dr = cab.isKitchen ? { ...dr0, hidden: false } : dr0;
-      const pats = normalizeSlidePatterns(S2.slideHolePatterns);
-      const dCm = Math.round(dr.slideDepthCm);
-      const pattern = cab.isKitchen && dCm === KITCHEN_SLIDE_CM ? pats["kitchen"] ?? KITCHEN_SLIDE_PATTERN : pats[String(dCm)] ?? getDrawerHolePattern(dCm);
+      const pattern = resolveSlidePatternX(dr, cab.isKitchen, S2);
       const y = clamp2(y0 + bank.y + effectiveDrawerHoleY(dr, col.drawers, cab.isKitchen, i, S2), 12, sides.L.h - 12);
       pattern.forEach((p) => {
         const xL = D - p;
@@ -34340,8 +34334,16 @@ function buildColumn(cab, S2, mk, lay, faceW, rowH, y0, tag, sides) {
     subs.forEach((sub, si) => {
       const stag = `${tag}.${si + 1}`;
       if (sub.drawers.length > 0) {
+        const subBank = drawerBank(sub, subH, S2);
         sub.drawers.forEach((dr, di) => {
           const d2 = cab.isKitchen ? { ...dr, hidden: false } : dr;
+          const pattern = resolveSlidePatternX(d2, cab.isKitchen, S2);
+          const ySub = clamp2(y0 + si * subH + subBank.y + effectiveDrawerHoleY(d2, sub.drawers, cab.isKitchen, di, S2), 12, sides.L.h - 12);
+          pattern.forEach((p) => {
+            const xL = D - p;
+            drillLeft(xL, ySub, S2.slideHoleDiameter, "slide");
+            drillRight(xL, ySub, S2.slideHoleDiameter, "slide");
+          });
           if (cab.isKitchen) genKitchenDrawer(S2, mk, d2, lay.w, stag, di);
           else genStandardDrawer(S2, mk, d2, lay.w, stag, di, void 0, void 0, cab);
         });
@@ -34854,10 +34856,7 @@ function applyManualRotation(parts, rot = {}) {
 }
 function generatePanelParts(panels, S2) {
   const out = [];
-<<<<<<< HEAD
   const usedNumbers = /* @__PURE__ */ new Set();
-=======
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   for (const pn of panels ?? []) {
     if (!pn || !(pn.w > 0) || !(pn.h > 0)) continue;
     const mat = pn.material ?? "plywood";
@@ -34865,7 +34864,6 @@ function generatePanelParts(panels, S2) {
     const thk = pn.thk > 0 ? Math.round(pn.thk * 10) / 10 : autoThk;
     const finish = mat === "mdf" ? pn.finish ?? S2.mdfFinish : "white";
     const grain = pn.grain ?? (mat === "plywood" || finish === "oak");
-<<<<<<< HEAD
     const baseName = (pn.name || "Panel").trim() || "Panel";
     let numLabel = "";
     const n = Math.round(pn.number ?? 0);
@@ -34884,15 +34882,6 @@ function generatePanelParts(panels, S2) {
       w: Math.max(5, Math.round(pn.w * 10) / 10),
       h: Math.max(5, Math.round(pn.h * 10) / 10),
       qty: pack,
-=======
-    out.push({
-      cabId: `panel:${pn.id}`,
-      cabName: "Panel",
-      name: (pn.name || "Panel").trim() || "Panel",
-      w: Math.max(5, Math.round(pn.w * 10) / 10),
-      h: Math.max(5, Math.round(pn.h * 10) / 10),
-      qty: 1,
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
       material: mat,
       thickness: thk,
       // panels may pick ANY plywood material (matId); undefined = project default →
@@ -34904,11 +34893,7 @@ function generatePanelParts(panels, S2) {
       shape: "rect",
       outline: [],
       grain,
-<<<<<<< HEAD
       note: pack > 1 ? `${note} \xB7 pack \xD7${pack}` : note
-=======
-      note: mat === "mdf" ? `raw panel \xB7 MDF ${thk}mm \xB7 ${finish === "oak" ? "oak \xB7 banding: LWLW" : "white \xB7 no banding"}` : mat === "back" ? `raw panel \xB7 veneer ${thk}mm` : `raw panel \xB7 plywood ${thk}mm \xB7 banding: LWLW`
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
     });
   }
   return out;
@@ -35016,6 +35001,10 @@ function validateCabinet(c, S2) {
   }
   if (c.width <= 0 || c.height <= 0 || c.depth <= 0) out.push({ level: "err", msg: "Dimensions must be greater than zero" });
   if (c.rows.length === 0) out.push({ level: "warn", msg: "No rows defined \u2014 empty carcass" });
+  if (stackOn(c) && isCorner(c.type))
+    out.push({ level: "err", msg: "Stacked boxes are not supported on corner cabinets" });
+  else if (stackOn(c) && isNotched(c.type))
+    out.push({ level: "warn", msg: "Stacked boxes drop the L/C side notch \u2014 use one box" });
   if (isNotched(c.type)) {
     if (c.type === "L" && (c.lCutW <= 0 || c.lCutH <= 0)) out.push({ level: "warn", msg: "L notch is zero \u2014 panel will be a plain rectangle" });
     if (c.type === "C" && c.cCutOffsetFromBottom + c.cCutMidH > BH - c.cCutTopH)
@@ -35038,6 +35027,19 @@ function validateCabinet(c, S2) {
         col.drawers.forEach((d) => {
           if (d.slideDepthCm * 10 > c.depth) out.push({ level: "warn", msg: `${label}: ${d.slideDepthCm * 10}mm slide deeper than cabinet (${c.depth}mm)` });
         });
+        {
+          const Dv = carcassDepth(c, S2);
+          const bkV = drawerBank(col, r3.h, S2);
+          col.drawers.forEach((d, di) => {
+            const pat = resolveSlidePatternX(d, c.isKitchen, S2);
+            const bad = pat.filter((v) => !Number.isFinite(v) || v < 0);
+            if (bad.length) out.push({ level: "warn", msg: `${label}: drawer ${di + 1} slide-hole X has invalid values (${bad.join(", ")}) \u2014 check Settings \u2192 Drilling` });
+            const maxX = Math.max(...pat);
+            if (Number.isFinite(maxX) && maxX > Dv) out.push({ level: "warn", msg: `${label}: drawer ${di + 1} slide-hole X ${maxX}mm exceeds carcass depth ${Math.round(Dv)}mm \u2014 holes would miss the panel` });
+            const hy = bkV.y + effectiveDrawerHoleY(d, col.drawers, c.isKitchen, di, S2);
+            if (hy > r3.h - 12) out.push({ level: "warn", msg: `${label}: drawer ${di + 1} slide holes at Y ${Math.round(hy)}mm fall outside the row (${Math.round(r3.h)}mm)` });
+          });
+        }
         if (findNearestDrawerDepth(c.depth) < 25) out.push({ level: "warn", msg: `${label}: too shallow for any slide` });
       } else if (col.door && !col.fixed) {
         const { w: dw, h: dh } = doorDims(faceW, r3.h, col.door, S2);
@@ -35631,8 +35633,8 @@ function bomReportHtml(cabinets, settings, panels = [], grain = {}, project, cus
       row2.columns.forEach((col, ci) => {
         if (col.door && !fullDoorActive && col.door.material === "glass" && col.door.type !== "sliding") {
           const faceW = lays.length === 1 ? cab.width : columnFaceWidth(cab, lays[ci], settings);
-          const leafH = doorDims(faceW, col.door.full ? fullSpan : row2.h, col.door, settings).h;
-          hinges += qty * Math.min(6, Math.max(1, col.door.hingeCount ?? doorHingeCount(leafH)));
+          const dd = doorDims(faceW, col.door.full ? fullSpan : row2.h, col.door, settings);
+          hinges += qty * dd.count * Math.min(6, Math.max(1, col.door.hingeCount ?? doorHingeCount(dd.h)));
         }
         col.drawers.forEach((dr) => {
           const cm = Math.round(dr.slideDepthCm);
@@ -35871,8 +35873,8 @@ function bomReportHtml(cabinets, settings, panels = [], grain = {}, project, cus
   </div>
   </body></html>`;
 }
-function projectJson(cabs, S2, project, customers, library, grain, rotation) {
-  return JSON.stringify({ version: SETTINGS_VERSION, settings: S2, cabinets: cabs, project, customers, library, grain, rotation }, null, 2);
+function projectJson(cabs, S2, project, customers, library, grain, rotation, skipNest, sizeOverride) {
+  return JSON.stringify({ version: SETTINGS_VERSION, settings: S2, cabinets: cabs, project, customers, library, grain, rotation, skipNest, sizeOverride }, null, 2);
 }
 async function readProjectFile(file) {
   const text2 = await file.text();
@@ -35886,7 +35888,11 @@ async function readProjectFile(file) {
       customers: data.customers,
       library: data.library,
       grain: data.grain,
-      rotation: data.rotation
+      rotation: data.rotation,
+      // cut-list overrides are part of the saved project — dropping them made
+      // skipped parts re-appear in nesting and size edits vanish on reopen
+      skipNest: data.skipNest && typeof data.skipNest === "object" ? data.skipNest : {},
+      sizeOverride: data.sizeOverride && typeof data.sizeOverride === "object" ? data.sizeOverride : {}
     };
   throw new Error("Invalid project file");
 }
@@ -35947,15 +35953,10 @@ function buildSideSvg(cabs, S2, panels = []) {
     const dw = D * sc;
     const bodyW = bodyD * sc;
     out += `<rect x="${f(x)}" y="${f(top)}" width="${f(dw)}" height="${f(Hc * sc)}" fill="#14202f" stroke="#f5b33c" stroke-width="1.6"/>`;
-<<<<<<< HEAD
     if (cab.hasBack !== false) {
       const backT = backThkOf(cab, S2);
       out += `<rect x="${f(x)}" y="${f(top)}" width="${f(backT * sc)}" height="${f((Hc - kick) * sc)}" fill="#0c141f" stroke="#3d5878" stroke-width="0.7"/>`;
     }
-=======
-    if (cab.hasBack !== false)
-      out += `<rect x="${f(x)}" y="${f(top)}" width="${f(S2.backThk * sc)}" height="${f((Hc - kick) * sc)}" fill="#0c141f" stroke="#3d5878" stroke-width="0.7"/>`;
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
     if (frontThk2 > 0) {
       out += `<rect x="${f(x + bodyW)}" y="${f(top)}" width="${f(frontThk2 * sc)}" height="${f((Hc - kick) * sc)}" fill="#22364e" stroke="#7ea3cc" stroke-width="1"/>`;
       const full = cab.fullDoor && cab.fullDoor !== "off";
@@ -36170,11 +36171,7 @@ function xpDimsLabel(w, h, d) {
 }
 function buildExplodeParts(cab, S2) {
   const T = S2.bodyThk;
-<<<<<<< HEAD
   const BT = backThkOf(cab, S2);
-=======
-  const BT = S2.backThk;
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   const W = cab.width, H = cab.height, D = cab.depth;
   const kick = kickH(cab, S2);
   const BH = H - kick;
@@ -38093,10 +38090,7 @@ var DEFAULT_SETTINGS_FALLBACK = {
   bodyThk: 16.5,
   mdfThk: 19,
   backThk: 5,
-<<<<<<< HEAD
   glassThk: 19,
-=======
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   drawerThk: 16.5,
   bitDiameter: 4,
   holeDiameter: 4.9,
@@ -38162,7 +38156,7 @@ var DEFAULT_SETTINGS_FALLBACK = {
     { id: "ply-grain", name: "Plywood (grain)", color: "#b78a58", opacity: 1 }
   ],
   defaultPlyId: "ply-default",
-  slideHolePatterns: { "25": [39, 71, 167, 231], "30": [39, 71, 167, 231], "35": [39, 71, 167, 231], "40": [39, 71, 167, 263], "45": [39, 71, 167, 263], "50": [39, 71, 263, 341], kitchen: [38, 61, 261.5, 294.5] },
+  slideHolePatterns: { "25": [39, 71, 125, 217], "30": [39, 71, 150, 267], "35": [39, 71, 175, 317], "40": [39, 71, 200, 367], "45": [39, 71, 225, 417], "50": [39, 71, 250, 467], kitchen: [38, 61, 261.5, 294.5] },
   drawerHoleYStart: 60,
   drawerHoleYStep: 55,
   kitchenHoleYStart: 75,
@@ -38416,14 +38410,9 @@ function buildWing3D(cab, S2, w, d, BH, wg, doors, drawersAcc, T, ply, o) {
   top.position.y = BH - T / 2;
   wg.add(top);
   if (cab.hasBack !== false) {
-<<<<<<< HEAD
     const backT = backThkOf(cab, S2);
     const back = box(w - 2, BH - 2, backT, woodMat(w, BH, ply, BH > w, BH <= w), "back", false);
     back.position.set(w / 2, BH / 2, -backT / 2);
-=======
-    const back = box(w - 2, BH - 2, S2.backThk, woodMat(w, BH, ply, BH > w, BH <= w), "back", false);
-    back.position.set(w / 2, BH / 2, -S2.backThk / 2);
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
     wg.add(back);
   }
   const kick = kickH(cab, S2);
@@ -38675,11 +38664,7 @@ function buildColumn3D(cab, S2, col, faceW, faceCx, clearW, d, y0, rowH, wg, doo
 function buildDoor3D(S2, w, faceCx, d, y0, rowH, door, wg, doors, T, gap, ply) {
   const baseX = faceCx - w / 2;
   const { w: dw, h: dh, count } = doorDims(w, rowH, door, S2);
-<<<<<<< HEAD
   const thk = door.material === "glass" ? S2.glassThk : door.material === "mdf" ? door.mdfThk || S2.mdfThk : S2.bodyThk;
-=======
-  const thk = door.material === "glass" ? 10 : door.material === "mdf" ? door.mdfThk || S2.mdfThk : S2.bodyThk;
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   const finish = door.material === "mdf" ? door.finish ?? S2.mdfFinish : "white";
   const doorMat = door.material === "glass" ? mats.glass : door.material === "mdf" ? finish === "oak" ? woodMat(dw, dh, OAK_MDF_PLY, true) : mats.mdf : woodMat(dw, dh, ply, true);
   void T;
@@ -39872,10 +39857,11 @@ ${l}
   const R = parts.find((p) => p.name === "Side panel R");
   check("band L: front edge = bottom after rotation", L.band.bottom === true && !L.band.top, JSON.stringify(L.band));
   check("band R: front edge = top after rotation (mirrored)", R.band.top === true && !R.band.bottom, JSON.stringify(R.band));
-  const slideY = L.holes.filter((h) => h.kind === "slide").map((h) => h.y);
-  check("band L: slide holes hug the same (front) edge as the banding", slideY.length > 0 && Math.min(...slideY) < 60 && Math.max(...slideY) < L.h / 2, slideY.slice(0, 4).join(","));
-  const slideYR = R.holes.filter((h) => h.kind === "slide").map((h) => h.y);
-  check("band R: slide holes hug the banded top edge", slideYR.length > 0 && Math.max(...slideYR) > R.h - 60 && Math.min(...slideYR) > R.h / 2, slideYR.slice(0, 4).join(","));
+  const pat35 = [...S.slideHolePatterns["35"]].sort((a, b) => a - b);
+  const slideY = L.holes.filter((h) => h.kind === "slide").map((h) => h.y).sort((a, b) => a - b);
+  check("band L: slide holes measured from the front edge (bottom) = 35cm pattern", JSON.stringify(slideY.map((v) => Math.round(v))) === JSON.stringify(pat35), slideY.join(","));
+  const slideYR = R.holes.filter((h) => h.kind === "slide").map((h) => R.h - h.y).sort((a, b) => a - b);
+  check("band R: mirrored slide holes measured from the front edge (top) = 35cm pattern", JSON.stringify(slideYR.map((v) => Math.round(v))) === JSON.stringify(pat35), slideYR.join(","));
 }
 {
   const c = makeCabinet("base", 900, 720, 560, "SpanGrain");
@@ -39894,7 +39880,6 @@ ${l}
   check("white back: grain free (unchanged)", backWhite.grain === false);
 }
 {
-<<<<<<< HEAD
   const S2 = { ...S, bodyThk: 18, backThk: 5, plyMaterials: [...S.plyMaterials ?? [], { id: "ply-oak", name: "Oak", color: "#c9a06a", opacity: 1, solid: false }] };
   const ven = makeCabinet("base", 600, 720, 560, "VenBack");
   const venBack = allParts([ven], S2).find((p) => p.name === "Back");
@@ -39950,8 +39935,6 @@ ${l}
   check("panel pack: size/edges untouched", parts[0].w === 600 && parts[0].h === 300 && parts[0].material === "plywood");
 }
 {
-=======
->>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   const c = makeCabinet("base", 600, 720, 560, "DrwBand");
   c.rows[0].columns[0].drawers = [{ id: "d1", hidden: false, frontHeight: 220, slideDepthCm: 35, frontMdf: false }];
   c.rows[0].columns[0].door = null;
@@ -40440,7 +40423,67 @@ var roundTripPanels = (async () => {
   const mq = htmlQty.match(/<td>Hinges - Universal 35mm<\/td><td class="num">(\d+)<\/td>/);
   check("BOM hinges: qty 2 cabinet \u2192 8", !!mq && mq[1] === "8", mq?.[1] ?? "row missing");
 }
-Promise.all([autoShotTest, roundTripPanels]).then(() => {
+var drawerRegression = (async () => {
+  const mkDr = (fh, o = {}) => ({
+    id: "d" + Math.random().toString(36).slice(2, 8),
+    hidden: false,
+    frontHeight: fh,
+    slideDepthCm: 35,
+    frontMdf: false,
+    ...o
+  });
+  check("resolver: per-drawer override wins", JSON.stringify(resolveSlidePatternX({ slideDepthCm: 35, holePatternX: [50, 120, 300] }, false, S)) === JSON.stringify([50, 120, 300]));
+  check("resolver: kitchen@50cm uses the kitchen pattern (38 first)", resolveSlidePatternX({ slideDepthCm: 50 }, true, S)[0] === 38);
+  check("resolver: kitchen drawer on OTHER depth follows the per-depth table", resolveSlidePatternX({ slideDepthCm: 40 }, true, S)[3] === 367);
+  check("resolver: standard drawer follows the per-depth table", resolveSlidePatternX({ slideDepthCm: 40 }, false, S)[3] === 367);
+  const patsList = ["25", "30", "35", "40", "45", "50"].map((k) => JSON.stringify(S.slideHolePatterns[k]));
+  check("per-depth patterns are ALL distinct", new Set(patsList).size === 6, patsList.join(" vs "));
+  const c1 = makeCabinet("base", 600, 720, 560, "DrwOverride");
+  c1.rows[0].columns[0].drawers = [mkDr(620, { holePatternX: [50, 120, 300] })];
+  const ops1 = drillOps([c1], S).filter((o) => o.type === "slide" && o.x >= 0);
+  check("per-drawer override: 6 slide ops (3 per side)", ops1.length === 6, String(ops1.length));
+  const c2 = makeCabinet("base", 600, 720, 560, "DrwSub");
+  c2.rows[0].columns[0].drawers = [];
+  c2.rows[0].columns[0].sub = [
+    { shelves: 0, drawers: [mkDr(300)] },
+    { shelves: 0, drawers: [mkDr(300)] }
+  ];
+  const subSlide = drillOps([c2], S).filter((o) => o.type === "slide" && o.x >= 0);
+  check("sub-section drawers drill slide holes (2 drawers \xD7 4 \xD7 2 sides = 16)", subSlide.length === 16, String(subSlide.length));
+  check("sub-section slide X stays on the panel (\u22650)", subSlide.every((o) => o.x >= 0));
+  const c3 = makeCabinet("base", 600, 720, 560, "DrwDup");
+  c3.rows[0].columns[0].drawers = [mkDr(620, { yOffset: 42, holePatternX: [45, 99] })];
+  const dup = duplicateCabinet(c3);
+  const dd0 = dup.rows[0].columns[0].drawers[0];
+  check("duplicate keeps drawer yOffset", dd0.yOffset === 42, String(dd0.yOffset));
+  check("duplicate keeps drawer holePatternX", JSON.stringify(dd0.holePatternX) === JSON.stringify([45, 99]), JSON.stringify(dd0.holePatternX ?? null));
+  const c4 = makeCabinet("base", 600, 720, 560, "DrwWarn1");
+  c4.rows[0].columns[0].drawers = [mkDr(620, { holePatternX: [600, 700] })];
+  const w1 = validateCabinet(c4, S).map((v) => v.msg).join(" | ");
+  check("validate flags slide-hole X beyond carcass depth", w1.includes("exceeds carcass depth"), w1);
+  const c5 = makeCabinet("base", 600, 720, 560, "DrwWarn2");
+  c5.rows[0].columns[0].drawers = [mkDr(620, { holePatternX: [-5, 100] })];
+  const w2 = validateCabinet(c5, S).map((v) => v.msg).join(" | ");
+  check("validate flags invalid pattern values", w2.includes("invalid values"), w2);
+  const c6 = makeCabinet("cornerBase", 600, 720, 560, "StackedCorner");
+  c6.stack = [400, 320];
+  const w6 = validateCabinet(c6, S).find((v) => v.msg.includes("Stacked boxes are not supported on corner"));
+  check("validate errors on stacked corner cabinets", !!w6, w6?.msg ?? "no error");
+})();
+var overrideRoundTrip = (async () => {
+  const c = makeCabinet("base", 600, 720, 560, "OvrRT");
+  const skip = { [`${c.id}|Side panel L`]: true };
+  const size = { [`${c.id}|Side panel L`]: { w: 560, h: 700 } };
+  const json = projectJson([c], S, { name: "OvrRT" }, [], [], {}, {}, skip, size);
+  const data = JSON.parse(json);
+  check("save json includes skipNest overrides", !!data.skipNest && Object.keys(data.skipNest).length === 1);
+  check("save json includes sizeOverride entries", !!data.sizeOverride && Object.keys(data.sizeOverride).length === 1);
+  const loaded = await readProjectFile(new File([json], "project.json", { type: "application/json" }));
+  check("load returns skipNest overrides", !!loaded.skipNest && Object.keys(loaded.skipNest).length === 1);
+  check("load returns sizeOverride entries", !!loaded.sizeOverride && Object.keys(loaded.sizeOverride).length === 1);
+  check("load sizeOverride value intact", JSON.stringify(Object.values(loaded.sizeOverride ?? {})[0]) === JSON.stringify({ w: 560, h: 700 }));
+})();
+Promise.all([autoShotTest, roundTripPanels, drawerRegression, overrideRoundTrip]).then(() => {
   if (failures) {
     console.log(`
 ${failures} test(s) FAILED`);

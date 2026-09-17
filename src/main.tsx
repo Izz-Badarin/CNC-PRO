@@ -82,11 +82,22 @@ class Boundary extends Component<{ children: ReactNode }, { error: unknown }> {
         window.location.reload();
       };
       const hardReset = () => {
-        if (confirm("Hard reset: clear local storage and reload? Your browser-saved projects will be lost (use Save files you exported). Continue?")) {
+        if (confirm("Hard reset: clear CNC-PRO browser storage and reload? Your browser-saved projects will be lost (use Save files you exported). Continue?")) {
           try {
-            // keep error log
+            // keep the error log; clear ONLY this app's keys — a blanket
+            // localStorage.clear() would wipe every other site's data on this
+            // browser profile / origin
             const log = localStorage.getItem("cnc-error-log");
-            localStorage.clear();
+            const keys: string[] = [];
+            for (let i = 0; i < localStorage.length; i++) {
+              const k = localStorage.key(i);
+              if (k && k.startsWith("cnc-")) keys.push(k);
+            }
+            keys.forEach((k) => {
+              try {
+                localStorage.removeItem(k);
+              } catch {}
+            });
             if (log) localStorage.setItem("cnc-error-log", log);
           } catch {}
           window.location.reload();

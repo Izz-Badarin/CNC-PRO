@@ -131,16 +131,21 @@ export async function idbGet(key: string): Promise<string | null> {
   }
 }
 
-/* ---------- Backup rotation (keep last 5) ---------- */
+/* ---------- Backup rotation (keep last 5 per scope) ---------- */
 
-export function rotateBackups(currentVersion: number, currentData: string) {
+/** Backup keys are scoped PER USER when a userId is given — one user's
+ *  rotation can no longer trim another user's recovery history. Legacy
+ *  (pre-user) installs keep the version-only shared scope. */
+const backupScope = (currentVersion: number, userId?: string | null) =>
+  `${BACKUP_PREFIX}${currentVersion}${userId ? `-u-${userId}` : ""}-`;
+
+export function rotateBackups(currentVersion: number, currentData: string, userId?: string | null) {
   try {
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-    const key = `${BACKUP_PREFIX}${currentVersion}-${stamp}`;
-    localStorage.setItem(key, currentData);
-    // keep only 5 newest backups for this version
+    localStorage.setItem(`${backupScope(currentVersion, userId)}${stamp}`, currentData);
+    // keep only 5 newest backups for this scope
     const all = allLocalKeys()
-      .filter((k) => k.startsWith(`${BACKUP_PREFIX}${currentVersion}-`))
+      .filter((k) => k.startsWith(backupScope(currentVersion, userId)))
       .sort()
       .reverse();
     all.slice(5).forEach((k) => {
@@ -153,12 +158,15 @@ export function rotateBackups(currentVersion: number, currentData: string) {
   }
 }
 
-export function listBackups(currentVersion: number): { key: string; date: string; size: number }[] {
-  return allLocalKeys()
-    .filter((k) => k.startsWith(`${BACKUP_PREFIX}${currentVersion}-`))
+export function listBackups(currentVersion: number, userId?: string | null): { key: string; date: string; size: number }[] {
+  const scope = backupScope(currentVersion, userId);
+  let keys = allLocalKeys().filter((k) => k.startsWith(scope));
+  // fall back to the legacy shared scope when this user has no scoped backups yet
+  if (!keys.length && userId) keys = allLocalKeys().filter((k) => k.startsWith(`${BACKUP_PREFIX}${currentVersion}-`));
+  return keys
     .map((k) => {
       const raw = loadRaw(k);
-      return { key: k, date: k.replace(`${BACKUP_PREFIX}${currentVersion}-`, ""), size: raw ? raw.length : 0 };
+      return { key: k, date: (k.match(/(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})$/) ?? [""])[0], size: raw ? raw.length : 0 };
     })
     .sort((a, b) => (a.key < b.key ? 1 : -1));
 }

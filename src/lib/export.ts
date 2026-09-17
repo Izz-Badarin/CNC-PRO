@@ -486,8 +486,10 @@ export function bomReportHtml(
       row.columns.forEach((col, ci) => {
         if (col.door && !fullDoorActive && col.door.material === "glass" && col.door.type !== "sliding") {
           const faceW = lays.length === 1 ? cab.width : columnFaceWidth(cab, lays[ci], settings);
-          const leafH = doorDims(faceW, col.door.full ? fullSpan : row.h, col.door, settings).h;
-          hinges += qty * Math.min(6, Math.max(1, col.door.hingeCount ?? doorHingeCount(leafH)));
+          const dd = doorDims(faceW, col.door.full ? fullSpan : row.h, col.door, settings);
+          // hinges are PER LEAF — a double glass door has 2 leaves (the BOM tab
+          // multiplies by dd.count; the printed report used to forget it)
+          hinges += qty * dd.count * Math.min(6, Math.max(1, col.door.hingeCount ?? doorHingeCount(dd.h)));
         }
         col.drawers.forEach((dr) => {
           const cm = Math.round(dr.slideDepthCm);
@@ -785,10 +787,14 @@ export interface ProjectFileData {
   library?: LibraryItem[];
   grain?: GrainOverrides;
   rotation?: RotationOverrides;
+  /** per-part nesting exclusions — round-tripped with the project file */
+  skipNest?: SkipNestOverrides;
+  /** per-part nest-only size overrides — round-tripped with the project file */
+  sizeOverride?: SizeOverrides;
 }
 
-export function projectJson(cabs: Cabinet[], S: Settings, project?: ProjectInfo, customers?: Customer[], library?: LibraryItem[], grain?: GrainOverrides, rotation?: RotationOverrides): string {
-  return JSON.stringify({ version: SETTINGS_VERSION, settings: S, cabinets: cabs, project, customers, library, grain, rotation }, null, 2);
+export function projectJson(cabs: Cabinet[], S: Settings, project?: ProjectInfo, customers?: Customer[], library?: LibraryItem[], grain?: GrainOverrides, rotation?: RotationOverrides, skipNest?: SkipNestOverrides, sizeOverride?: SizeOverrides): string {
+  return JSON.stringify({ version: SETTINGS_VERSION, settings: S, cabinets: cabs, project, customers, library, grain, rotation, skipNest, sizeOverride }, null, 2);
 }
 
 /**
@@ -810,6 +816,10 @@ export async function readProjectFile(file: File): Promise<ProjectFileData> {
       library: data.library,
       grain: data.grain,
       rotation: data.rotation,
+      // cut-list overrides are part of the saved project — dropping them made
+      // skipped parts re-appear in nesting and size edits vanish on reopen
+      skipNest: data.skipNest && typeof data.skipNest === "object" ? data.skipNest : {},
+      sizeOverride: data.sizeOverride && typeof data.sizeOverride === "object" ? data.sizeOverride : {},
     };
   throw new Error("Invalid project file");
 }

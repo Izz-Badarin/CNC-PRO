@@ -35,11 +35,28 @@ export function NestingTab({
     () => allPartsMerged(cabinets, settings, grain, panels, rotation, skipNest, sizeOverride),
     [cabinets, settings, grain, panels, rotation, skipNest, sizeOverride],
   );
-  const partsSig = useMemo(() => parts.map((p) => `${p.name}:${p.w}x${p.h}:${p.qty}`).join("|"), [parts]);
+  // nesting must re-run when ANY manufacturing input changes — not just
+  // name/size/qty. Holes, grooves, material ids, grain, skip flags and banding
+  // all land on the sheet (DXF clamp holes are computed from placements), so a
+  // drilling or material change with identical part rectangles used to leave a
+  // STALE layout on screen and in the selected-sheets DXF export.
+  const partsSig = useMemo(
+    () =>
+      parts
+        .map(
+          (p) =>
+            `${p.name}:${p.w}x${p.h}:${p.qty}:${p.material}:${p.matId ?? ""}:${p.thickness ?? ""}:${p.grain ? 1 : 0}:${p.noRotate ? 1 : 0}:${p.skipNest ? 1 : 0}:${p.band ? Object.values(p.band).filter(Boolean).length : 0}:${p.holes.length}:${p.grooves.length}`,
+        )
+        .join("|"),
+    [parts],
+  );
   const [prog, setProg] = useState<NestRunProgress>({ running: false, phase: "Idle", done: 0, total: 0, groups: [] });
   const stopRef = useRef(false);
   const workerRef = useRef<Worker | null>(null);
   const timer = useRef<number | null>(null);
+  /** per-sheet (per-board) DXF selection — declared BEFORE the early return so
+   *  React hook order never changes between empty and populated projects */
+  const [selSheets, setSelSheets] = useState<Set<string>>(new Set());
 
   /* ---- rule N — nest ONE MATERIAL at a time (faster budget, cleaner DXF) ---- */
   const groupKeyOf = (p: (typeof parts)[number]) => `${p.material}@${p.matId ?? "def"}`;
@@ -177,7 +194,6 @@ export function NestingTab({
 
   /* ---- per-sheet (per-board) DXF selection ---- */
   const sheetKey = (g: NestGroup, s: Sheet) => `${g.key}#${s.index}`;
-  const [selSheets, setSelSheets] = useState<Set<string>>(new Set());
   const allSheetKeys = groups.flatMap((g) => g.sheets.map((s) => sheetKey(g, s)));
   const selectedRefs = groups.flatMap((g) =>
     g.sheets.filter((s) => selSheets.has(sheetKey(g, s))).map((sheet) => ({ key: g.key, sheet })),

@@ -463,7 +463,7 @@ export function SettingsTab({
         />
       )}
 
-      <OfflineStoragePanel />
+      <OfflineStoragePanel userId={activeUserId} />
     </div>
   );
 }
@@ -621,9 +621,9 @@ function importRawStorage(f: File, activeUserId: string, userName: string) {
   reader.readAsText(f);
 }
 
-function OfflineStoragePanel() {
+function OfflineStoragePanel({ userId }: { userId?: string }) {
   const [info, setInfo] = useState(() => storageInfo());
-  const [backs, setBacks] = useState(() => listBackups(SETTINGS_VERSION));
+  const [backs, setBacks] = useState(() => listBackups(SETTINGS_VERSION, userId));
   const [log, setLog] = useState(() => {
     try {
       return localStorage.getItem("cnc-error-log") || "";
@@ -634,7 +634,7 @@ function OfflineStoragePanel() {
   useEffect(() => {
     const id = setInterval(() => {
       setInfo(storageInfo());
-      setBacks(listBackups(SETTINGS_VERSION));
+      setBacks(listBackups(SETTINGS_VERSION, userId));
       try {
         setLog(localStorage.getItem("cnc-error-log") || "");
       } catch {}
@@ -674,11 +674,11 @@ function OfflineStoragePanel() {
       </div>
 
       <div className="mt-4 flex gap-2 flex-wrap">
-        <Btn size="sm" onClick={() => { setInfo(storageInfo()); setBacks(listBackups(SETTINGS_VERSION)); }}><HardDrive size={12} /> Refresh</Btn>
+        <Btn size="sm" onClick={() => { setInfo(storageInfo()); setBacks(listBackups(SETTINGS_VERSION, userId)); }}><HardDrive size={12} /> Refresh</Btn>
         <Btn size="sm" variant="danger" onClick={() => {
           if (!confirm("Clear ALL backups? Current project stays.")) return;
           backs.forEach((b) => { try { localStorage.removeItem(b.key); } catch {} });
-          setBacks(listBackups(SETTINGS_VERSION));
+          setBacks(listBackups(SETTINGS_VERSION, userId));
         }}><Trash size={12} /> Clear backups</Btn>
         <Btn size="sm" onClick={() => {
           try {

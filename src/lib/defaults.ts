@@ -63,12 +63,12 @@ export const partMatName = (S: Settings, p: { material: string; matId?: string |
  * slider rail — one key per slide depth, editable in Settings → Drilling.
  */
 export const DEFAULT_SLIDE_HOLE_PATTERNS: Record<string, number[]> = {
-  "25": [39, 71, 167, 231],
-  "30": [39, 71, 167, 231],
-  "35": [39, 71, 167, 231],
-  "40": [39, 71, 167, 263],
-  "45": [39, 71, 167, 263],
-  "50": [39, 71, 263, 341],
+  "25": [39, 71, 125, 217],
+  "30": [39, 71, 150, 267],
+  "35": [39, 71, 175, 317],
+  "40": [39, 71, 200, 367],
+  "45": [39, 71, 225, 417],
+  "50": [39, 71, 250, 467],
   // kitchen-mode drawers use a dedicated industry pattern (always 50cm slide)
   kitchen: [38, 61, 261.5, 294.5],
 };
@@ -260,13 +260,17 @@ export function bomOrderQty(net: number, unit: string, item: string, pct: number
 export const AVAILABLE_DRAWER_DEPTHS = [25, 30, 35, 40, 45, 50];
 export const DEFAULT_SLIDE_CM = 50;
 
+/** geometric fallback per slide depth (cm): front pair 39/71, mid-slide,
+ *  rear hole 33mm from the slide's back end (depth×10−33). DISTINCT per
+ *  depth — used only when the Settings → Drilling table is missing a key.
+ *  Kept in sync with DEFAULT_SLIDE_HOLE_PATTERNS (tests lock both). */
 export const DRAWER_HOLE_PATTERNS: Record<number, number[]> = {
-  25: [39, 71, 167, 231],
-  30: [39, 71, 167, 231],
-  35: [39, 71, 167, 231],
-  40: [39, 71, 167, 263],
-  45: [39, 71, 167, 263],
-  50: [39, 71, 263, 341],
+  25: [39, 71, 125, 217],
+  30: [39, 71, 150, 267],
+  35: [39, 71, 175, 317],
+  40: [39, 71, 200, 367],
+  45: [39, 71, 225, 417],
+  50: [39, 71, 250, 467],
 };
 
 export const FIRST_DRAWER_HOLE_HEIGHT = 60;
@@ -493,6 +497,10 @@ const stripDraw = (d: DrawerSpec) => ({
   hidden: d.hidden,
   slideDepthCm: d.slideDepthCm,
   frontMdf: !!d.frontMdf,
+  // manual Y override + per-drawer slide-hole X override survive duplication /
+  // library saves (undefined / empty collapse away in JSON)
+  ...(d.yOffset != null ? { yOffset: d.yOffset } : {}),
+  ...(d.holePatternX?.length ? { holePatternX: [...d.holePatternX] } : {}),
 });
 const stripCol = (col: ColumnSpec): any => ({
   width: col.width,

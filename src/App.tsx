@@ -37,7 +37,7 @@ import {
 import { allParts, drillOps, type GrainOverrides, type RotationOverrides, type SizeOverrides, type SkipNestOverrides } from "./lib/model";
 import { download, readProjectFile } from "./lib/export";
 import { buildShareUrl, clearShareParam, decodeProject, shareParamFromUrl } from "./lib/share";
-import { findLatestPersistedKey, loadRaw, saveRaw, rotateBackups, idbSet, storageInfo, safeParse, listBackups } from "./lib/storage";
+import { findLatestPersistedKey, loadRaw, saveRaw, rotateBackups, idbSet, idbGet, storageInfo, safeParse, listBackups } from "./lib/storage";
 import { createUser, deleteUser, ensureActiveUser, listUsers, renameUser, setActiveUserId, userStorageKey } from "./lib/users";
 import { Btn } from "./components/ui";
 import { OfflineBadge } from "./components/OfflineBadge";
@@ -146,7 +146,17 @@ const freshState = (): PersistState => ({
 
 /** load ONE user's project blob — per-user key only, no cross-user fallback */
 function loadPersistedForUser(userId: string): PersistState {
-  return parsePersisted(loadRaw(userStorageKey(userId, SETTINGS_VERSION))) ?? freshState();
+  const raw = loadRaw(userStorageKey(userId, SETTINGS_VERSION));
+  if (raw) {
+    const parsed = parsePersisted(raw);
+    if (parsed) return parsed;
+    // corrupt blob — keep a recoverable copy BEFORE falling back to demo data
+    // (autosave would otherwise overwrite the only evidence of the project)
+    try {
+      rotateBackups(SETTINGS_VERSION, raw, `corrupt-${userId}`);
+    } catch {}
+  }
+  return freshState();
 }
 
 export default function App() {
@@ -241,8 +251,8 @@ export default function App() {
         if (!res.ok) {
           if (res.quota) {
             setQuotaWarn(`Storage full (${storageInfo().percent}%). Export your project as .json to free space. Old backups will be trimmed.`);
-            // try to free oldest backups
-            const backs = listBackups(SETTINGS_VERSION);
+            // try to free oldest backups — THIS USER's backups first
+            const backs = listBackups(SETTINGS_VERSION, activeUserId);
             if (backs.length > 2) {
               try {
                 const oldest = backs[backs.length - 1];
@@ -256,7 +266,9 @@ export default function App() {
             void idbSet(userLsKey, payload);
           } else {
             setQuotaWarn(`Save failed: ${res.error}`);
-            void idbSet(userLsKey, payload);
+            void idbSet(userLsKey, payload).then((ok) => {
+              if (ok) setQuotaWarn("Save failed — a copy was kept in the offline fallback storage (IndexedDB).");
+            });
           }
         } else {
           setQuotaWarn(null);
@@ -265,7 +277,7 @@ export default function App() {
             const last = localStorage.getItem("cnc-last-backup-ts");
             const now = Date.now();
             if (!last || now - parseInt(last, 10) > 60000) {
-              rotateBackups(SETTINGS_VERSION, payload);
+              rotateBackups(SETTINGS_VERSION, payload, activeUserId);
               localStorage.setItem("cnc-last-backup-ts", String(now));
             }
           } catch {}
@@ -280,6 +292,37 @@ export default function App() {
     }, 400);
     return () => clearTimeout(t);
   }, [settings, cabinets, project, customers, library, grain, rotation, skipNest, sizeOverride, userLsKey]);
+
+  // IndexedDB recovery — when a save once failed (quota), the blob lives only
+  // in the fallback store. If the localStorage blob is missing at startup,
+  // restore it so the work is not silently replaced by the demo project.
+  const idbRecoveredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (idbRecoveredRef.current === userLsKey) return;
+    idbRecoveredRef.current = userLsKey;
+    void (async () => {
+      try {
+        if (loadRaw(userLsKey)) return; // localStorage copy is fine
+        const fb = await idbGet(userLsKey);
+        if (!fb) return;
+        const parsed = parsePersisted(fb);
+        if (!parsed || parsed.cabinets.length === 0) return;
+        if (saveRaw(userLsKey, fb).ok) {
+          setSettingsState(parsed.settings);
+          setCabinetsState(parsed.cabinets);
+          setProjectState(parsed.project);
+          setCustomersState(parsed.customers);
+          setLibraryState(parsed.library);
+          setGrainState(parsed.grain);
+          setRotationState(parsed.rotation);
+          setSkipNestState(parsed.skipNest);
+          setSizeOverrideState(parsed.sizeOverride);
+          setSelectedId(parsed.cabinets[0]?.id ?? null);
+          setQuotaWarn("Recovered your project from the offline fallback storage.");
+        }
+      } catch {}
+    })();
+  }, [userLsKey]);
 
   // beforeunload warning if dirty and no file saved
   useEffect(() => {
@@ -305,8 +348,13 @@ export default function App() {
   const stateRef = useRef({ settings, cabinets, project, customers, library, grain, rotation, skipNest, sizeOverride });
   stateRef.current = { settings, cabinets, project, customers, library, grain, rotation, skipNest, sizeOverride };
 
+  /** users deleted in this session — flush-on-switch must never write state
+   *  back into a deleted user's blob (it used to resurrect the storage key) */
+  const deletedUserIdsRef = useRef<Set<string>>(new Set());
+
   /** write the current state into the active user's blob right now */
   const flushActiveUser = useCallback(() => {
+    if (deletedUserIdsRef.current.has(activeUserId)) return;
     try {
       const s = stateRef.current;
       saveRaw(userStorageKey(activeUserId, SETTINGS_VERSION), JSON.stringify({ ...s, library: s.library.filter((l) => !l.builtin) }));
@@ -355,7 +403,10 @@ export default function App() {
 
   const handleDeleteUser = useCallback(
     (id: string) => {
-      if (id === activeUserId) flushActiveUser();
+      // mark deleted BEFORE any switch: the automatic flush-on-switch writes
+      // the still-mounted state into the outgoing user's key, which used to
+      // resurrect a just-deleted user's storage blob
+      deletedUserIdsRef.current.add(id);
       deleteUser(id, SETTINGS_VERSION);
       const rest = listUsers(SETTINGS_VERSION);
       if (rest.length === 0) {
@@ -392,7 +443,7 @@ export default function App() {
     // the blank one. This makes New safe without forcing an unexpected download.
     if (hasWork) {
       try {
-        rotateBackups(SETTINGS_VERSION, JSON.stringify({ version: SETTINGS_VERSION, settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain, rotation }));
+        rotateBackups(SETTINGS_VERSION, JSON.stringify({ version: SETTINGS_VERSION, settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain, rotation, skipNest, sizeOverride }), activeUserId);
       } catch {}
     }
     setCabinetsState([]);
@@ -410,7 +461,10 @@ export default function App() {
   };
 
   const saveProject = (asNew = false) => {
-    let name = (lastFileRef.current ?? project.name ?? "cabinet-project").replace(/[^\w\- ]+/g, "").trim() || "cabinet-project";
+    // a previous filename carries ".json" — strip the EXTENSION before the
+    // char filter, otherwise "foo.json" sanitizes to "foojson" and every next
+    // save grows another suffix ("foojson.json", "foojsonjson.json", …)
+    let name = ((lastFileRef.current ?? "").replace(/\.json$/i, "") || project.name || "cabinet-project").replace(/[^\w\- ]+/g, "").trim() || "cabinet-project";
     const untitled = !project.name || project.name.trim() === "Untitled Project";
     if (asNew || (untitled && !lastFileRef.current)) {
       const input = window.prompt(asNew ? "Save project as…" : "Name this project…", project.name && !untitled ? project.name : "cabinet-project");
