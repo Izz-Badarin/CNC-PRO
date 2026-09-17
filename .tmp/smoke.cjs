@@ -32791,8 +32791,11 @@ var DEFAULT_SETTINGS = {
   bodyThk: 16.5,
   mdfThk: 19,
   backThk: 5,
+<<<<<<< HEAD
   glassThk: 19,
   // glass / aluminum door front thickness (deducted from carcass depth)
+=======
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   drawerThk: 16.5,
   bitDiameter: 4,
   holeDiameter: 4.9,
@@ -33611,12 +33614,20 @@ var hasKick = (c, S2) => {
 };
 var kickH = (c, S2) => hasKick(c) ? S2.kickHeight : 0;
 var boxHeight = (c, S2) => c.height - kickH(c, S2);
+<<<<<<< HEAD
 var backThkOf = (c, S2) => c.hasBack !== false && c.backMaterial === "plywood" ? S2.bodyThk : S2.backThk;
 var carcassDepth = (c, S2) => Math.max(40, c.depth - (c.hasFronts !== false ? frontThk(c, S2) : 0) - (c.hasBack !== false ? backThkOf(c, S2) : 0));
 function frontThk(c, S2) {
   for (const r3 of c.rows) for (const col of r3.columns) if (col.door) {
     const d = col.door;
     if (d.material === "glass") return S2.glassThk;
+=======
+var carcassDepth = (c, S2) => Math.max(40, c.depth - (c.hasFronts !== false ? frontThk(c, S2) : 0) - (c.hasBack !== false ? S2.backThk : 0));
+function frontThk(c, S2) {
+  for (const r3 of c.rows) for (const col of r3.columns) if (col.door) {
+    const d = col.door;
+    if (d.material === "glass") return 10;
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
     return d.material === "mdf" ? d.mdfThk || S2.mdfThk : S2.bodyThk;
   }
   return S2.mdfThk;
@@ -33808,7 +33819,11 @@ function fullDoorAutoDims(cab, S2) {
   return { wAuto, hAuto };
 }
 function doorMaterial(door, S2) {
+<<<<<<< HEAD
   if (door.material === "glass") return { mat: "mdf", thk: S2.glassThk };
+=======
+  if (door.material === "glass") return { mat: "mdf", thk: 10 };
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   return door.material === "mdf" ? { mat: "mdf", thk: S2.mdfThk } : { mat: "plywood", thk: S2.bodyThk };
 }
 function effectiveHingeCount(door, leafH) {
@@ -33950,9 +33965,13 @@ function buildBody(cab, S2, mk, T) {
       note: "full-depth side"
     });
   }
+<<<<<<< HEAD
   if (cab.hasBack !== false) {
     const plyBack = cab.backMaterial === "plywood";
     const backT = plyBack ? T : S2.backThk;
+=======
+  if (cab.hasBack !== false)
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
     mk({
       name: "Back",
       // oriented LONG side along the grain (Length): tall backs span the sheet
@@ -33960,16 +33979,26 @@ function buildBody(cab, S2, mk, T) {
       // the length and the part fits the 2440×1220 board whenever possible
       w: Math.max(W - 2, BH - 2),
       h: Math.min(W - 2, BH - 2),
+<<<<<<< HEAD
       material: plyBack ? "plywood" : "back",
       thickness: backT,
+=======
+      material: "back",
+      thickness: S2.backThk,
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
       matId: cabinetPly.id,
       // oak rule: a back cut from a grain-visible plywood locks its grain like
       // every other grain part (white/solid boards stay free to rotate)
       grain: cabinetPly.solid !== true,
       noRotate: true,
+<<<<<<< HEAD
       note: plyBack ? `full cabinet back \xB7 PLYWOOD ${backT}mm \xB7 follows ${cabinetPly.name}${cabinetPly.solid !== true ? " \xB7 grain locked" : ""}` : `full cabinet back \xB7 follows ${cabinetPly.name} \xB7 ${S2.backThk}mm${cabinetPly.solid !== true ? " \xB7 grain locked" : ""}`
     });
   }
+=======
+      note: `full cabinet back \xB7 follows ${cabinetPly.name} \xB7 ${S2.backThk}mm${cabinetPly.solid !== true ? " \xB7 grain locked" : ""}`
+    });
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   const fullDoorCols = fullDoorColumns(cab);
   let y0 = 0;
   cab.rows.forEach((row2, ri) => {
@@ -34079,13 +34108,18 @@ function buildStackedBody(cab, S2, mk, T) {
         note: "full-depth side"
       });
     }
+<<<<<<< HEAD
     if (cab.hasBack !== false) {
       const plyBack = cab.backMaterial === "plywood";
       const backT = plyBack ? T : S2.backThk;
+=======
+    if (cab.hasBack !== false)
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
       mk({
         name: `Back${bTag}`,
         w: Math.max(W - 2, bH - 2),
         h: Math.min(W - 2, bH - 2),
+<<<<<<< HEAD
         material: plyBack ? "plywood" : "back",
         thickness: backT,
         matId: cabinetPly.id,
@@ -34094,6 +34128,15 @@ function buildStackedBody(cab, S2, mk, T) {
         note: plyBack ? `box ${bi + 1} back \xB7 PLYWOOD ${backT}mm \xB7 follows ${cabinetPly.name}${cabinetPly.solid !== true ? " \xB7 grain locked" : ""}` : `box ${bi + 1} back \xB7 follows ${cabinetPly.name}${cabinetPly.solid !== true ? " \xB7 grain locked" : ""}`
       });
     }
+=======
+        material: "back",
+        thickness: S2.backThk,
+        matId: cabinetPly.id,
+        grain: cabinetPly.solid !== true,
+        noRotate: true,
+        note: `box ${bi + 1} back \xB7 follows ${cabinetPly.name}${cabinetPly.solid !== true ? " \xB7 grain locked" : ""}`
+      });
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
     const rows = cab.rows.map((r3, i) => ({ r: r3, i })).filter(({ r: r3 }) => (r3.box ?? 0) === bi);
     let y0 = 0;
     rows.forEach(({ r: r3, i }, idx) => {
@@ -34811,7 +34854,10 @@ function applyManualRotation(parts, rot = {}) {
 }
 function generatePanelParts(panels, S2) {
   const out = [];
+<<<<<<< HEAD
   const usedNumbers = /* @__PURE__ */ new Set();
+=======
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   for (const pn of panels ?? []) {
     if (!pn || !(pn.w > 0) || !(pn.h > 0)) continue;
     const mat = pn.material ?? "plywood";
@@ -34819,6 +34865,7 @@ function generatePanelParts(panels, S2) {
     const thk = pn.thk > 0 ? Math.round(pn.thk * 10) / 10 : autoThk;
     const finish = mat === "mdf" ? pn.finish ?? S2.mdfFinish : "white";
     const grain = pn.grain ?? (mat === "plywood" || finish === "oak");
+<<<<<<< HEAD
     const baseName = (pn.name || "Panel").trim() || "Panel";
     let numLabel = "";
     const n = Math.round(pn.number ?? 0);
@@ -34837,6 +34884,15 @@ function generatePanelParts(panels, S2) {
       w: Math.max(5, Math.round(pn.w * 10) / 10),
       h: Math.max(5, Math.round(pn.h * 10) / 10),
       qty: pack,
+=======
+    out.push({
+      cabId: `panel:${pn.id}`,
+      cabName: "Panel",
+      name: (pn.name || "Panel").trim() || "Panel",
+      w: Math.max(5, Math.round(pn.w * 10) / 10),
+      h: Math.max(5, Math.round(pn.h * 10) / 10),
+      qty: 1,
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
       material: mat,
       thickness: thk,
       // panels may pick ANY plywood material (matId); undefined = project default →
@@ -34848,7 +34904,11 @@ function generatePanelParts(panels, S2) {
       shape: "rect",
       outline: [],
       grain,
+<<<<<<< HEAD
       note: pack > 1 ? `${note} \xB7 pack \xD7${pack}` : note
+=======
+      note: mat === "mdf" ? `raw panel \xB7 MDF ${thk}mm \xB7 ${finish === "oak" ? "oak \xB7 banding: LWLW" : "white \xB7 no banding"}` : mat === "back" ? `raw panel \xB7 veneer ${thk}mm` : `raw panel \xB7 plywood ${thk}mm \xB7 banding: LWLW`
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
     });
   }
   return out;
@@ -35887,10 +35947,15 @@ function buildSideSvg(cabs, S2, panels = []) {
     const dw = D * sc;
     const bodyW = bodyD * sc;
     out += `<rect x="${f(x)}" y="${f(top)}" width="${f(dw)}" height="${f(Hc * sc)}" fill="#14202f" stroke="#f5b33c" stroke-width="1.6"/>`;
+<<<<<<< HEAD
     if (cab.hasBack !== false) {
       const backT = backThkOf(cab, S2);
       out += `<rect x="${f(x)}" y="${f(top)}" width="${f(backT * sc)}" height="${f((Hc - kick) * sc)}" fill="#0c141f" stroke="#3d5878" stroke-width="0.7"/>`;
     }
+=======
+    if (cab.hasBack !== false)
+      out += `<rect x="${f(x)}" y="${f(top)}" width="${f(S2.backThk * sc)}" height="${f((Hc - kick) * sc)}" fill="#0c141f" stroke="#3d5878" stroke-width="0.7"/>`;
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
     if (frontThk2 > 0) {
       out += `<rect x="${f(x + bodyW)}" y="${f(top)}" width="${f(frontThk2 * sc)}" height="${f((Hc - kick) * sc)}" fill="#22364e" stroke="#7ea3cc" stroke-width="1"/>`;
       const full = cab.fullDoor && cab.fullDoor !== "off";
@@ -36105,7 +36170,11 @@ function xpDimsLabel(w, h, d) {
 }
 function buildExplodeParts(cab, S2) {
   const T = S2.bodyThk;
+<<<<<<< HEAD
   const BT = backThkOf(cab, S2);
+=======
+  const BT = S2.backThk;
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   const W = cab.width, H = cab.height, D = cab.depth;
   const kick = kickH(cab, S2);
   const BH = H - kick;
@@ -38024,7 +38093,10 @@ var DEFAULT_SETTINGS_FALLBACK = {
   bodyThk: 16.5,
   mdfThk: 19,
   backThk: 5,
+<<<<<<< HEAD
   glassThk: 19,
+=======
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   drawerThk: 16.5,
   bitDiameter: 4,
   holeDiameter: 4.9,
@@ -38344,9 +38416,14 @@ function buildWing3D(cab, S2, w, d, BH, wg, doors, drawersAcc, T, ply, o) {
   top.position.y = BH - T / 2;
   wg.add(top);
   if (cab.hasBack !== false) {
+<<<<<<< HEAD
     const backT = backThkOf(cab, S2);
     const back = box(w - 2, BH - 2, backT, woodMat(w, BH, ply, BH > w, BH <= w), "back", false);
     back.position.set(w / 2, BH / 2, -backT / 2);
+=======
+    const back = box(w - 2, BH - 2, S2.backThk, woodMat(w, BH, ply, BH > w, BH <= w), "back", false);
+    back.position.set(w / 2, BH / 2, -S2.backThk / 2);
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
     wg.add(back);
   }
   const kick = kickH(cab, S2);
@@ -38598,7 +38675,11 @@ function buildColumn3D(cab, S2, col, faceW, faceCx, clearW, d, y0, rowH, wg, doo
 function buildDoor3D(S2, w, faceCx, d, y0, rowH, door, wg, doors, T, gap, ply) {
   const baseX = faceCx - w / 2;
   const { w: dw, h: dh, count } = doorDims(w, rowH, door, S2);
+<<<<<<< HEAD
   const thk = door.material === "glass" ? S2.glassThk : door.material === "mdf" ? door.mdfThk || S2.mdfThk : S2.bodyThk;
+=======
+  const thk = door.material === "glass" ? 10 : door.material === "mdf" ? door.mdfThk || S2.mdfThk : S2.bodyThk;
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   const finish = door.material === "mdf" ? door.finish ?? S2.mdfFinish : "white";
   const doorMat = door.material === "glass" ? mats.glass : door.material === "mdf" ? finish === "oak" ? woodMat(dw, dh, OAK_MDF_PLY, true) : mats.mdf : woodMat(dw, dh, ply, true);
   void T;
@@ -39813,6 +39894,7 @@ ${l}
   check("white back: grain free (unchanged)", backWhite.grain === false);
 }
 {
+<<<<<<< HEAD
   const S2 = { ...S, bodyThk: 18, backThk: 5, plyMaterials: [...S.plyMaterials ?? [], { id: "ply-oak", name: "Oak", color: "#c9a06a", opacity: 1, solid: false }] };
   const ven = makeCabinet("base", 600, 720, 560, "VenBack");
   const venBack = allParts([ven], S2).find((p) => p.name === "Back");
@@ -39868,6 +39950,8 @@ ${l}
   check("panel pack: size/edges untouched", parts[0].w === 600 && parts[0].h === 300 && parts[0].material === "plywood");
 }
 {
+=======
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
   const c = makeCabinet("base", 600, 720, 560, "DrwBand");
   c.rows[0].columns[0].drawers = [{ id: "d1", hidden: false, frontHeight: 220, slideDepthCm: 35, frontMdf: false }];
   c.rows[0].columns[0].door = null;

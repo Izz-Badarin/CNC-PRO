@@ -7,8 +7,13 @@ import { bomReportHtml, frontElevationHtml, frontElevationDxf, frontElevationSvg
 import { explodedReportHtml } from "../src/lib/explodedReport";
 import * as THREE from "three";
 import { OBJExporter } from "three/examples/jsm/exporters/OBJExporter.js";
+<<<<<<< HEAD
 import { allParts, allPartsMerged, applyManualRotation, backThkOf, bandLengthMm, canonicalPartId, carcassDepth, coverCenterX, coverPanelDims, doorDims, doorMaterial, drillOps, frontThk, fullDoorAutoDims, generateCabinetParts, generatePanelParts, glassDoorRefs, kickH, railShelfYs, rotatePartManual, rotatePartOnce, stackOn, stackedHeights, totalBandingM, validateCabinet } from "../src/lib/model";
 import type { Cabinet, PanelItem, Part } from "../src/types";
+=======
+import { allParts, allPartsMerged, applyManualRotation, bandLengthMm, canonicalPartId, carcassDepth, coverCenterX, coverPanelDims, doorDims, drillOps, fullDoorAutoDims, generateCabinetParts, glassDoorRefs, kickH, railShelfYs, rotatePartManual, rotatePartOnce, stackOn, stackedHeights, totalBandingM, validateCabinet } from "../src/lib/model";
+import type { Cabinet, Part } from "../src/types";
+>>>>>>> 841c63d0b5cd5cc32bac345da5c5d6b254b3cd93
 import { nestParts, layoutIsValid, sheetDimsFor } from "../src/lib/nesting";
 import type { Settings } from "../src/types";
 import { buildCabinetGroup } from "../src/three/scene";
