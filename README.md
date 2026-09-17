@@ -12,6 +12,18 @@ on your machine.
 
 ## ✨ Features
 
+### DXF Nesting Optimizer
+
+The initial release also includes a modular DXF workflow: import ASCII DXF geometry and metadata with `parseDxf`, create deterministic 1220 × 2440 mm symmetry-first and waste-minimization layouts with `compareLayouts`, and export the resulting sheets through the existing DXF export UI. Each comparison exposes utilization, waste, replication efficiency, clamping ease, and cutting-path simplicity so the operator can choose the appropriate strategy. Checked-in fixtures are in [`examples/`](examples/), including an input DXF and JSON comparison report.
+
+```ts
+import { parseDxf } from "./src/lib/dxfParser";
+import { compareLayouts } from "./src/lib/dualNesting";
+const report = compareLayouts(parseDxf(await file.text()).parts);
+```
+
+The parser preserves entity types (lines, arcs, circles, polylines, text), layers, and raw group-code metadata. Unsupported entities are skipped safely, allowing large files to be processed without a hard dependency on a third-party CAD runtime.
+
 | Area | What you get |
 |---|---|
 | 🧱 **Cabinet editor** | Base / wall / tall / corner / L / C cabinets, rows ↔ columns split to any depth, drawers, doors (single / double / sliding, overlay / inset), cover panels, adjustable shelves |

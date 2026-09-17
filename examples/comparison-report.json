@@ -1,0 +1,10 @@
+{
+  "sheet": { "widthMm": 1220, "heightMm": 2440 },
+  "input": "sample-input.dxf",
+  "layouts": {
+    "symmetry-first": { "utilizationPercent": 8.2, "wastePercent": 91.8, "replicationEfficiency": 76, "clampingEase": 88, "cuttingPathSimplicity": 84 },
+    "waste-minimization": { "utilizationPercent": 8.2, "wastePercent": 91.8, "replicationEfficiency": 61, "clampingEase": 70, "cuttingPathSimplicity": 68 }
+  },
+  "recommendation": "symmetry-first",
+  "note": "Illustrative checked-in fixture; run the application for a report generated from imported geometry."
+}
