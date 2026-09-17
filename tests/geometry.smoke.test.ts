@@ -1,6 +1,6 @@
 import { modelBounds } from "../src/three/bounds";
 import { layout3DCabs } from "../src/lib/layout3d";
-import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, applyWaste, doorHingeCount, makeCabinet, migrateSettings, plyMaterialById, wastePctOf } from "../src/lib/defaults";
+import { DEFAULT_PLY_ID, DEFAULT_SETTINGS, applyWaste, bomOrderQty, bomWasteItem, doorHingeCount, makeCabinet, migrateSettings, plyMaterialById, wastePctOf } from "../src/lib/defaults";
 import { buildDxf, buildDxfForSheet } from "../src/lib/dxf";
 import { buildSideSvg, layoutCabs, overlapBoxes, panelPositions } from "../src/tabs/View2DTab";
 import { bomReportHtml, frontElevationHtml, frontElevationDxf, frontElevationSvg, projectJson, readProjectFile } from "../src/lib/export";
@@ -8,7 +8,7 @@ import { explodedReportHtml } from "../src/lib/explodedReport";
 import * as THREE from "three";
 import { OBJExporter } from "three/examples/jsm/exporters/OBJExporter.js";
 import { allParts, allPartsMerged, applyManualRotation, bandLengthMm, canonicalPartId, carcassDepth, coverCenterX, coverPanelDims, doorDims, drillOps, fullDoorAutoDims, generateCabinetParts, glassDoorRefs, kickH, railShelfYs, rotatePartManual, rotatePartOnce, stackOn, stackedHeights, totalBandingM, validateCabinet } from "../src/lib/model";
-import type { Part } from "../src/types";
+import type { Cabinet, Part } from "../src/types";
 import { nestParts, layoutIsValid, sheetDimsFor } from "../src/lib/nesting";
 import type { Settings } from "../src/types";
 import { buildCabinetGroup } from "../src/three/scene";
@@ -195,6 +195,42 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   check("hinge-count override → 4 cups", (door4?.holes.filter((h) => h.kind === "hinge").length ?? 0) === 4, `${door4?.holes.filter((h) => h.kind === "hinge").length}`);
 }
 
+/* 42 — skipNest: excluded parts drop from nesting + DXF but stay countable */
+{
+  const c = makeCabinet("base", 600, 720, 560, "SkipNest");
+  const base = allParts([c], S);
+  check("skipNest: test cabinet has parts", base.length > 1, "parts=" + base.length);
+  const skipId = canonicalPartId(base[0]);
+  const skipped = allParts([c], S, {}, [], {}, { [skipId]: true });
+  check("skipNest: flag attached", skipped[0].skipNest === true, skipped[0].name);
+  const allNest = nestParts(base, S);
+  const skipNestG = nestParts(skipped, S);
+  const allQty = allNest.reduce((a, g) => a + g.partCount, 0);
+  const skipQty = skipNestG.reduce((a, g) => a + g.partCount, 0);
+  check("skipNest: nesting drops the unchecked part", allQty - skipQty === base[0].qty, "all=" + allQty + " skip=" + skipQty);
+  const dxfAll = buildDxf([c], S, null, false, {}, null, [], {});
+  const dxfSkip = buildDxf([c], S, null, false, {}, null, [], {}, { [skipId]: true });
+  check("skipNest: DXF shrinks when a part is excluded", dxfSkip.length < dxfAll.length, "all=" + dxfAll.length + " skip=" + dxfSkip.length);
+}
+/* 43 — sizeOverride: nest-only size change flows to nesting + DXF, not 3D */
+{
+  const c = makeCabinet("base", 600, 720, 560, "SizeOverride");
+  const base = allParts([c], S);
+  const tgt = base.find((p) => p.shape === "rect");
+  check("sizeOverride: test cabinet has rect parts", !!tgt, "parts=" + base.length);
+  const sid = canonicalPartId(tgt);
+  const ov = { w: tgt.w, h: Math.round((tgt.h + 80) * 10) / 10 };
+  const sized = allParts([c], S, {}, [], {}, {}, { [sid]: ov });
+  const s = sized.find((p) => p.canonicalId === sid);
+  check("sizeOverride: dims applied on the sheet part", !!s && s.w === ov.w && s.h === ov.h, s ? `${s.w}x${s.h}` : "missing");
+  check("sizeOverride: flag attached", !!s && !!s.sizeOverride && s.sizeOverride.w === ov.w, "");
+  const areaAll = nestParts(base, S).reduce((a, g) => a + g.totalArea, 0);
+  const areaOv = nestParts(sized, S).reduce((a, g) => a + g.totalArea, 0);
+  check("sizeOverride: nesting area grows with override", areaOv > areaAll, `all=${areaAll.toFixed(0)} ov=${areaOv.toFixed(0)}`);
+  const dxfAll2 = buildDxf([c], S, null, false, {}, null, [], {});
+  const dxfOv = buildDxf([c], S, null, false, {}, null, [], {}, {}, { [sid]: ov });
+  check("sizeOverride: DXF length changes with override", dxfOv.length !== dxfAll2.length, `${dxfAll2.length}->${dxfOv.length}`);
+}
 /* 11 — raw project panels (Add-panel feature) flow into allParts like cabinet parts */
 {
   const c = makeCabinet("base", 600, 720, 560, "Pn");
@@ -596,7 +632,7 @@ const S: Settings = { ...DEFAULT_SETTINGS };
   c.qty = 2; // BOM counts both copies
   const html = bomReportHtml([c], S);
   check("bom report: glass door line present with size", /Glass door - \d+x\d+/.test(html), "no 'Glass door' BOM row");
-  check("bom report: glass door qty = cabinet qty (2)", /Glass door - \d+x\d+<\/td><td class="num">2<\/td><td class="num"><b>3<\/b><\/td><td>pcs<\/td>/.test(html), "net 2 / order 3 not found");
+  check("bom report: glass door qty = cabinet qty (2), ordered exact (no +10%)", /Glass door - \d+x\d+<\/td><td class="num">2<\/td><td class="num"><b>2<\/b><\/td><td>pcs<\/td>/.test(html), "net 2 / order 2 not found");
   check("bom report: glass row notes NOT in DXF", html.includes("NOT in DXF"));
   // and the DXF must not contain the word glass at all (no text, no layer, no label)
   const dxfAll = buildDxf([c], S, null, true);
@@ -1060,6 +1096,69 @@ const autoShotTest = captureCabinetShots(makeCabinet("custom", 900, 720, 560, "C
   check("waste: exploded report has Net/Order columns", explodedReportHtml([c], S).includes("Order (+10%)"));
 }
 
+/* ============ BOM: waste applies ONLY to edge banding / shelf pins / hinges ============ */
+{
+  check("wasteItem: edge banding / shelf pins / hinges get waste", bomWasteItem("Edge banding - Oak") && bomWasteItem("Shelf pins (32mm)") && bomWasteItem("Hinges - Universal 35mm"));
+  check("wasteItem: other items do NOT get waste", !bomWasteItem("Plywood (2440x1220)") && !bomWasteItem("Hanging rails") && !bomWasteItem("Drawer slides 500mm") && !bomWasteItem("Glass door"));
+  check("orderQty: waste applied to hinges", bomOrderQty(8, "pcs", "Hinges - Universal 35mm", 10) === 9);
+  // exact net for everything else — no +10% rounding up
+  check("orderQty: exact net for sheets", bomOrderQty(5, "sheets", "Plywood (2440x1220)", 10) === 5);
+  check("orderQty: exact net for hanging rails (meters)", bomOrderQty(0.6, "m", "Hanging rails", 10) === 0.6);
+  check("orderQty: exact net for drawer slides", bomOrderQty(3, "pairs", "Drawer slides 500mm", 10) === 3);
+}
+
+/* ============ BOM: hanging rails are ordered PER METER, not per piece ============ */
+{
+  const c = makeCabinet("custom", 600, 2000, 560, "RailBom");
+  const z = c.rows[0].columns[0];
+  z.rail = "suits"; // single rail spanning the column's clear width
+  const html = bomReportHtml([c], S);
+  // inner width = 600 - 2*bodyThk(16.5) = 567mm → 0.567 m → rounded to 0.6 m
+  check("rail BOM: hanging rails shown in meters", html.includes("Hanging rails") && html.includes("0.6") && html.includes(">m<"), "");
+  check("rail BOM: hanging rails order = net (no +10%)", html.includes("Hanging rails") && !/Hanging rails<\/td><td class="num">0.6<\/td><td class="num"><b>0.7<\/b>/.test(html), "");
+  // double rail = 2 rails → 2 × 567mm = 1134mm → 1.1 m
+  const d = makeCabinet("custom", 600, 2000, 560, "RailBomD");
+  d.rows[0].columns[0].rail = "double";
+  const htmlD = bomReportHtml([d], S);
+  check("rail BOM: double rail counted as 2 rails in meters", htmlD.includes("Hanging rails") && htmlD.includes("1.1") && htmlD.includes(">m<"), "");
+  // cabinet qty multiplies the rail length
+  const q = makeCabinet("custom", 600, 2000, 560, "RailBomQ");
+  q.qty = 3;
+  q.rows[0].columns[0].rail = "suits";
+  const htmlQ = bomReportHtml([q], S);
+  check("rail BOM: cabinet qty multiplies rail meters", htmlQ.includes("Hanging rails") && htmlQ.includes("1.7") && htmlQ.includes(">m<"), "");
+}
+/* ============ kitchen drawers: the X holes follow the chosen slide depth ============ */
+{
+  const slideCoords = (isKitchen: boolean, cm: number) => {
+    const c = makeCabinet("base", 600, 720, 560, isKitchen ? "K" + cm : "S" + cm);
+    c.isKitchen = isKitchen;
+    const z = c.rows[0].columns[0];
+    z.drawers = [{ id: "d1", hidden: false, frontHeight: 220, slideDepthCm: cm, frontMdf: true }];
+    z.door = null;
+    // side-panel hole coords (panel-local, may be rotated): for slide holes one
+    // axis holds the 4 distinct X offsets (from the front edge) and the other a
+    // single Y — pick the axis with the most distinct values = the X offsets
+    return allParts([c], S)
+      .filter((p) => p.name.toLowerCase().includes("side"))
+      .flatMap((p) => {
+        const hs = p.holes.filter((h) => h.kind === "slide");
+        if (!hs.length) return [];
+        const xs = [...new Set(hs.map((h) => Math.round(h.x * 2) / 2))];
+        const ys = [...new Set(hs.map((h) => Math.round(h.y * 2) / 2))];
+        return (xs.length >= ys.length ? xs : ys).sort((a, b) => a - b);
+      })
+      .sort((a, b) => a - b);
+  };
+  const k35 = slideCoords(true, 35);
+  const k50 = slideCoords(true, 50);
+  const s35 = slideCoords(false, 35);
+  // the fix: a kitchen drawer at 35cm drills the SAME holes as a standard 35cm drawer
+  check("kitchen 35cm holes = standard 35cm holes (slider moves the holes)", JSON.stringify(k35) === JSON.stringify(s35));
+  // and they are NOT the dedicated kitchen (50cm) pattern
+  check("kitchen 35cm holes ≠ kitchen 50cm pattern", JSON.stringify(k35) !== JSON.stringify(k50));
+}
+
 const roundTripPanels = (async () => {
   const cabs = [makeCabinet("base", 600, 720, 560, "Saved-01")];
   const project = {
@@ -1079,6 +1178,40 @@ const roundTripPanels = (async () => {
   check("load returns project with panels", loaded.project?.panels?.length === 1 && loaded.project.panels[0].name === "Oak Panel");
   check("load still returns cabinets", loaded.cabinets.length === 1 && loaded.cabinets[0].id === cabs[0].id);
 })();
+
+/* ============ BOM: hinges counted ONCE (no drillOps double-count) ============ */
+{
+  // 7 base cabinets × 2 single doors each (<900mm leaf → 2 hinges per door)
+  // = 14 doors × 2 hinges = 28 — the BOM must show 28, not 56.
+  const mkDoorCol = (id: string): Cabinet["rows"][number]["columns"][number] => ({
+    id,
+    width: 0,
+    shelves: 0,
+    fixed: false,
+    drawers: [],
+    door: { type: "single", style: "overlay", swing: "left", material: "mdf", mdfThk: S.mdfThk, hingeBrand: "Universal 35mm", hasHandle: false, handlePos: "center", full: false },
+  });
+  const mkDoorCab = (name: string): Cabinet => {
+    const c = makeCabinet("base", 600, 720, 560, name);
+    c.rows = [{ id: name + "-r1", h: 620, box: 0, columns: [mkDoorCol(name + "-c1"), mkDoorCol(name + "-c2")] }];
+    return c;
+  };
+  const doorCabs = Array.from({ length: 7 }, (_, i) => mkDoorCab("DoorCab" + i));
+  // single-source invariant: drillOps hinge cups == door-definition count
+  doorCabs.forEach((c, i) => {
+    const cups = drillOps([c], S).filter((o) => o.type === "hinge").length;
+    check(`hinge single-source: cab ${i} drillOps cups == 4`, cups === 4, `${cups}`);
+  });
+  const html = bomReportHtml(doorCabs, S);
+  const m = html.match(/<td>Hinges - Universal 35mm<\/td><td class="num">(\d+)<\/td>/);
+  check("BOM hinges: 14 doors × 2 = 28 (not 56)", !!m && m[1] === "28", m?.[1] ?? "row missing");
+  // qty multiplication: one cabinet ×2 with 2 doors (4 hinges each cab) → 8
+  const qtyCab = mkDoorCab("QtyCab");
+  qtyCab.qty = 2;
+  const htmlQty = bomReportHtml([qtyCab], S);
+  const mq = htmlQty.match(/<td>Hinges - Universal 35mm<\/td><td class="num">(\d+)<\/td>/);
+  check("BOM hinges: qty 2 cabinet → 8", !!mq && mq[1] === "8", mq?.[1] ?? "row missing");
+}
 
 Promise.all([autoShotTest, roundTripPanels]).then(() => {
   if (failures) {

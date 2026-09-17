@@ -17,7 +17,7 @@ import {
   Copy,
 } from "lucide-react";
 import type { Cabinet, ColumnSpec, CoverPanel, DrawerSpec, DoorSpec, RowSpec, Settings } from "../types";
-import { AVAILABLE_DRAWER_DEPTHS, duplicateCabinet, HINGE_BRANDS, mkColumn, mkDoor, mkDrawer, nextCopyName, plyMaterialById, plyMaterialsOf, recommendedShelves, shelfGap, TYPE_META, uid, type LibraryItem } from "../lib/defaults";
+import { AVAILABLE_DRAWER_DEPTHS, duplicateCabinet, HINGE_BRANDS, mkColumn, mkDoor, mkDrawer, nextCopyName, plyMaterialById, plyMaterialsOf, recommendedShelves, shelfGap, slideDepthForCabinet, TYPE_META, uid, type LibraryItem } from "../lib/defaults";
 import { boxHeight, carcassDepth, columnFaceWidth, columnHasDrawers, columnLayout, coverPanelDims, coverSpanWidth, doorDims, drawerBank, effectiveHingeCount, generateCabinetParts, isCorner, isNotched, kickH, railShelfYs, stackOn, stackedHeights, validateCabinet } from "../lib/model";
 /* English-only labels */
 const L: Record<string, string> = {
@@ -110,14 +110,15 @@ const doorFromFront = (v: string, S: Settings): DoorSpec => {
   return mkDoor(type, { swing, material: mat, mdfThk: S.mdfThk });
 };
 
-/** divide the row height equally between n drawers (auto split until edited manually) */
-function splitDrawers(n: number, rowH: number, keep: DrawerSpec[] = []): DrawerSpec[] {
+/** divide the row height equally between n drawers (auto split until edited manually).
+ *  `slideCm` — slide depth auto-picked from the cabinet's carcass depth (rounds DOWN). */
+function splitDrawers(n: number, rowH: number, keep: DrawerSpec[] = [], slideCm?: number): DrawerSpec[] {
   const count = Math.max(1, Math.round(n));
   const base = Math.floor(rowH / count);
   return Array.from({ length: count }, (_, i) => {
     const h = i === count - 1 ? rowH - base * (count - 1) : base;
     const prev = keep[i];
-    return prev ? { ...prev, frontHeight: h } : mkDrawer(h);
+    return prev ? { ...prev, frontHeight: h } : mkDrawer(h, slideCm ? { slideDepthCm: slideCm } : undefined);
   });
 }
 
@@ -222,7 +223,7 @@ export function EditTab({
                 <span className={`block font-display text-[14px] font-bold ${cab.isKitchen ? "text-emerald-200" : "text-ink-200"}`}>
                   {t(lang, "kitchenMode")}
                 </span>
-                <span className="block text-[10.5px] text-ink-400">500mm slides · no hidden drawers</span>
+                <span className="block text-[10.5px] text-ink-400">slides &amp; holes follow each drawer's chosen depth · no hidden drawers</span>
               </span>
             </span>
             <span
@@ -882,6 +883,9 @@ function ColumnEditor({
   updateCabinet: (id: string, fn: (c: Cabinet) => Cabinet) => void;
 }) {
   const lang = "en";
+  // slide depth auto-picked from THIS cabinet's carcass depth:
+  // carcass − 15mm (1.5cm) → nearest available slide that fits, rounding DOWN (never up)
+  const autoSlideCm = slideDepthForCabinet(carcassDepth(cab, settings), cab.isKitchen);
   const [showSub, setShowSub] = useState(false);
   void ri;
   // sub-sections are only relevant when the column holds a hidden (inner) drawer
@@ -920,7 +924,7 @@ function ColumnEditor({
             if (v === "fixed") {
               patchCol(r.id, col.id, { fixed: true, door: null, drawers: [] });
               updateCabinet(cab.id, (c) => ({ ...c, hasFronts: true }));
-            } else if (v === "drawers") patchCol(r.id, col.id, { fixed: false, door: null, drawers: col.drawers.length ? col.drawers : splitDrawers(1, r.h) });
+            } else if (v === "drawers") patchCol(r.id, col.id, { fixed: false, door: null, drawers: col.drawers.length ? col.drawers : splitDrawers(1, r.h, [], autoSlideCm) });
             else if (v === "open") patchCol(r.id, col.id, { fixed: false, door: null, drawers: [] });
             else {
               // adding a door explicitly enables MDF fronts on this cabinet
@@ -1029,13 +1033,15 @@ function ColumnEditor({
                   {t(lang, "hidden")}
                 </label>
               )}
-              {!cab.isKitchen && (
-                <select className="inp !w-[86px] !py-1 !px-1.5 text-[11px]" value={d.slideDepthCm}
-                  onChange={(e) => patchDrawer(r.id, col.id, d.id, { slideDepthCm: parseInt(e.target.value) })}>
-                  {AVAILABLE_DRAWER_DEPTHS.map((cm) => <option key={cm} value={cm}>{cm * 10}mm</option>)}
-                </select>
-              )}
-              {cab.isKitchen && <Chip tone="green">500mm</Chip>}
+              <select
+                className="inp !w-[86px] !py-1 !px-1.5 text-[11px]"
+                value={d.slideDepthCm}
+                onChange={(e) => patchDrawer(r.id, col.id, d.id, { slideDepthCm: parseInt(e.target.value) })}
+                title={cab.isKitchen ? "Kitchen drawer slide depth — the X hole pattern follows this depth" : "Slide depth — the X hole pattern follows this depth"}
+              >
+                {AVAILABLE_DRAWER_DEPTHS.map((cm) => <option key={cm} value={cm}>{cm * 10}mm</option>)}
+              </select>
+              {cab.isKitchen && <Chip tone="green">{d.slideDepthCm * 10}mm</Chip>}
               {/* MDF fronts are opt-in for EVERY drawer (hidden or not) */}
               <label
                 className={`flex items-center gap-1 cursor-pointer rounded-md border px-1.5 py-0.5 ${
@@ -1055,10 +1061,10 @@ function ColumnEditor({
             </div>
           ))}
           <div className="flex items-center justify-between pt-0.5 gap-2 flex-wrap">
-            <Btn size="sm" onClick={() => patchCol(r.id, col.id, { drawers: splitDrawers(col.drawers.length + 1, r.h, col.drawers) })}>
+            <Btn size="sm" onClick={() => patchCol(r.id, col.id, { drawers: splitDrawers(col.drawers.length + 1, r.h, col.drawers, autoSlideCm) })}>
               <Plus size={11} /> {t(lang, "drawer")}
             </Btn>
-            <Btn size="sm" title="Divide the row height equally" onClick={() => patchCol(r.id, col.id, { drawers: splitDrawers(col.drawers.length, r.h, col.drawers) })}>
+            <Btn size="sm" title="Divide the row height equally" onClick={() => patchCol(r.id, col.id, { drawers: splitDrawers(col.drawers.length, r.h, col.drawers, autoSlideCm) })}>
               <ArrowDownUp size={11} /> {t(lang, "even")}
             </Btn>
             <Chip tone={Math.abs(col.drawers.reduce((a, d) => a + d.frontHeight, 0) - r.h) < 20 ? "green" : "amber"}>
@@ -1361,7 +1367,7 @@ function ColumnEditor({
                             const v = e.target.value;
                             if (v === "open") patchSubCol({ fixed: false, door: null, drawers: [], shelves: 0 });
                             else if (v === "shelves") patchSubCol({ fixed: false, door: null, drawers: [], shelves: 1 });
-                            else if (v === "drawers") patchSubCol({ fixed: false, door: null, shelves: 0, drawers: [mkDrawer(180)] });
+                            else if (v === "drawers") patchSubCol({ fixed: false, door: null, shelves: 0, drawers: [mkDrawer(180, { slideDepthCm: autoSlideCm })] });
                             else if (v === "fixed") patchSubCol({ fixed: true, door: null, drawers: [], shelves: 0 });
                             else patchSubCol({ fixed: false, drawers: [], door: mkDoor("single", { mdfThk: settings.mdfThk }) });
                           }}
@@ -1465,7 +1471,7 @@ function ColumnEditor({
                       const v = e.target.value;
                       if (v === "open") setSub({ fixed: false, door: null, drawers: [], shelves: 0 });
                       else if (v === "shelves") setSub({ fixed: false, door: null, drawers: [], shelves: 1 });
-                      else if (v === "drawers") setSub({ fixed: false, door: null, shelves: 0, drawers: [mkDrawer(Math.max(120, Math.round(r.h / Math.max(1, (col.sub ?? []).length))))] });
+                      else if (v === "drawers") setSub({ fixed: false, door: null, shelves: 0, drawers: [mkDrawer(Math.max(120, Math.round(r.h / Math.max(1, (col.sub ?? []).length))), { slideDepthCm: autoSlideCm })] });
                       else setSub({ fixed: true, door: null, drawers: [], shelves: 0 });
                     }}
                   >
@@ -1507,6 +1513,14 @@ function ColumnEditor({
                             {t(lang, "hidden")}
                           </label>
                         )}
+                        <select
+                          className="inp !w-[80px] !py-1 !px-1.5 text-[11px]"
+                          value={d.slideDepthCm}
+                          onChange={(e) => setSub({ drawers: sub.drawers.map((x) => (x.id === d.id ? { ...x, slideDepthCm: parseInt(e.target.value) } : x)) })}
+                          title="Slide depth — the X hole pattern follows this depth"
+                        >
+                          {AVAILABLE_DRAWER_DEPTHS.map((cm) => <option key={cm} value={cm}>{cm * 10}mm</option>)}
+                        </select>
                         <label
                           className={`flex items-center gap-1 cursor-pointer rounded-md border px-1.5 py-0.5 ${
                             d.frontMdf ? "border-amber-400/40 bg-amber-400/10 text-amber-200" : "border-white/[0.07]"
@@ -1524,7 +1538,7 @@ function ColumnEditor({
                         <Btn size="sm" variant="danger" onClick={() => setSub({ drawers: sub.drawers.filter((x) => x.id !== d.id) })}><Trash2 size={10} /></Btn>
                       </div>
                     ))}
-                    <Btn size="sm" onClick={() => setSub({ drawers: [...sub.drawers, mkDrawer(sub.drawers.at(-1)?.frontHeight ?? 180)] })}>
+                    <Btn size="sm" onClick={() => setSub({ drawers: [...sub.drawers, mkDrawer(sub.drawers.at(-1)?.frontHeight ?? 180, { slideDepthCm: autoSlideCm })] })}>
                       <Plus size={10} /> {t(lang, "drawer")}
                     </Btn>
                   </div>

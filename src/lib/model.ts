@@ -20,6 +20,12 @@ import {
 } from "./defaults";
 export { doorHingeCount } from "./defaults";
 
+/** per-part override map: canonicalPartId -> true means "exclude from nesting + DXF" (persisted per user) */
+export type SkipNestOverrides = Record<string, boolean>;
+
+/** nest-only size overrides from the cut list: canonicalPartId -> sheet Length/Width (persisted per user) */
+export type SizeOverrides = Record<string, { w: number; h: number }>;
+
 export const hasKick = (c: Cabinet | CabinetType, S?: Settings): boolean => {
   if (typeof c === "string") return TYPE_META[c].kick;
   void S;
@@ -81,6 +87,15 @@ export function canonicalPartId(p: Part): string {
   const a = Math.round(Math.min(p.w, p.h) * 10);
   const b = Math.round(Math.max(p.w, p.h) * 10);
   return `${p.cabId}|${p.name}|${a}x${b}|${p.material}|${p.thickness}|h${p.holes.length}g${p.grooves.length}`;
+}
+
+/**
+ * Stable per-part toggle id — survives a nest-only size override that changes
+ * w/h (canonicalId is captured before the override, so it still matches the
+ * keys stored in the rotation / grain / skipNest / sizeOverride maps).
+ */
+export function partToggleId(p: Part): string {
+  return p.canonicalId ?? canonicalPartId(p);
 }
 
 /* ================= side panel outline (L / C notches) ================= */
@@ -265,11 +280,13 @@ export function drawerHoleHeights(drawers: { frontHeight: number }[], S: Setting
   });
 }
 
-function kitchenHoleHeights(drawers: { frontHeight: number }[]): number[] {
+function kitchenHoleHeights(drawers: { frontHeight: number }[], S: Settings): number[] {
   const n = drawers.length;
+  const start = S.kitchenHoleYStart ?? KITCHEN_FIRST_HOLE_Y;
+  const last = S.kitchenHoleLastOffset ?? KITCHEN_LAST_DRAWER_OFFSET;
   let cum = 0;
   return drawers.map((d, i) => {
-    const y = i === 0 ? KITCHEN_FIRST_HOLE_Y : i === n - 1 ? cum + KITCHEN_LAST_DRAWER_OFFSET : KITCHEN_FIRST_HOLE_Y + cum;
+    const y = i === 0 ? start : i === n - 1 ? cum + last : start + cum;
     cum += d.frontHeight;
     return y;
   });
@@ -277,7 +294,7 @@ function kitchenHoleHeights(drawers: { frontHeight: number }[]): number[] {
 
 /** auto slide-hole Y (from the row/bank bottom) for the drawer at index i, honoring kitchen mode */
 export function autoDrawerHoleY(drawers: { frontHeight: number }[], isKitchen: boolean, i: number, S: Settings): number {
-  const ys = isKitchen ? kitchenHoleHeights(drawers) : drawerHoleHeights(drawers, S);
+  const ys = isKitchen ? kitchenHoleHeights(drawers, S) : drawerHoleHeights(drawers, S);
   return ys[Math.min(i, Math.max(0, ys.length - 1))];
 }
 
@@ -948,10 +965,16 @@ function buildColumn(
     col.drawers.forEach((dr0, i) => {
       // kitchen mode has no hidden drawers
       const dr = cab.isKitchen ? { ...dr0, hidden: false } : dr0;
+      const pats = normalizeSlidePatterns(S.slideHolePatterns);
+      const dCm = Math.round(dr.slideDepthCm);
+      // Kitchen drawers at the kitchen-native slide depth (50cm) use the
+      // dedicated kitchen pattern; any OTHER chosen slider depth follows the
+      // same per-depth X table as standard drawers — so changing the slider
+      // really moves the holes.
       const pattern =
-        cab.isKitchen
-          ? (normalizeSlidePatterns(S.slideHolePatterns)["kitchen"] ?? KITCHEN_SLIDE_PATTERN)
-          : normalizeSlidePatterns(S.slideHolePatterns)[String(Math.round(dr.slideDepthCm))] ?? getDrawerHolePattern(dr.slideDepthCm);
+        cab.isKitchen && dCm === KITCHEN_SLIDE_CM
+          ? (pats["kitchen"] ?? KITCHEN_SLIDE_PATTERN)
+          : pats[String(dCm)] ?? getDrawerHolePattern(dCm);
       // manual per-drawer Y override wins; otherwise the automatic stack rule.
       // Y is measured from the BANK bottom (which itself may be lifted by the
       // column's drawerAlign), so the holes follow the bank wherever it sits.
@@ -1276,12 +1299,13 @@ function genStandardDrawer(
 function genKitchenDrawer(
   S: Settings,
   mk: MkFn,
-  dr: { frontHeight: number; hidden: boolean; frontMdf?: boolean },
+  dr: { frontHeight: number; hidden: boolean; frontMdf?: boolean; slideDepthCm?: number },
   faceW: number,
   tag: string,
   i: number,
 ) {
   const label = dr.hidden ? "Hidden kitchen drawer" : "Kitchen drawer";
+  const slideCm = Math.round(dr.slideDepthCm ?? KITCHEN_SLIDE_CM);
   // MDF front only when the user explicitly enables it
   if (dr.frontMdf)
     mk({
@@ -1297,11 +1321,11 @@ function genKitchenDrawer(
   mk({
     name: `${label} bottom${tag} #${i + 1}`,
     w: Math.max(120, faceW - 108 - (dr.hidden ? 50 : 0)),
-    h: 495,
+    h: Math.max(60, slideCm * 10 - 5),
     material: "plywood",
     thickness: S.bodyThk,
     grain: false,
-    note: `forced ${KITCHEN_SLIDE_CM * 10}mm slide`,
+    note: `${slideCm * 10}mm slide (by chosen depth)`,
   });
   mk({
     name: `${label} back${tag} #${i + 1}`,
@@ -1734,6 +1758,8 @@ export function allParts(
   ov: GrainOverrides = {},
   panels: PanelItem[] = [],
   rot: RotationOverrides = {},
+  skip: SkipNestOverrides = {},
+  size: SizeOverrides = {},
 ): Part[] {
   // panels are top-level project parts (oak MDF panel, plyboard panel, etc.) that sit
   // outside any cabinet — they flow through cut list / nesting / DXF / BOM like cabinet parts.
@@ -1742,7 +1768,20 @@ export function allParts(
   // manual cut-list 90° rotation goes BEFORE grain lock and merging, so every
   // downstream consumer (cut list merge, nesting, DXF, drilling, reports)
   // sees the rotated piece exactly as the user chose it
-  return applyGrain(applyManualRotation([...panelParts, ...rotated], rot), S, ov);
+  const out = applyGrain(applyManualRotation([...panelParts, ...rotated], rot), S, ov);
+  if (Object.keys(skip).length === 0 && Object.keys(size).length === 0) return out;
+  return out.map((p) => {
+    // canonicalId is the STABLE pre-override id — captured before the nest-only
+    // size override changes w/h, so every cut-list toggle keeps targeting this row
+    let q: Part = { ...p, canonicalId: canonicalPartId(p) };
+    const cid = partToggleId(q);
+    if (skip[cid]) q = { ...q, skipNest: true };
+    const so = size[cid];
+    if (so && Number.isFinite(so.w) && so.w > 0 && Number.isFinite(so.h) && so.h > 0) {
+      q = { ...q, w: so.w, h: so.h, sizeOverride: { w: so.w, h: so.h } };
+    }
+    return q;
+  });
 }
 export function allPartsMerged(
   cabs: Cabinet[],
@@ -1750,8 +1789,21 @@ export function allPartsMerged(
   ov: GrainOverrides = {},
   panels: PanelItem[] = [],
   rot: RotationOverrides = {},
+  skip: SkipNestOverrides = {},
+  size: SizeOverrides = {},
 ): Part[] {
-  return mergePieces(allParts(cabs, S, ov, panels, rot));
+  const merged = mergePieces(allParts(cabs, S, ov, panels, rot, skip, size));
+  if (Object.keys(skip).length === 0 && Object.keys(size).length === 0) return merged;
+  return merged.map((p) => {
+    let q: Part = p;
+    const cid = partToggleId(p);
+    if (skip[cid]) q = { ...q, skipNest: true };
+    const so = size[cid];
+    if (so && Number.isFinite(so.w) && so.w > 0 && Number.isFinite(so.h) && so.h > 0) {
+      q = { ...q, w: so.w, h: so.h, sizeOverride: { w: so.w, h: so.h } };
+    }
+    return q;
+  });
 }
 
 /* ================= drilling ================= */
@@ -1901,7 +1953,7 @@ export function validateCabinet(c: Cabinet, S: Settings): { level: "err" | "warn
         const fh = col.drawers.reduce((a, d) => a + d.frontHeight, 0);
         if (Math.abs(fh - r.h) > 20) out.push({ level: "warn", msg: `${label}: drawer fronts Σ${Math.round(fh)}mm vs row ${Math.round(r.h)}mm` });
         col.drawers.forEach((d) => {
-          if (!c.isKitchen && d.slideDepthCm * 10 > c.depth) out.push({ level: "warn", msg: `${label}: ${d.slideDepthCm * 10}mm slide deeper than cabinet (${c.depth}mm)` });
+          if (d.slideDepthCm * 10 > c.depth) out.push({ level: "warn", msg: `${label}: ${d.slideDepthCm * 10}mm slide deeper than cabinet (${c.depth}mm)` });
         });
         if (findNearestDrawerDepth(c.depth) < 25) out.push({ level: "warn", msg: `${label}: too shallow for any slide` });
       } else if (col.door && !col.fixed) {

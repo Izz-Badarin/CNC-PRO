@@ -17,8 +17,10 @@ import {
   Zap,
   HardDrive,
   AlertTriangle,
+  LogOut,
+  UserRound,
 } from "lucide-react";
-import type { Cabinet, ColumnSpec, Customer, PanelItem, ProjectInfo, Settings } from "./types";
+import type { Cabinet, ColumnSpec, Customer, PanelItem, ProjectInfo, Settings, User } from "./types";
 import {
   DEFAULT_SETTINGS,
   PROJECT_TYPES,
@@ -32,12 +34,14 @@ import {
   nextCopyName,
   type LibraryItem,
 } from "./lib/defaults";
-import { allParts, drillOps, type GrainOverrides, type RotationOverrides } from "./lib/model";
+import { allParts, drillOps, type GrainOverrides, type RotationOverrides, type SizeOverrides, type SkipNestOverrides } from "./lib/model";
 import { download, readProjectFile } from "./lib/export";
 import { buildShareUrl, clearShareParam, decodeProject, shareParamFromUrl } from "./lib/share";
 import { findLatestPersistedKey, loadRaw, saveRaw, rotateBackups, idbSet, storageInfo, safeParse, listBackups } from "./lib/storage";
+import { createUser, deleteUser, ensureActiveUser, listUsers, renameUser, setActiveUserId, userStorageKey } from "./lib/users";
 import { Btn } from "./components/ui";
 import { OfflineBadge } from "./components/OfflineBadge";
+import { UserSelectModal, SKIP_USER_GATE_KEY } from "./components/UserSelectModal";
 import { ProjectTab } from "./tabs/ProjectTab";
 import { EditTab } from "./tabs/EditTab";
 import { View3DTab } from "./tabs/View3DTab";
@@ -67,6 +71,7 @@ const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
 ];
 
 const LS_KEY = `cnc-cabinet-designer-pro-v${SETTINGS_VERSION}`;
+/** pre-user-era key — adopted once into the "Default" user (kept as a backup) */
 
 interface PersistState {
   settings: Settings;
@@ -76,6 +81,8 @@ interface PersistState {
   library: LibraryItem[];
   grain: GrainOverrides;
   rotation: RotationOverrides;
+  skipNest: SkipNestOverrides;
+  sizeOverride: SizeOverrides;
 }
 
 const defaultProject = (): ProjectInfo => ({
@@ -101,54 +108,89 @@ function demoCabinets(): Cabinet[] {
   ];
 }
 
-function loadPersisted(): PersistState {
+/** parse one persisted project blob into app state (null when absent/corrupt) */
+function parsePersisted(raw: string | null): PersistState | null {
+  if (!raw) return null;
   try {
-    const latestKey = findLatestPersistedKey(SETTINGS_VERSION) || LS_KEY;
-    const raw = loadRaw(latestKey) || loadRaw(LS_KEY);
-    if (raw) {
-      const data = safeParse<any>(raw);
-      if (data) {
-        const saved: LibraryItem[] = Array.isArray(data.library) ? data.library.filter((l: LibraryItem) => !l.builtin) : [];
-        // if we loaded from older version, migrate and resave later
-        if (latestKey !== LS_KEY) {
-          console.log(`[CNC-PRO] Migrating storage ${latestKey} -> ${LS_KEY}`);
-        }
-        return {
-          settings: migrateSettings(data.settings),
-          cabinets: (Array.isArray(data.cabinets) ? data.cabinets : []).map(migrateCabinet),
-          project: sanitizeProject({ ...defaultProject(), ...(data.project ?? {}) }),
-          customers: Array.isArray(data.customers) ? data.customers : [],
-          library: [...builtinLibrary(), ...saved],
-          grain: data.grain && typeof data.grain === "object" ? data.grain : {},
-          rotation: data.rotation && typeof data.rotation === "object" ? data.rotation : {},
-        };
-      }
-    }
+    const data = safeParse<any>(raw);
+    if (!data) return null;
+    const saved: LibraryItem[] = Array.isArray(data.library) ? data.library.filter((l: LibraryItem) => !l.builtin) : [];
+    return {
+      settings: migrateSettings(data.settings),
+      cabinets: (Array.isArray(data.cabinets) ? data.cabinets : []).map(migrateCabinet),
+      project: sanitizeProject({ ...defaultProject(), ...(data.project ?? {}) }),
+      customers: Array.isArray(data.customers) ? data.customers : [],
+      library: [...builtinLibrary(), ...saved],
+      grain: data.grain && typeof data.grain === "object" ? data.grain : {},
+      rotation: data.rotation && typeof data.rotation === "object" ? data.rotation : {},
+      skipNest: data.skipNest && typeof data.skipNest === "object" ? data.skipNest : {},
+      sizeOverride: data.sizeOverride && typeof data.sizeOverride === "object" ? data.sizeOverride : {},
+    };
   } catch {
-    /* fresh start */
+    return null;
   }
-  return { settings: { ...DEFAULT_SETTINGS }, cabinets: demoCabinets(), project: defaultProject(), customers: [], library: builtinLibrary(), grain: {}, rotation: {} };
+}
+
+/** the state a brand-new user (or brand-new install) starts with */
+const freshState = (): PersistState => ({
+  settings: { ...DEFAULT_SETTINGS },
+  cabinets: demoCabinets(),
+  project: defaultProject(),
+  customers: [],
+  library: builtinLibrary(),
+  grain: {},
+  rotation: {},
+  skipNest: {},
+  sizeOverride: {},
+});
+
+/** load ONE user's project blob — per-user key only, no cross-user fallback */
+function loadPersistedForUser(userId: string): PersistState {
+  return parsePersisted(loadRaw(userStorageKey(userId, SETTINGS_VERSION))) ?? freshState();
 }
 
 export default function App() {
-  const [persisted] = useState(loadPersisted);
-  const [settings, setSettingsState] = useState<Settings>(persisted.settings);
-  const [cabinets, setCabinetsState] = useState<Cabinet[]>(persisted.cabinets);
-  const [project, setProjectState] = useState<ProjectInfo>(persisted.project);
-  const [customers, setCustomersState] = useState<Customer[]>(persisted.customers);
-  const [library, setLibraryState] = useState<LibraryItem[]>(persisted.library);
-  const [grain, setGrainState] = useState<GrainOverrides>(persisted.grain);
-  const [rotation, setRotationState] = useState<RotationOverrides>(persisted.rotation);
+  /* ---- multi-user bootstrap (once): adopt a legacy install into a "Default" user, then load that user ---- */
+  const [boot] = useState(() => {
+    const legacyRaw = loadRaw(findLatestPersistedKey(SETTINGS_VERSION) || LS_KEY) || loadRaw(LS_KEY);
+    const res = ensureActiveUser(SETTINGS_VERSION, !!legacyRaw);
+    if (res.migratedFromLegacy && legacyRaw && !loadRaw(userStorageKey(res.user.id, SETTINGS_VERSION))) {
+      // adopt the legacy blob as this user's project — the legacy key is kept as a backup
+      saveRaw(userStorageKey(res.user.id, SETTINGS_VERSION), legacyRaw);
+    }
+    return { user: res.user, users: res.users, state: loadPersistedForUser(res.user.id) };
+  });
+  const [activeUserId, setActiveUserIdState] = useState<string>(boot.user.id);
+  const [users, setUsers] = useState<User[]>(boot.users);
+  const [settings, setSettingsState] = useState<Settings>(boot.state.settings);
+  const [cabinets, setCabinetsState] = useState<Cabinet[]>(boot.state.cabinets);
+  const [project, setProjectState] = useState<ProjectInfo>(boot.state.project);
+  const [customers, setCustomersState] = useState<Customer[]>(boot.state.customers);
+  const [library, setLibraryState] = useState<LibraryItem[]>(boot.state.library);
+  const [grain, setGrainState] = useState<GrainOverrides>(boot.state.grain);
+  const [rotation, setRotationState] = useState<RotationOverrides>(boot.state.rotation);
+  const [skipNest, setSkipNestState] = useState<SkipNestOverrides>(boot.state.skipNest);
+  const [sizeOverride, setSizeOverrideState] = useState<SizeOverrides>(boot.state.sizeOverride);
   const panels = project.panels ?? [];
   const setPanels = useCallback((fn: (p: PanelItem[]) => PanelItem[]) => {
     setProjectState((p) => ({ ...p, panels: fn(p.panels ?? []) }));
   }, []);
   const [tab, setTab] = useState<TabId>("project");
-  const [selectedId, setSelectedId] = useState<string | null>(persisted.cabinets[0]?.id ?? null);
+  const [selectedId, setSelectedId] = useState<string | null>(boot.state.cabinets[0]?.id ?? null);
   const [saveFlash, setSaveFlash] = useState(false);
   const [shareFlash, setShareFlash] = useState(false);
   const [quotaWarn, setQuotaWarn] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  /** launch gate — choose / create a user before entering (skippable via checkbox) */
+  const [gateOpen, setGateOpen] = useState(() => {
+    try {
+      return localStorage.getItem(SKIP_USER_GATE_KEY) !== "1";
+    } catch {
+      return true;
+    }
+  });
+  /** true when the gate was opened from inside the app (logout / switch) — then it can be cancelled back */
+  const [gateClosable, setGateClosable] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<any>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const lastFileRef = useRef<string | null>(null);
@@ -179,18 +221,23 @@ export default function App() {
         setLibraryState([...builtinLibrary(), ...(data.library as LibraryItem[]).filter((l) => !l.builtin)]);
       if (data.grain && typeof data.grain === "object") setGrainState(data.grain as GrainOverrides);
       if (data.rotation && typeof data.rotation === "object") setRotationState(data.rotation as RotationOverrides);
+      if (data.skipNest && typeof data.skipNest === "object") setSkipNestState(data.skipNest as SkipNestOverrides);
+      if (data.sizeOverride && typeof data.sizeOverride === "object") setSizeOverrideState(data.sizeOverride as SizeOverrides);
       clearShareParam();
       alert("Shared project loaded from the link.");
     });
   }, []);
+
+  // per-user autosave — each user's settings/project blob lives under their own key
+  const userLsKey = userStorageKey(activeUserId, SETTINGS_VERSION);
 
   // robust autosave with quota handling, backup rotation, idb fallback
   useEffect(() => {
     dirtyRef.current = true;
     const t = setTimeout(() => {
       try {
-        const payload = JSON.stringify({ settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain, rotation });
-        const res = saveRaw(LS_KEY, payload);
+        const payload = JSON.stringify({ settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain, rotation, skipNest, sizeOverride });
+        const res = saveRaw(userLsKey, payload);
         if (!res.ok) {
           if (res.quota) {
             setQuotaWarn(`Storage full (${storageInfo().percent}%). Export your project as .json to free space. Old backups will be trimmed.`);
@@ -201,15 +248,15 @@ export default function App() {
                 const oldest = backs[backs.length - 1];
                 localStorage.removeItem(oldest.key);
                 // retry
-                const retry = saveRaw(LS_KEY, payload);
+                const retry = saveRaw(userLsKey, payload);
                 if (retry.ok) setQuotaWarn(null);
               } catch {}
             }
             // IndexedDB fallback
-            void idbSet(LS_KEY, payload);
+            void idbSet(userLsKey, payload);
           } else {
             setQuotaWarn(`Save failed: ${res.error}`);
-            void idbSet(LS_KEY, payload);
+            void idbSet(userLsKey, payload);
           }
         } else {
           setQuotaWarn(null);
@@ -227,12 +274,12 @@ export default function App() {
       } catch (e: any) {
         setQuotaWarn(`Autosave error: ${String(e?.message || e).slice(0, 200)}`);
         try {
-          void idbSet(LS_KEY, JSON.stringify({ settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain, rotation }));
+          void idbSet(userLsKey, JSON.stringify({ settings, cabinets, project, customers, library: library.filter((l) => !l.builtin), grain, rotation, skipNest, sizeOverride }));
         } catch {}
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [settings, cabinets, project, customers, library, grain, rotation]);
+  }, [settings, cabinets, project, customers, library, grain, rotation, skipNest, sizeOverride, userLsKey]);
 
   // beforeunload warning if dirty and no file saved
   useEffect(() => {
@@ -252,6 +299,85 @@ export default function App() {
     []
   );
   const setCustomers = useCallback((fn: (c: Customer[]) => Customer[]) => setCustomersState(fn), []);
+
+  /* ---- multi-user: switch / create / rename / delete ---- */
+  /** latest state snapshot for flush-on-switch (avoids stale closures) */
+  const stateRef = useRef({ settings, cabinets, project, customers, library, grain, rotation, skipNest, sizeOverride });
+  stateRef.current = { settings, cabinets, project, customers, library, grain, rotation, skipNest, sizeOverride };
+
+  /** write the current state into the active user's blob right now */
+  const flushActiveUser = useCallback(() => {
+    try {
+      const s = stateRef.current;
+      saveRaw(userStorageKey(activeUserId, SETTINGS_VERSION), JSON.stringify({ ...s, library: s.library.filter((l) => !l.builtin) }));
+    } catch {}
+  }, [activeUserId]);
+
+  const switchToUser = useCallback(
+    (id: string) => {
+      if (id === activeUserId) return;
+      flushActiveUser(); // never lose a pending change from the outgoing user
+      setActiveUserId(id, SETTINGS_VERSION);
+      const st = loadPersistedForUser(id);
+      setActiveUserIdState(id);
+      setUsers(listUsers(SETTINGS_VERSION));
+      setSettingsState(st.settings);
+      setCabinetsState(st.cabinets);
+      setProjectState(st.project);
+      setCustomersState(st.customers);
+      setLibraryState(st.library);
+      setGrainState(st.grain);
+      setRotationState(st.rotation);
+      setSkipNestState(st.skipNest);
+      setSizeOverrideState(st.sizeOverride);
+      setSelectedId(st.cabinets[0]?.id ?? null);
+      setTab("project");
+      lastFileRef.current = null;
+      dirtyRef.current = false;
+      setQuotaWarn(null);
+    },
+    [activeUserId, flushActiveUser],
+  );
+
+  const handleCreateUser = useCallback(
+    (name: string) => {
+      const u = createUser(name, SETTINGS_VERSION);
+      setUsers(listUsers(SETTINGS_VERSION));
+      switchToUser(u.id);
+    },
+    [switchToUser],
+  );
+
+  const handleRenameUser = useCallback((id: string, name: string) => {
+    renameUser(id, name, SETTINGS_VERSION);
+    setUsers(listUsers(SETTINGS_VERSION));
+  }, []);
+
+  const handleDeleteUser = useCallback(
+    (id: string) => {
+      if (id === activeUserId) flushActiveUser();
+      deleteUser(id, SETTINGS_VERSION);
+      const rest = listUsers(SETTINGS_VERSION);
+      if (rest.length === 0) {
+        // last user deleted — recreate a fresh "Default" (factory reset for this browser)
+        const u = createUser("Default", SETTINGS_VERSION);
+        setUsers(listUsers(SETTINGS_VERSION));
+        switchToUser(u.id);
+        return;
+      }
+      setUsers(rest);
+      if (id === activeUserId) switchToUser(rest[0].id);
+    },
+    [activeUserId, switchToUser],
+  );
+
+  /** logout — persist the active user, then show the user picker (no passwords; pick another user) */
+  const logout = useCallback(() => {
+    flushActiveUser();
+    dirtyRef.current = false;
+    setGateClosable(true);
+    setGateOpen(true);
+  }, [flushActiveUser]);
 
   const stats = useMemo(() => {
     const parts = allParts(cabinets, settings);
@@ -275,6 +401,8 @@ export default function App() {
     // keep them available in the new project.
     setGrainState({});
     setRotationState({});
+    setSkipNestState({});
+    setSizeOverrideState({});
     setSelectedId(null);
     setTab("project");
     lastFileRef.current = null;
@@ -294,7 +422,7 @@ export default function App() {
       }
     }
     const fname = `${name}.json`;
-    download(fname, JSON.stringify({ version: SETTINGS_VERSION, settings, cabinets, project: { ...project, name }, customers, library: library.filter((l) => !l.builtin), grain, rotation }, null, 2), "application/json");
+    download(fname, JSON.stringify({ version: SETTINGS_VERSION, settings, cabinets, project: { ...project, name }, customers, library: library.filter((l) => !l.builtin), grain, rotation, skipNest, sizeOverride }, null, 2), "application/json");
     lastFileRef.current = fname;
     dirtyRef.current = false;
     setSaveFlash(true);
@@ -310,6 +438,8 @@ export default function App() {
       library: library.filter((l) => !l.builtin),
       grain,
       rotation,
+      skipNest,
+      sizeOverride,
     });
     try {
       await navigator.clipboard.writeText(url);
@@ -327,13 +457,15 @@ export default function App() {
 
   const loadProject = async (f: File) => {
     try {
-      const data = (await readProjectFile(f)) as { cabinets: Cabinet[]; settings?: Settings; project?: ProjectInfo; customers?: Customer[]; grain?: GrainOverrides; rotation?: RotationOverrides; library?: LibraryItem[] };
+      const data = (await readProjectFile(f)) as { cabinets: Cabinet[]; settings?: Settings; project?: ProjectInfo; customers?: Customer[]; grain?: GrainOverrides; rotation?: RotationOverrides; skipNest?: SkipNestOverrides; sizeOverride?: SizeOverrides; library?: LibraryItem[] };
       setCabinetsState((data.cabinets ?? []).map(migrateCabinet));
       setSettingsState(migrateSettings(data.settings ?? DEFAULT_SETTINGS));
       setProjectState(sanitizeProject({ ...defaultProject(), ...(data.project ?? {}) }));
       setCustomersState(data.customers ?? []);
       setGrainState((data.grain ?? {}) as GrainOverrides);
       setRotationState((data.rotation ?? {}) as RotationOverrides);
+      setSkipNestState((data.skipNest ?? {}) as SkipNestOverrides);
+      setSizeOverrideState((data.sizeOverride ?? {}) as SizeOverrides);
       setLibraryState([...builtinLibrary(), ...((data.library ?? []) as LibraryItem[]).filter((l) => !l.builtin)]);
       setSelectedId(data.cabinets?.[0]?.id ?? null);
       lastFileRef.current = f.name;
@@ -365,6 +497,21 @@ export default function App() {
         if (f && f.name.endsWith(".json")) loadProject(f);
       }}
     >
+      {/* user gate — choose / create a user at launch, or switch anytime */}
+      <UserSelectModal
+        open={gateOpen}
+        onClose={() => {
+          setGateOpen(false);
+          setGateClosable(false);
+        }}
+        users={users}
+        activeUserId={activeUserId}
+        launchMode
+        closable={gateClosable}
+        onSelect={switchToUser}
+        onCreate={handleCreateUser}
+      />
+
       {/* drag overlay */}
       {dragOver && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-ink-950/80 backdrop-blur-sm pointer-events-none">
@@ -396,6 +543,25 @@ export default function App() {
             </div>
 
             <div className="ml-auto flex items-center gap-2.5">
+              <button
+                className="inline-flex items-center gap-2 rounded-xl border border-white/[0.07] bg-ink-900/80 px-2.5 py-1.5 text-[12px] font-medium text-ink-100 transition-colors hover:border-amber-400/40"
+                onClick={() => {
+                  setGateClosable(true);
+                  setGateOpen(true);
+                }}
+                title="Switch user — every user has their own settings & projects"
+              >
+                <UserRound size={14} className="text-amber-300" />
+                <span className="hidden max-w-[110px] truncate xl:inline">{users.find((u) => u.id === activeUserId)?.name ?? "User"}</span>
+              </button>
+              <button
+                className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.07] bg-ink-900/80 px-2.5 py-1.5 text-[12px] font-medium text-ink-300 transition-colors hover:border-red-400/40 hover:text-red-200"
+                onClick={logout}
+                title="Log out — go back to the user picker (your data stays saved for this user)"
+              >
+                <LogOut size={14} />
+                <span className="hidden lg:inline">Logout</span>
+              </button>
               <div className="hidden xl:flex mr-2">
                 <OfflineBadge />
               </div>
@@ -522,12 +688,23 @@ export default function App() {
         {tab === "view3d" && <View3DTab cabinets={cabinets} settings={settings} setSettings={setSettingsState} panels={panels} />}
         {tab === "view2d" && <View2DTab cabinets={cabinets} settings={settings} setCabinets={setCabinets} panels={panels} setPanels={setPanels} />}
         {tab === "plan" && <PlanTab cabinets={cabinets} settings={settings} setCabinets={setCabinets} panels={panels} setPanels={setPanels} />}
-        {tab === "cut" && <CutListTab cabinets={cabinets} settings={settings} grain={grain} setGrain={setGrainState} panels={panels} rotation={rotation} setRotation={setRotationState} />}
-        {tab === "nest" && <NestingTab cabinets={cabinets} settings={settings} grain={grain} setSettings={setSettingsState} panels={panels} rotation={rotation} />}
+        {tab === "cut" && <CutListTab cabinets={cabinets} settings={settings} grain={grain} setGrain={setGrainState} panels={panels} rotation={rotation} setRotation={setRotationState} skipNest={skipNest} setSkipNest={setSkipNestState} sizeOverride={sizeOverride} setSizeOverride={setSizeOverrideState} />}
+        {tab === "nest" && <NestingTab cabinets={cabinets} settings={settings} grain={grain} setSettings={setSettingsState} panels={panels} rotation={rotation} skipNest={skipNest} sizeOverride={sizeOverride} />}
         {tab === "drill" && <DrillTab cabinets={cabinets} settings={settings} grain={grain} panels={panels} rotation={rotation} />}
-        {tab === "dxf" && <DxfTab cabinets={cabinets} settings={settings} grain={grain} panels={panels} rotation={rotation} />}
-        {tab === "bom" && <BomTab cabinets={cabinets} settings={settings} panels={panels} grain={grain} rotation={rotation} project={project} customers={customers} />}
-        {tab === "settings" && <SettingsTab settings={settings} setSettings={setSettingsState} />}
+        {tab === "dxf" && <DxfTab cabinets={cabinets} settings={settings} grain={grain} setSettings={setSettingsState} panels={panels} rotation={rotation} skipNest={skipNest} sizeOverride={sizeOverride} />}
+        {tab === "bom" && <BomTab cabinets={cabinets} settings={settings} panels={panels} grain={grain} rotation={rotation} project={project} customers={customers} skipNest={skipNest} sizeOverride={sizeOverride} />}
+        {tab === "settings" && (
+          <SettingsTab
+            settings={settings}
+            setSettings={setSettingsState}
+            users={users}
+            activeUserId={activeUserId}
+            onSwitchUser={switchToUser}
+            onCreateUser={handleCreateUser}
+            onRenameUser={handleRenameUser}
+            onDeleteUser={handleDeleteUser}
+          />
+        )}
       </main>
 
       <footer className="border-t border-white/[0.05] py-4">

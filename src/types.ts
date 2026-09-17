@@ -298,6 +298,20 @@ export interface Customer {
   address: string;
 }
 
+/**
+ * An app user profile — no passwords, everything lives in this browser.
+ * Every user owns a separate settings/project blob: switching users loads that
+ * user's settings, cabinets, project, customers and library, and any change
+ * (including Settings) saves back to the ACTIVE user.
+ */
+export interface User {
+  id: string;
+  name: string;
+  createdAt: number;
+  /** epoch ms — orders the picker by most-recently-used */
+  lastActive: number;
+}
+
 /* ---------- settings ---------- */
 
 /** a user-defined plywood material — same thickness as every other ply, but a distinct name / color */
@@ -412,6 +426,10 @@ export interface Settings {
   drawerHoleYStart: number;
   /** Y step added to each subsequent drawer's slide holes */
   drawerHoleYStep: number;
+  /** kitchen drawer: Y of the FIRST kitchen drawer's slide holes, measured from the panel bottom (kitchen banks use their own rule) */
+  kitchenHoleYStart: number;
+  /** kitchen drawer: Y offset of the LAST drawer in a kitchen bank */
+  kitchenHoleLastOffset: number;
   /** drawer box width deduction (front divider) — "outer W − 33" */
   drawerBoxFrontDeduct: number;
   /** drawer box width deduction (back) — "outer W − 49" */
@@ -421,7 +439,7 @@ export interface Settings {
   /** drawer box depth = slide length − this offset */
   drawerBoxDepthFix: number;
   /* ---- BOM waste / loss allowance ---- */
-  /** waste % added on TOP of every net BOM quantity (edge banding, sheets, hardware) → the "order" qty */
+  /** waste % added on the "Order" qty — applied ONLY to edge banding, shelf pins and universal hinges; every other BOM line is ordered at exact net */
   bomWastePct: number;
 }
 
@@ -487,6 +505,27 @@ export interface Part {
    * drilling CSVs and DXF output.
    */
   reference?: boolean;
+  /**
+   * true = the user unchecked "In nesting" for this part in the cut list.
+   * The part is dropped from sheet nesting and DXF output, but stays in the
+   * cut list / BOM so it remains countable (cut from a different board).
+   */
+  skipNest?: boolean;
+  /**
+   * Stable pre-override per-part id (canonicalPartId computed BEFORE any
+   * nest-only size override). Lets the cut-list toggles (rotation / grain /
+   * in-nesting / size) keep targeting the same row even when a size override
+   * changes the part's dimensions. undefined for parts that never had an
+   * override — callers fall back to canonicalPartId(p).
+   */
+  canonicalId?: string;
+  /**
+   * Nest-only size override from the cut list: the Length/Width used for sheet
+   * nesting and DXF output (NOT the 3D model geometry — w/h here may differ
+   * from the cabinet). Holes / grooves / drilling stay anchored to the real
+   * geometry, so the operator must be warned whenever this is set.
+   */
+  sizeOverride?: { w: number; h: number };
 }
 
 export const MATERIAL_LABEL: Record<PartMaterial, string> = {

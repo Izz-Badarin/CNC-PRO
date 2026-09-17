@@ -24,7 +24,7 @@ import {
 } from "./model";
 import { nestParts } from "./nesting";
 import { frontElevationSvg } from "./export";
-import { applyWaste, partMatName, wastePctOf } from "./defaults";
+import { applyWaste, bomOrderQty, partMatName, wastePctOf } from "./defaults";
 import type { CabShots } from "./cabShots";
 
 const escH = (s: string) =>
@@ -911,7 +911,7 @@ function perCabinetCutTable(cab: Cabinet, S: Settings, grain: GrainOverrides, ro
 }
 
 function perCabinetHardware(cab: Cabinet, S: Settings): string {
-  let hinges = 0, rails = 0;
+  let hinges = 0, railMm = 0;
   const slides: Record<number, number> = {};
   const kick = modelKickH(cab, S);
   const fullSpan = (modelStackOn(cab) ? modelStackedHeights(cab).reduce((a, h) => a + h, 0) : cab.height) - kick;
@@ -937,7 +937,12 @@ function perCabinetHardware(cab: Cabinet, S: Settings): string {
         const cm = Math.round(dr.slideDepthCm);
         slides[cm] = (slides[cm] ?? 0) + 1;
       });
-      if (col.rail && col.rail !== "off") rails += col.rail === "double" ? 2 : 1;
+      if (col.rail && col.rail !== "off") {
+        // hanging rails are sold BY THE METER: each rail spans the column's
+        // clear width (lays[ci].w), a "double" rail is 2 rails
+        const rails = col.rail === "double" ? 2 : 1;
+        railMm += rails * (lays[ci]?.w ?? 0);
+      }
     });
   });
   if (fullDoorActive) {
@@ -959,13 +964,13 @@ function perCabinetHardware(cab: Cabinet, S: Settings): string {
   const shelfPins = totalShelves*4;
   const wastePct = wastePctOf(S);
   const hwRow = (item: string, qty: number, unit: string, note: string) =>
-    `<tr><td>${item}</td><td class="num">${qty}</td><td class="num"><b>${applyWaste(qty, unit, wastePct)}</b></td><td>${unit}</td><td class="small">${note}</td></tr>`;
+    `<tr><td>${item}</td><td class="num">${qty}</td><td class="num"><b>${bomOrderQty(qty, unit, item, wastePct)}</b></td><td>${unit}</td><td class="small">${note}</td></tr>`;
   const rows: string[] = [];
   if (hinges>0) rows.push(hwRow(`Hinges Universal 35mm`, hinges, "pcs", `auto &lt;900→2 900-1799→3 1800-2399→4 2400-2999→5 ≥3000→6 · 140mm from ends`));
   Object.keys(slides).map(Number).sort((a,b)=>a-b).forEach(cm=>{
     rows.push(hwRow(`Drawer slides ${cm}0mm`, slides[cm], "pairs", `per drawer depth`));
   });
-  if (rails>0) rows.push(hwRow(`Hanging rails`, rails, "pcs", `suits/dresses`));
+  if (railMm>0) rows.push(hwRow(`Hanging rails`, Math.round((railMm/1000)*10)/10, "m", `ordered per meter · each rail spans the column width · suits/dresses`));
   if (shelfPins>0) rows.push(hwRow(`Shelf pins 32mm`, shelfPins, "pcs", `${totalShelves} shelves ×4`));
   return `<table><thead><tr><th>Item</th><th>Net qty</th><th>Order (+${wastePct}%)</th><th>Unit</th><th>Note</th></tr></thead><tbody>${rows.join('') || '<tr><td colspan="5" class="muted">No hardware</td></tr>'}</tbody></table>`;
 }
@@ -1178,7 +1183,7 @@ export function explodedReportHtml(
     <h2>Overall – 3D View + Front Elevation (Customer Approval)</h2>
     <div class="grid2">
       <div><h3>3D View (E1 screenshot)</h3>${screenshotHtml}</div>
-      <div><h3>Project summary</h3><div class="card"><b>${escH(projName)}</b><br/><span class="small">Cabinets: ${cabinets.map(c=>escH(c.name)).join(', ')||'-'}</span><br/><span class="small">Panels: ${panels.map(p=>escH(p.name)).join(', ')||'-'}</span><br/><br/><span class="small">Settings: body ${settings.bodyThk}mm – MDF ${settings.mdfThk}mm – back ${settings.backThk}mm – bit ${settings.bitDiameter}mm – shelf ${settings.holeDiameter}mm<br/>Hinge auto &lt;900→2 900-1799→3 1800-2399→4 2400-2999→5 ≥3000→6 – cups 140mm from ends<br/>Rail pilots 2×${settings.bitDiameter}mm per rail – first shelf +${settings.railShelfGap}mm above rail, rest ≥ ${settings.railShelfMinGap}mm<br/>BOM waste allowance ${wastePct}% (Net → Order columns)</span></div></div>
+      <div><h3>Project summary</h3><div class="card"><b>${escH(projName)}</b><br/><span class="small">Cabinets: ${cabinets.map(c=>escH(c.name)).join(', ')||'-'}</span><br/><span class="small">Panels: ${panels.map(p=>escH(p.name)).join(', ')||'-'}</span><br/><br/><span class="small">Settings: body ${settings.bodyThk}mm – MDF ${settings.mdfThk}mm – back ${settings.backThk}mm – bit ${settings.bitDiameter}mm – shelf ${settings.holeDiameter}mm<br/>Hinge auto &lt;900→2 900-1799→3 1800-2399→4 2400-2999→5 ≥3000→6 – cups 140mm from ends<br/>Rail pilots 2×${settings.bitDiameter}mm per rail – first shelf +${settings.railShelfGap}mm above rail, rest ≥ ${settings.railShelfMinGap}mm<br/>BOM waste allowance ${wastePct}% applied ONLY to edge banding, shelf pins and hinges (Net → Order); all other items ordered exact</span></div></div>
     </div>
     <h3 style="margin-top:10px">Front Elevation – Dimensioned (all cabinets + panels)</h3>
     <div class="elevation">${overallFront || '<div class="card">No elevation</div>'}</div>
@@ -1192,7 +1197,7 @@ export function explodedReportHtml(
     <h3>Cut List (first 200 rows)</h3>
     <table><thead><tr><th>#</th><th>Cabinet</th><th>Part</th><th>Material</th><th>Size</th><th>Qty</th><th>Banding</th></tr></thead><tbody>${bomRows}</tbody></table>
     <h3>Nesting Summary</h3>
-    <table><thead><tr><th>Group</th><th>Sheets (net)</th><th>Order (+${wastePct}%)</th><th>Parts</th><th>Area m²</th><th>Avg util</th><th>Strategy</th><th>Unplaced</th></tr></thead><tbody>${nesting.map(g=>`<tr><td>${escH(g.key)}</td><td class="num">${g.sheets.length}</td><td class="num"><b>${applyWaste(g.sheets.length, "sheets", wastePct)}</b></td><td class="num">${g.partCount}</td><td class="num">${(g.totalArea/1e6).toFixed(2)}</td><td class="num">${(g.avgUtil*100).toFixed(1)}%</td><td>${escH(g.strategy||'')}</td><td class="num">${g.unplaced}</td></tr>`).join('') || '<tr><td colspan="8">No nesting</td></tr>'}</tbody></table>
+    <table><thead><tr><th>Group</th><th>Sheets</th><th>Parts</th><th>Area m²</th><th>Avg util</th><th>Strategy</th><th>Unplaced</th></tr></thead><tbody>${nesting.map(g=>`<tr><td>${escH(g.key)}</td><td class="num">${g.sheets.length}</td><td class="num">${g.partCount}</td><td class="num">${(g.totalArea/1e6).toFixed(2)}</td><td class="num">${(g.avgUtil*100).toFixed(1)}%</td><td>${escH(g.strategy||'')}</td><td class="num">${g.unplaced}</td></tr>`).join('') || '<tr><td colspan="7">No nesting</td></tr>'}</tbody></table>
     <h3>Banding by Material</h3>
     <table><thead><tr><th>Material</th><th>Net meters</th><th>Order (+${wastePct}%)</th><th>Net mm</th></tr></thead><tbody>${banding.map(b=>`<tr><td>${escH(b.material)}</td><td class="num">${b.meters.toFixed(2)}</td><td class="num"><b>${applyWaste(b.meters, "m", wastePct).toFixed(1)}</b></td><td class="num">${b.mm.toFixed(0)}</td></tr>`).join('') || '<tr><td colspan="4">No banding</td></tr>'}</tbody></table>
     <h3>Customer approval</h3>
