@@ -125,6 +125,7 @@ export const DEFAULT_SETTINGS: Settings = {
   bodyThk: 16.5,
   mdfThk: 19,
   backThk: 5,
+  glassThk: 19, // glass / aluminum door front thickness (deducted from carcass depth)
   drawerThk: 16.5,
   bitDiameter: 4.0,
   holeDiameter: 4.9,
@@ -193,6 +194,9 @@ export const DEFAULT_SETTINGS: Settings = {
   slideHolePatterns: DEFAULT_SLIDE_HOLE_PATTERNS,
   drawerHoleYStart: 60,
   drawerHoleYStep: 55,
+  // kitchen drawers use their own hole-height rule (industry pattern)
+  kitchenHoleYStart: 75,
+  kitchenHoleLastOffset: 55,
   drawerBoxFrontDeduct: 33,
   drawerBoxBackDeduct: 49,
   drawerBoxHiddenExtra: 50,
@@ -226,6 +230,26 @@ export function applyWaste(net: number, unit: string, pct: number): number {
   }
   if (u === "m" || u === "meter" || u === "meters") return Math.ceil(gross * 10 - 1e-9) / 10;
   return Math.ceil(gross * 100 - 1e-9) / 100;
+}
+
+/**
+ * Which BOM items keep the waste/loss allowance on their "Order" quantity.
+ * Only edge banding, shelf pins and universal hinges get the +% on top —
+ * everything else (sheets, glass doors, drawer slides, hanging rails, …)
+ * must be ordered at the EXACT net quantity.
+ */
+export function bomWasteItem(item: string): boolean {
+  const s = (item || "").toLowerCase();
+  return s.includes("edge banding") || s.includes("shelf pin") || s.includes("hinge");
+}
+
+/**
+ * "Order" quantity for a BOM row. Waste is applied ONLY to the items that
+ * need it (edge banding, shelf pins, hinges — see bomWasteItem); every other
+ * row is ordered at the real net quantity.
+ */
+export function bomOrderQty(net: number, unit: string, item: string, pct: number): number {
+  return bomWasteItem(item) ? applyWaste(net, unit, pct) : net;
 }
 
 
@@ -267,6 +291,19 @@ export const KITCHEN_SLIDE_CM = 50;
 export const KITCHEN_SLIDE_PATTERN = [38, 61, 261.5, 294.5];
 export const KITCHEN_FIRST_HOLE_Y = 75;
 export const KITCHEN_LAST_DRAWER_OFFSET = 55;
+
+/**
+ * Drawer slide depth for a cabinet with usable (carcass) depth `carcassDepthMm`.
+ * Rule: read the CARCASS depth (inner depth after front + back), deduct 15mm
+ * (1.5cm) clearance so the slide always sits clear of the back, then pick the
+ * nearest available slide that still fits — ALWAYS rounding DOWN, never up.
+ *   e.g. 500mm cabinet (carcass ≈ 476) → 461mm → 45cm slide, never 50.
+ * Kitchen banks keep the dedicated 50cm industry slide.
+ */
+export function slideDepthForCabinet(carcassDepthMm: number, isKitchen = false): number {
+  if (isKitchen) return KITCHEN_SLIDE_CM;
+  return findNearestDrawerDepth(Math.max(0, carcassDepthMm - 15));
+}
 
 /* ================= doors ================= */
 
@@ -662,6 +699,9 @@ export function migratePanel(pn: PanelItem): PanelItem {
     h: finite(pn.h, 400),
     thk: finite(pn.thk, 0),
     layout: finiteLayout(pn.layout),
+    // part number (null when unset/invalid) and pack quantity (min 1)
+    number: pn.number != null && Number.isFinite(pn.number) && pn.number > 0 ? Math.round(pn.number) : null,
+    pack: Math.max(1, Math.round(finite(pn.pack, 1))),
   };
 }
 
@@ -671,6 +711,7 @@ export const SETTINGS_META: { key: keyof Settings; label: string; unit: string; 
   { key: "bodyThk", label: "Body / box plywood thickness", unit: "mm", group: "Materials" },
   { key: "mdfThk", label: "MDF door & drawer front thickness", unit: "mm", group: "Materials" },
   { key: "backThk", label: "Back panel thickness", unit: "mm", group: "Materials" },
+  { key: "glassThk", label: "Glass / aluminum front thickness", unit: "mm", group: "Materials" },
   { key: "drawerThk", label: "Drawer box side thickness", unit: "mm", group: "Materials" },
 
   { key: "hiddenFrontDeduct", label: "Hidden drawer front deduction (57 new / 90 legacy)", unit: "mm", group: "Construction" },
@@ -685,6 +726,8 @@ export const SETTINGS_META: { key: keyof Settings; label: string; unit: string; 
   { key: "slotFromFront", label: "Linear slot center from front edge", unit: "mm", group: "Drilling" },
   { key: "drawerHoleYStart", label: "First drawer slide-hole Y (from bottom)", unit: "mm", group: "Drilling" },
   { key: "drawerHoleYStep", label: "Drawer slide-hole Y step", unit: "mm", group: "Drilling" },
+  { key: "kitchenHoleYStart", label: "Kitchen drawer — first slide-hole Y (from bottom)", unit: "mm", group: "Kitchen drawer" },
+  { key: "kitchenHoleLastOffset", label: "Kitchen drawer — last slide-hole offset", unit: "mm", group: "Kitchen drawer" },
   { key: "drawerBoxFrontDeduct", label: "Drawer box width − front (divider)", unit: "mm", group: "Drilling" },
   { key: "drawerBoxBackDeduct", label: "Drawer box width − back", unit: "mm", group: "Drilling" },
   { key: "drawerBoxHiddenExtra", label: "Drawer box width − extra (hidden)", unit: "mm", group: "Drilling" },

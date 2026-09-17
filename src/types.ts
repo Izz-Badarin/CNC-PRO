@@ -190,6 +190,13 @@ export interface Cabinet {
   hasToeKick: boolean;
   hasFronts: boolean;
   hasBack: boolean;
+  /**
+   * Back panel material for THIS cabinet — "veneer" (default / undefined: the thin
+   * veneer back sheet, Settings.backThk) or "plywood": the back is cut from the
+   * cabinet's OWN plywood board at full carcass thickness (Settings.bodyThk) and
+   * nests together with the carcass parts of the same board.
+   */
+  backMaterial?: "veneer" | "plywood";
   rows: RowSpec[];
   lCutW: number;
   lCutH: number;
@@ -272,6 +279,11 @@ export interface PanelItem {
   matId?: string | null;
   /** true = grain locked (no rotation in nesting). For MDF, only oak gets grain. */
   grain?: boolean;
+  /** optional cut-list part number — shown as "P<n> · name". Duplicate numbers
+   *  across panels are auto-suffixed (P5, P5-A, P5-B …). null/0 = unnumbered. */
+  number?: number | null;
+  /** how many identical pieces to cut (default 1) — flows into the part qty */
+  pack?: number;
   /** manual position on the 2D front view (mm). x = along the wall, y = lift above floor.
    *  null = auto-placed below all cabinets (display only — not used for cut list / nesting / DXF). */
   layout?: { x: number; y: number } | null;
@@ -298,6 +310,20 @@ export interface Customer {
   address: string;
 }
 
+/**
+ * An app user profile — no passwords, everything lives in this browser.
+ * Every user owns a separate settings/project blob: switching users loads that
+ * user's settings, cabinets, project, customers and library, and any change
+ * (including Settings) saves back to the ACTIVE user.
+ */
+export interface User {
+  id: string;
+  name: string;
+  createdAt: number;
+  /** epoch ms — orders the picker by most-recently-used */
+  lastActive: number;
+}
+
 /* ---------- settings ---------- */
 
 /** a user-defined plywood material — same thickness as every other ply, but a distinct name / color */
@@ -316,6 +342,8 @@ export interface Settings {
   bodyThk: number;
   mdfThk: number;
   backThk: number;
+  /** glass / aluminum door front thickness — deducted from the carcass depth like every front */
+  glassThk: number;
   drawerThk: number;
   bitDiameter: number;
   holeDiameter: number; // shelf pin holes
@@ -412,6 +440,10 @@ export interface Settings {
   drawerHoleYStart: number;
   /** Y step added to each subsequent drawer's slide holes */
   drawerHoleYStep: number;
+  /** kitchen drawer: Y of the FIRST kitchen drawer's slide holes, measured from the panel bottom (kitchen banks use their own rule) */
+  kitchenHoleYStart: number;
+  /** kitchen drawer: Y offset of the LAST drawer in a kitchen bank */
+  kitchenHoleLastOffset: number;
   /** drawer box width deduction (front divider) — "outer W − 33" */
   drawerBoxFrontDeduct: number;
   /** drawer box width deduction (back) — "outer W − 49" */
@@ -421,7 +453,7 @@ export interface Settings {
   /** drawer box depth = slide length − this offset */
   drawerBoxDepthFix: number;
   /* ---- BOM waste / loss allowance ---- */
-  /** waste % added on TOP of every net BOM quantity (edge banding, sheets, hardware) → the "order" qty */
+  /** waste % added on the "Order" qty — applied ONLY to edge banding, shelf pins and universal hinges; every other BOM line is ordered at exact net */
   bomWastePct: number;
 }
 
@@ -487,6 +519,27 @@ export interface Part {
    * drilling CSVs and DXF output.
    */
   reference?: boolean;
+  /**
+   * true = the user unchecked "In nesting" for this part in the cut list.
+   * The part is dropped from sheet nesting and DXF output, but stays in the
+   * cut list / BOM so it remains countable (cut from a different board).
+   */
+  skipNest?: boolean;
+  /**
+   * Stable pre-override per-part id (canonicalPartId computed BEFORE any
+   * nest-only size override). Lets the cut-list toggles (rotation / grain /
+   * in-nesting / size) keep targeting the same row even when a size override
+   * changes the part's dimensions. undefined for parts that never had an
+   * override — callers fall back to canonicalPartId(p).
+   */
+  canonicalId?: string;
+  /**
+   * Nest-only size override from the cut list: the Length/Width used for sheet
+   * nesting and DXF output (NOT the 3D model geometry — w/h here may differ
+   * from the cabinet). Holes / grooves / drilling stay anchored to the real
+   * geometry, so the operator must be warned whenever this is set.
+   */
+  sizeOverride?: { w: number; h: number };
 }
 
 export const MATERIAL_LABEL: Record<PartMaterial, string> = {

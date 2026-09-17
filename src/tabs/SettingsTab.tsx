@@ -1,9 +1,11 @@
-import { Plus, RotateCcw, Save, Settings2, Palette, Trash2, MoveVertical, Sparkles, HardDrive, ShieldCheck, WifiOff, Download, Trash } from "lucide-react";
-import { useState, useEffect } from "react";
-import type { PlywoodMaterial, Settings } from "../types";
+import { Plus, RotateCcw, Save, Settings2, Palette, Trash2, MoveVertical, Sparkles, HardDrive, ShieldCheck, WifiOff, Download, Trash, Upload, Users as UsersIcon, UserRound } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import type { PlywoodMaterial, Settings, User } from "../types";
 import { DEFAULT_SETTINGS, AVAILABLE_DRAWER_DEPTHS, SETTINGS_META, normalizeSlidePatterns, plyMaterialsOf, uid, SETTINGS_VERSION } from "../lib/defaults";
 import { Btn, Field, Num } from "../components/ui";
-import { storageInfo, listBackups, loadRaw } from "../lib/storage";
+import { storageInfo, listBackups, loadRaw, saveRaw, safeParse } from "../lib/storage";
+import { userStorageKey } from "../lib/users";
+import { UserSelectModal } from "../components/UserSelectModal";
 
 const MATERIALS: { color: keyof Settings; opacity: keyof Settings; label: string }[] = [
   { color: "colorPlywood", opacity: "opacityPlywood", label: "Plywood / carcass" },
@@ -12,13 +14,42 @@ const MATERIALS: { color: keyof Settings; opacity: keyof Settings; label: string
   { color: "colorKick", opacity: "opacityKick", label: "Toe kick" },
 ];
 
-export function SettingsTab({ settings, setSettings }: { settings: Settings; setSettings: (s: Settings) => void }) {
+export function SettingsTab({
+  settings,
+  setSettings,
+  users,
+  activeUserId,
+  onSwitchUser,
+  onCreateUser,
+  onRenameUser,
+  onDeleteUser,
+}: {
+  settings: Settings;
+  setSettings: (s: Settings) => void;
+  /** optional user management — rendered when provided by App */
+  users?: User[];
+  activeUserId?: string;
+  onSwitchUser?: (id: string) => void;
+  onCreateUser?: (name: string) => void;
+  onRenameUser?: (id: string, name: string) => void;
+  onDeleteUser?: (id: string) => void;
+}) {
   const [saved, setSaved] = useState(false);
   const [patDepth, setPatDepth] = useState("50");
   const groups = [...new Set(SETTINGS_META.map((m) => m.group))];
 
   const save = () => {
     setSettings({ ...settings });
+    // Deterministic, immediate per-user persist: write the current settings into
+    // THIS user's own storage blob right now — no reliance on the 400ms autosave
+    // debounce, so the values are there even if the app closes right after.
+    if (activeUserId) {
+      try {
+        const key = userStorageKey(activeUserId, SETTINGS_VERSION);
+        const blob = safeParse<any>(loadRaw(key)) ?? {};
+        saveRaw(key, JSON.stringify({ ...blob, settings }));
+      } catch {}
+    }
     setSaved(true);
     setTimeout(() => setSaved(false), 1600);
   };
@@ -50,7 +81,11 @@ export function SettingsTab({ settings, setSettings }: { settings: Settings; set
     <div className="anim-rise max-w-[1100px] space-y-5">
       <div className="card p-5">
         <h2 className="card-h"><Settings2 size={17} className="text-amber-400" /> Settings</h2>
-        <p className="hint mt-1">Auto-saved. Every cabinet updates immediately when you change a setting.</p>
+        <p className="hint mt-1">
+          Auto-saved to the <span className="text-amber-300">active user</span>. Change a setting and it updates every cabinet immediately;
+          hit <b>Save</b> to write it to this user's browser storage right away. Reopening the app — or switching back to this user —
+          restores your exact parameters.
+        </p>
 
         {/* ---- plywood material library ---- */}
         <div className="mt-6 rounded-xl border border-white/[0.07] p-4">
@@ -179,10 +214,10 @@ export function SettingsTab({ settings, setSettings }: { settings: Settings; set
                       <option value="2440x1220">2440 × 1220</option>
                     </select>
                   </Field>
-                  <Field label="Banding markers in DXF">
+                  <Field label="Edge arrows (banding) in DXF">
                     <label className="flex items-center gap-2 inp !py-2 cursor-pointer text-[13px] text-ink-200">
                       <input type="checkbox" className="chk" checked={settings.bandMarkers !== false} onChange={(e) => setSettings({ ...settings, bandMarkers: e.target.checked })} />
-                      Draw on BANDING layer
+                      Draw edge-banding triangle arrows
                     </label>
                   </Field>
                 </>
@@ -417,9 +452,173 @@ export function SettingsTab({ settings, setSettings }: { settings: Settings; set
         </ul>
       </div>
 
+      {users && activeUserId && onSwitchUser && onCreateUser && onRenameUser && onDeleteUser && (
+        <UsersCard
+          users={users}
+          activeUserId={activeUserId}
+          onSwitchUser={onSwitchUser}
+          onCreateUser={onCreateUser}
+          onRenameUser={onRenameUser}
+          onDeleteUser={onDeleteUser}
+        />
+      )}
+
       <OfflineStoragePanel />
     </div>
   );
+}
+
+/** user management card — per-user settings/projects + raw storage export & import */
+function UsersCard({
+  users,
+  activeUserId,
+  onSwitchUser,
+  onCreateUser,
+  onRenameUser,
+  onDeleteUser,
+}: {
+  users: User[];
+  activeUserId: string;
+  onSwitchUser: (id: string) => void;
+  onCreateUser: (name: string) => void;
+  onRenameUser: (id: string, name: string) => void;
+  onDeleteUser: (id: string) => void;
+}) {
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const importRef = useRef<HTMLInputElement>(null);
+  const active = users.find((u) => u.id === activeUserId);
+
+  return (
+    <div className="card p-5">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="card-h"><UsersIcon size={17} className="text-amber-400" /> Users</h2>
+        <Btn size="sm" onClick={() => setSwitcherOpen(true)}><UserRound size={13} /> Switch user</Btn>
+      </div>
+      <p className="hint mt-1">
+        Every user keeps their <b>own settings, cabinets, projects, customers and library</b> on this device. Switching users loads that user's
+        saved data — changing a setting saves it to the <b>active user</b>.
+      </p>
+      <div className="mt-3 space-y-1.5">
+        {users.map((u) => {
+          const isActive = u.id === activeUserId;
+          const ini =
+            u.name
+              .trim()
+              .split(/\s+/)
+              .slice(0, 2)
+              .map((w) => (w[0] ?? "").toUpperCase())
+              .join("") || "?";
+          return (
+            <div key={u.id} className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 ${isActive ? "border-amber-400/40 bg-amber-400/10" : "border-white/[0.06] bg-ink-900/60"}`}>
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-amber-300 to-amber-600 font-display text-[12px] font-bold text-ink-950">{ini}</span>
+              <div className="min-w-0 flex-1">
+                <div className={`truncate text-[13px] font-semibold ${isActive ? "text-amber-200" : "text-ink-100"}`}>{u.name}</div>
+                <div className="font-mono text-[10px] text-ink-400">{isActive ? "active — settings save here" : `last used ${new Date(u.lastActive).toLocaleString()}`}</div>
+              </div>
+              {isActive ? (
+                <span className="rounded-md bg-amber-400/15 px-2 py-0.5 text-[10.5px] font-semibold text-amber-300">Active</span>
+              ) : (
+                <Btn size="sm" onClick={() => onSwitchUser(u.id)} title={`Open ${u.name}'s data`}>Open</Btn>
+              )}
+              <Btn
+                size="sm"
+                title={`Rename ${u.name}`}
+                onClick={() => {
+                  const n = prompt("Rename user", u.name);
+                  if (n && n.trim()) onRenameUser(u.id, n.trim());
+                }}
+              >
+                Rename
+              </Btn>
+              <Btn
+                size="sm"
+                variant="danger"
+                title={`Delete ${u.name} and its saved data`}
+                onClick={() => {
+                  if (confirm(`Delete user "${u.name}"? Their settings, cabinets and projects saved in this browser will be removed.`)) onDeleteUser(u.id);
+                }}
+              >
+                <Trash2 size={12} />
+              </Btn>
+            </div>
+          );
+        })}
+      </div>
+      <Btn size="sm" className="mt-3" onClick={() => setSwitcherOpen(true)}>
+        <Plus size={13} /> New user
+      </Btn>
+      <UserSelectModal
+        open={switcherOpen}
+        onClose={() => setSwitcherOpen(false)}
+        users={users}
+        activeUserId={activeUserId}
+        onSelect={(id) => onSwitchUser(id)}
+        onCreate={(name) => onCreateUser(name)}
+      />
+      <div className="mt-4 flex gap-2 flex-wrap">
+        <Btn size="sm" title="Download this user's raw saved data as .json" onClick={() => exportRawStorage(active?.name ?? "user", activeUserId)}>
+          <Download size={12} /> Export this user's storage
+        </Btn>
+        <Btn size="sm" title="Import a previously exported user-storage .json — replaces the active user's saved data" onClick={() => importRef.current?.click()}>
+          <Upload size={12} /> Import storage backup
+        </Btn>
+        <input
+          ref={importRef}
+          type="file"
+          accept=".json"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) importRawStorage(f, activeUserId, active?.name ?? "user");
+            e.target.value = "";
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** export the ACTIVE user's raw storage blob as .json (falls back to the legacy key) */
+function exportRawStorage(userName: string, activeUserId: string) {
+  try {
+    const data = loadRaw(userStorageKey(activeUserId, SETTINGS_VERSION)) || loadRaw(`cnc-cabinet-designer-pro-v${SETTINGS_VERSION}`);
+    if (!data) {
+      alert("No saved data found for this user yet.");
+      return;
+    }
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `cnc-user-${userName.replace(/[^\w\- ]+/g, "")}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  } catch {}
+}
+
+/** import a previously exported user-storage backup into the ACTIVE user */
+function importRawStorage(f: File, activeUserId: string, userName: string) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(String(reader.result ?? ""));
+      if (!data || typeof data !== "object" || (!data.settings && !data.cabinets && !data.project)) {
+        alert("This file doesn't look like a CNC-PRO storage backup (expected settings / cabinets / project).");
+        return;
+      }
+      if (!confirm(`Import this backup into "${userName}"'s storage? Their current saved data will be replaced.`)) return;
+      const res = saveRaw(userStorageKey(activeUserId, SETTINGS_VERSION), JSON.stringify(data));
+      if (!res.ok) {
+        alert(`Import failed: ${res.error}`);
+        return;
+      }
+      alert(`Imported into "${userName}". Reloading…`);
+      window.location.reload();
+    } catch (err) {
+      alert("Could not read the backup file: " + (err as Error).message);
+    }
+  };
+  reader.readAsText(f);
 }
 
 function OfflineStoragePanel() {

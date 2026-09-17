@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { FileDown, FolderDown, Layers, PackageOpen } from "lucide-react";
 import type { Cabinet, PanelItem, PartMaterial, Settings } from "../types";
 import { buildDxf, dxfFileDefs, plyGroupMatch } from "../lib/dxf";
-import { allParts, type GrainOverrides, type RotationOverrides } from "../lib/model";
+import { allParts, type GrainOverrides, type RotationOverrides, type SizeOverrides, type SkipNestOverrides } from "../lib/model";
 import { nestParts } from "../lib/nesting";
 import { downloadRaw } from "../lib/export";
 import { Btn, Empty, Stat } from "../components/ui";
@@ -18,22 +18,30 @@ export function DxfTab({
   cabinets,
   settings,
   grain = {},
+  setSettings,
   panels = [],
   rotation = {},
+  skipNest = {},
+  sizeOverride = {},
 }: {
   cabinets: Cabinet[];
   settings: Settings;
   grain?: GrainOverrides;
+  setSettings?: (s: Settings) => void;
   panels?: PanelItem[];
   rotation?: RotationOverrides;
+  skipNest?: SkipNestOverrides;
+  sizeOverride?: SizeOverrides;
 }) {
   const defs = useMemo(() => dxfFileDefs(settings), [settings]);
   // cut-list manual 90° rotations are part of the input — the DXF nests the
   // rotated pieces exactly as the cut list shows them
-  const groups = useMemo(
-    () => nestParts(allParts(cabinets, settings, grain, panels, rotation), settings),
-    [cabinets, settings, grain, panels, rotation],
+  const parts = useMemo(
+    () => allParts(cabinets, settings, grain, panels, rotation, skipNest, sizeOverride),
+    [cabinets, settings, grain, panels, rotation, skipNest, sizeOverride],
   );
+  const groups = useMemo(() => nestParts(parts, settings), [parts, settings]);
+  const hasOverride = parts.some((p) => p.sizeOverride);
   const [preview, setPreview] = useState<string>("");
 
   if (cabinets.length === 0 && panels.length === 0) {
@@ -69,7 +77,7 @@ export function DxfTab({
           skipped.push(d.title); // a 0-sheet DXF is just a header — it opens EMPTY
           return;
         }
-        downloadRaw(`${d.filename}${labels ? "" : "_nolabel"}.dxf`, buildDxf(cabinets, settings, d.material, labels, grain, d.matId, panels, rotation));
+        downloadRaw(`${d.filename}${labels ? "" : "_nolabel"}.dxf`, buildDxf(cabinets, settings, d.material, labels, grain, d.matId, panels, rotation, skipNest, sizeOverride));
         made++;
       });
       setPreview(
@@ -84,7 +92,7 @@ export function DxfTab({
       return;
     }
     const name = `${def.filename}${labels ? "" : "_nolabel"}.dxf`;
-    downloadRaw(name, buildDxf(cabinets, settings, mat, labels, grain, def.matId, panels, rotation));
+    downloadRaw(name, buildDxf(cabinets, settings, mat, labels, grain, def.matId, panels, rotation, skipNest, sizeOverride));
     setPreview(
       `Exported ${name} — ${st.sheets} sheet(s), ${st.parts} parts, avg util ${(st.util * 100).toFixed(1)}%${labels ? "" : " (no labels)"}.`,
     );
@@ -92,12 +100,43 @@ export function DxfTab({
 
   return (
     <div className="card p-5 anim-rise">
+      {hasOverride && (
+        <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-200">
+          <Layers size={15} className="mt-0.5 shrink-0 text-amber-400" />
+          <span>
+            <b>Nest-only size overrides active.</b> Some exported parts are cut at edited sizes that <b>don't match the 3D model</b> — these
+            sheets reflect the overridden Length/Width, not the cabinet geometry. Verify before cutting.
+          </span>
+        </div>
+      )}
       <h2 className="card-h"><FolderDown size={17} className="text-amber-400" /> DXF Export — Flat Layout ({defs.length} files by material)</h2>
       <div className="mt-3 rounded-xl border border-cyan-400/20 bg-cyan-400/[0.05] px-4 py-3 text-[12.5px] text-cyan-200/90">
-        <span className="font-semibold">Layers:</span> CUT · CLAMP_HOLES · SHELF_HOLES · SLIDE_HOLES · DRAWER_GROOVE · SHEET · LABEL.
+        <span className="font-semibold">Layers:</span> CUT · CLAMP_HOLES · SHELF_HOLES · SLIDE_HOLES · DRAWER_GROOVE · SHEET · LABEL
+        {settings.bandMarkers !== false ? " · BANDING (edge arrows ON)" : ""}.
         Units mm, AutoCAD R12-compatible (LINE / CIRCLE / TEXT). Sheets tiled N columns × 5 rows. 10mm clamping holes are added in free areas
         (≥300mm apart). Ø35 hinge cups stay out of the DXF. Glass doors are listed in the BOM only — they are not exported here.
       </div>
+
+      {/* quick-access edge-arrow (banding markers) toggle — choose per export */}
+      {setSettings && (
+        <label
+          className={`mt-3 inline-flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-[12.5px] transition-colors ${
+            settings.bandMarkers !== false
+              ? "border-emerald-400/35 bg-emerald-400/[0.08] text-emerald-100"
+              : "border-white/[0.07] bg-ink-900/60 text-ink-300"
+          }`}
+          title="Edge-banding arrows: 3 small triangle arrowheads per banded edge on the BANDING layer — uncheck to export DXF without them"
+        >
+          <input
+            type="checkbox"
+            className="chk"
+            checked={settings.bandMarkers !== false}
+            onChange={(e) => setSettings({ ...settings, bandMarkers: e.target.checked })}
+          />
+          Edge Arrows
+          <span className="text-[10.5px] text-ink-400">(edge-banding triangle arrows on the BANDING layer — saved to your settings)</span>
+        </label>
+      )}
 
       <div className="flex gap-2 mt-5 flex-wrap">
         {defs.map((d) => (

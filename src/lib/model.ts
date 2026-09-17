@@ -20,6 +20,12 @@ import {
 } from "./defaults";
 export { doorHingeCount } from "./defaults";
 
+/** per-part override map: canonicalPartId -> true means "exclude from nesting + DXF" (persisted per user) */
+export type SkipNestOverrides = Record<string, boolean>;
+
+/** nest-only size overrides from the cut list: canonicalPartId -> sheet Length/Width (persisted per user) */
+export type SizeOverrides = Record<string, { w: number; h: number }>;
+
 export const hasKick = (c: Cabinet | CabinetType, S?: Settings): boolean => {
   if (typeof c === "string") return TYPE_META[c].kick;
   void S;
@@ -34,14 +40,21 @@ export const boxHeight = (c: Cabinet, S: Settings) => c.height - kickH(c, S);
  * Carcass (interior) depth. The overall cabinet depth includes the front
  * (MDF door / drawer front) and the back panel, so both are deducted.
  */
-export const carcassDepth = (c: Cabinet, S: Settings) =>
-  Math.max(40, c.depth - (c.hasFronts !== false ? frontThk(c, S) : 0) - (c.hasBack !== false ? S.backThk : 0));
+/** thickness of the BACK panel for this cabinet — the thin veneer back sheet
+ *  (Settings.backThk) by default, or the full carcass plywood thickness
+ *  (Settings.bodyThk) when the user switches THIS cabinet's back to plywood. */
+export const backThkOf = (c: Cabinet, S: Settings): number =>
+  c.hasBack !== false && c.backMaterial === "plywood" ? S.bodyThk : S.backThk;
 
-/** thickness of the front material actually used on this cabinet (glass/aluminum front ≈ 10mm) */
+export const carcassDepth = (c: Cabinet, S: Settings) =>
+  Math.max(40, c.depth - (c.hasFronts !== false ? frontThk(c, S) : 0) - (c.hasBack !== false ? backThkOf(c, S) : 0));
+
+/** thickness of the front material actually used on this cabinet (glass / aluminum
+ *  front = Settings.glassThk, default 19mm) */
 export function frontThk(c: Cabinet, S: Settings): number {
   for (const r of c.rows) for (const col of r.columns) if (col.door) {
     const d = col.door;
-    if (d.material === "glass") return 10;
+    if (d.material === "glass") return S.glassThk;
     return d.material === "mdf" ? d.mdfThk || S.mdfThk : S.bodyThk;
   }
   return S.mdfThk;
@@ -81,6 +94,15 @@ export function canonicalPartId(p: Part): string {
   const a = Math.round(Math.min(p.w, p.h) * 10);
   const b = Math.round(Math.max(p.w, p.h) * 10);
   return `${p.cabId}|${p.name}|${a}x${b}|${p.material}|${p.thickness}|h${p.holes.length}g${p.grooves.length}`;
+}
+
+/**
+ * Stable per-part toggle id — survives a nest-only size override that changes
+ * w/h (canonicalId is captured before the override, so it still matches the
+ * keys stored in the rotation / grain / skipNest / sizeOverride maps).
+ */
+export function partToggleId(p: Part): string {
+  return p.canonicalId ?? canonicalPartId(p);
 }
 
 /* ================= side panel outline (L / C notches) ================= */
@@ -265,11 +287,13 @@ export function drawerHoleHeights(drawers: { frontHeight: number }[], S: Setting
   });
 }
 
-function kitchenHoleHeights(drawers: { frontHeight: number }[]): number[] {
+function kitchenHoleHeights(drawers: { frontHeight: number }[], S: Settings): number[] {
   const n = drawers.length;
+  const start = S.kitchenHoleYStart ?? KITCHEN_FIRST_HOLE_Y;
+  const last = S.kitchenHoleLastOffset ?? KITCHEN_LAST_DRAWER_OFFSET;
   let cum = 0;
   return drawers.map((d, i) => {
-    const y = i === 0 ? KITCHEN_FIRST_HOLE_Y : i === n - 1 ? cum + KITCHEN_LAST_DRAWER_OFFSET : KITCHEN_FIRST_HOLE_Y + cum;
+    const y = i === 0 ? start : i === n - 1 ? cum + last : start + cum;
     cum += d.frontHeight;
     return y;
   });
@@ -277,7 +301,7 @@ function kitchenHoleHeights(drawers: { frontHeight: number }[]): number[] {
 
 /** auto slide-hole Y (from the row/bank bottom) for the drawer at index i, honoring kitchen mode */
 export function autoDrawerHoleY(drawers: { frontHeight: number }[], isKitchen: boolean, i: number, S: Settings): number {
-  const ys = isKitchen ? kitchenHoleHeights(drawers) : drawerHoleHeights(drawers, S);
+  const ys = isKitchen ? kitchenHoleHeights(drawers, S) : drawerHoleHeights(drawers, S);
   return ys[Math.min(i, Math.max(0, ys.length - 1))];
 }
 
@@ -349,7 +373,7 @@ export function fullDoorAutoDims(cab: Cabinet, S: Settings): { wAuto: number; hA
 /** MDF thickness always comes from the system defaults — no manual override.
  *  Glass / aluminum doors are PURCHASED hardware — they never produce a cut part. */
 export function doorMaterial(door: DoorSpec, S: Settings): { mat: Part["material"]; thk: number } {
-  if (door.material === "glass") return { mat: "mdf", thk: 10 };
+  if (door.material === "glass") return { mat: "mdf", thk: S.glassThk };
   return door.material === "mdf" ? { mat: "mdf", thk: S.mdfThk } : { mat: "plywood", thk: S.bodyThk };
 }
 
@@ -552,7 +576,13 @@ function buildBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
   // ---- back panel ----
   // Always ONE continuous back panel for the whole cabinet unit (no subdivisions).
   // Back follows cabinet plywood material (matId) so 3D color + nesting grouping matches carcass (Phase #3)
-  if (cab.hasBack !== false)
+  if (cab.hasBack !== false) {
+    // plywood back (per-cabinet override): cut from the cabinet's OWN board at
+    // full carcass thickness → nests together with the carcass parts on the same
+    // sheet; otherwise the thin veneer back sheet (Settings.backThk) that follows
+    // the cabinet plywood material (matId) so 3D color + grouping match (Phase #3)
+    const plyBack = cab.backMaterial === "plywood";
+    const backT = plyBack ? T : S.backThk;
     mk({
       name: "Back",
       // oriented LONG side along the grain (Length): tall backs span the sheet
@@ -560,15 +590,18 @@ function buildBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
       // the length and the part fits the 2440×1220 board whenever possible
       w: Math.max(W - 2, BH - 2),
       h: Math.min(W - 2, BH - 2),
-      material: "back",
-      thickness: S.backThk,
+      material: plyBack ? "plywood" : "back",
+      thickness: backT,
       matId: cabinetPly.id,
       // oak rule: a back cut from a grain-visible plywood locks its grain like
       // every other grain part (white/solid boards stay free to rotate)
       grain: cabinetPly.solid !== true,
       noRotate: true,
-      note: `full cabinet back · follows ${cabinetPly.name} · ${S.backThk}mm${cabinetPly.solid !== true ? " · grain locked" : ""}`,
+      note: plyBack
+        ? `full cabinet back · PLYWOOD ${backT}mm · follows ${cabinetPly.name}${cabinetPly.solid !== true ? " · grain locked" : ""}`
+        : `full cabinet back · follows ${cabinetPly.name} · ${S.backThk}mm${cabinetPly.solid !== true ? " · grain locked" : ""}`,
     });
+  }
 
   // ---- rows & columns ----
   const fullDoorCols = fullDoorColumns(cab);
@@ -704,18 +737,25 @@ function buildStackedBody(cab: Cabinet, S: Settings, mk: MkFn, T: number) {
       });
     }
 
-    if (cab.hasBack !== false)
+    if (cab.hasBack !== false) {
+      // per-box back — veneer (thin sheet) or the cabinet plywood board when the
+      // user switches this cabinet's back to plywood (same rules as buildBody)
+      const plyBack = cab.backMaterial === "plywood";
+      const backT = plyBack ? T : S.backThk;
       mk({
         name: `Back${bTag}`,
         w: Math.max(W - 2, bH - 2),
         h: Math.min(W - 2, bH - 2),
-        material: "back",
-        thickness: S.backThk,
+        material: plyBack ? "plywood" : "back",
+        thickness: backT,
         matId: cabinetPly.id,
         grain: cabinetPly.solid !== true,
         noRotate: true,
-        note: `box ${bi + 1} back · follows ${cabinetPly.name}${cabinetPly.solid !== true ? " · grain locked" : ""}`,
+        note: plyBack
+          ? `box ${bi + 1} back · PLYWOOD ${backT}mm · follows ${cabinetPly.name}${cabinetPly.solid !== true ? " · grain locked" : ""}`
+          : `box ${bi + 1} back · follows ${cabinetPly.name}${cabinetPly.solid !== true ? " · grain locked" : ""}`,
       });
+    }
 
     // rows belonging to this box
     const rows = cab.rows.map((r, i) => ({ r, i })).filter(({ r }) => (r.box ?? 0) === bi);
@@ -948,10 +988,16 @@ function buildColumn(
     col.drawers.forEach((dr0, i) => {
       // kitchen mode has no hidden drawers
       const dr = cab.isKitchen ? { ...dr0, hidden: false } : dr0;
+      const pats = normalizeSlidePatterns(S.slideHolePatterns);
+      const dCm = Math.round(dr.slideDepthCm);
+      // Kitchen drawers at the kitchen-native slide depth (50cm) use the
+      // dedicated kitchen pattern; any OTHER chosen slider depth follows the
+      // same per-depth X table as standard drawers — so changing the slider
+      // really moves the holes.
       const pattern =
-        cab.isKitchen
-          ? (normalizeSlidePatterns(S.slideHolePatterns)["kitchen"] ?? KITCHEN_SLIDE_PATTERN)
-          : normalizeSlidePatterns(S.slideHolePatterns)[String(Math.round(dr.slideDepthCm))] ?? getDrawerHolePattern(dr.slideDepthCm);
+        cab.isKitchen && dCm === KITCHEN_SLIDE_CM
+          ? (pats["kitchen"] ?? KITCHEN_SLIDE_PATTERN)
+          : pats[String(dCm)] ?? getDrawerHolePattern(dCm);
       // manual per-drawer Y override wins; otherwise the automatic stack rule.
       // Y is measured from the BANK bottom (which itself may be lifted by the
       // column's drawerAlign), so the holes follow the bank wherever it sits.
@@ -1276,12 +1322,13 @@ function genStandardDrawer(
 function genKitchenDrawer(
   S: Settings,
   mk: MkFn,
-  dr: { frontHeight: number; hidden: boolean; frontMdf?: boolean },
+  dr: { frontHeight: number; hidden: boolean; frontMdf?: boolean; slideDepthCm?: number },
   faceW: number,
   tag: string,
   i: number,
 ) {
   const label = dr.hidden ? "Hidden kitchen drawer" : "Kitchen drawer";
+  const slideCm = Math.round(dr.slideDepthCm ?? KITCHEN_SLIDE_CM);
   // MDF front only when the user explicitly enables it
   if (dr.frontMdf)
     mk({
@@ -1297,11 +1344,11 @@ function genKitchenDrawer(
   mk({
     name: `${label} bottom${tag} #${i + 1}`,
     w: Math.max(120, faceW - 108 - (dr.hidden ? 50 : 0)),
-    h: 495,
+    h: Math.max(60, slideCm * 10 - 5),
     material: "plywood",
     thickness: S.bodyThk,
     grain: false,
-    note: `forced ${KITCHEN_SLIDE_CM * 10}mm slide`,
+    note: `${slideCm * 10}mm slide (by chosen depth)`,
   });
   mk({
     name: `${label} back${tag} #${i + 1}`,
@@ -1692,6 +1739,8 @@ export function applyManualRotation(parts: Part[], rot: RotationOverrides = {}):
  */
 export function generatePanelParts(panels: PanelItem[], S: Settings): Part[] {
   const out: Part[] = [];
+  // cut-list part numbers ("P5", "P12" …) — duplicate numbers get auto suffixes
+  const usedNumbers = new Set<string>();
   for (const pn of panels ?? []) {
     if (!pn || !(pn.w > 0) || !(pn.h > 0)) continue;
     const mat = pn.material ?? "plywood";
@@ -1699,13 +1748,32 @@ export function generatePanelParts(panels: PanelItem[], S: Settings): Part[] {
     const thk = pn.thk > 0 ? Math.round(pn.thk * 10) / 10 : autoThk;
     const finish: MdfFinish = mat === "mdf" ? (pn.finish ?? S.mdfFinish) : "white";
     const grain = pn.grain ?? (mat === "plywood" || finish === "oak");
+    const baseName = (pn.name || "Panel").trim() || "Panel";
+    // part number → "P5 · <name>"; a second panel with the same number becomes
+    // "P5-A · <name>", then "P5-B" … so every cut-list label stays unique
+    let numLabel = "";
+    const n = Math.round(pn.number ?? 0);
+    if (Number.isFinite(n) && n > 0) {
+      let label = `P${n}`;
+      for (let i = 0; usedNumbers.has(label); i++) label = `P${n}-${String.fromCharCode(65 + i)}`;
+      usedNumbers.add(label);
+      numLabel = label;
+    }
+    // pack = how many identical pieces to cut (default 1)
+    const pack = Math.max(1, Math.round(pn.pack ?? 1));
+    const note =
+      mat === "mdf"
+        ? `raw panel · MDF ${thk}mm · ${finish === "oak" ? "oak · banding: LWLW" : "white · no banding"}`
+        : mat === "back"
+          ? `raw panel · veneer ${thk}mm`
+          : `raw panel · plywood ${thk}mm · banding: LWLW`;
     out.push({
       cabId: `panel:${pn.id}`,
       cabName: "Panel",
-      name: (pn.name || "Panel").trim() || "Panel",
+      name: numLabel ? `${numLabel} · ${baseName}` : baseName,
       w: Math.max(5, Math.round(pn.w * 10) / 10),
       h: Math.max(5, Math.round(pn.h * 10) / 10),
-      qty: 1,
+      qty: pack,
       material: mat,
       thickness: thk,
       // panels may pick ANY plywood material (matId); undefined = project default →
@@ -1717,12 +1785,7 @@ export function generatePanelParts(panels: PanelItem[], S: Settings): Part[] {
       shape: "rect",
       outline: [],
       grain,
-      note:
-        mat === "mdf"
-          ? `raw panel · MDF ${thk}mm · ${finish === "oak" ? "oak · banding: LWLW" : "white · no banding"}`
-          : mat === "back"
-            ? `raw panel · veneer ${thk}mm`
-            : `raw panel · plywood ${thk}mm · banding: LWLW`,
+      note: pack > 1 ? `${note} · pack ×${pack}` : note,
     });
   }
   return out;
@@ -1734,6 +1797,8 @@ export function allParts(
   ov: GrainOverrides = {},
   panels: PanelItem[] = [],
   rot: RotationOverrides = {},
+  skip: SkipNestOverrides = {},
+  size: SizeOverrides = {},
 ): Part[] {
   // panels are top-level project parts (oak MDF panel, plyboard panel, etc.) that sit
   // outside any cabinet — they flow through cut list / nesting / DXF / BOM like cabinet parts.
@@ -1742,7 +1807,20 @@ export function allParts(
   // manual cut-list 90° rotation goes BEFORE grain lock and merging, so every
   // downstream consumer (cut list merge, nesting, DXF, drilling, reports)
   // sees the rotated piece exactly as the user chose it
-  return applyGrain(applyManualRotation([...panelParts, ...rotated], rot), S, ov);
+  const out = applyGrain(applyManualRotation([...panelParts, ...rotated], rot), S, ov);
+  if (Object.keys(skip).length === 0 && Object.keys(size).length === 0) return out;
+  return out.map((p) => {
+    // canonicalId is the STABLE pre-override id — captured before the nest-only
+    // size override changes w/h, so every cut-list toggle keeps targeting this row
+    let q: Part = { ...p, canonicalId: canonicalPartId(p) };
+    const cid = partToggleId(q);
+    if (skip[cid]) q = { ...q, skipNest: true };
+    const so = size[cid];
+    if (so && Number.isFinite(so.w) && so.w > 0 && Number.isFinite(so.h) && so.h > 0) {
+      q = { ...q, w: so.w, h: so.h, sizeOverride: { w: so.w, h: so.h } };
+    }
+    return q;
+  });
 }
 export function allPartsMerged(
   cabs: Cabinet[],
@@ -1750,8 +1828,21 @@ export function allPartsMerged(
   ov: GrainOverrides = {},
   panels: PanelItem[] = [],
   rot: RotationOverrides = {},
+  skip: SkipNestOverrides = {},
+  size: SizeOverrides = {},
 ): Part[] {
-  return mergePieces(allParts(cabs, S, ov, panels, rot));
+  const merged = mergePieces(allParts(cabs, S, ov, panels, rot, skip, size));
+  if (Object.keys(skip).length === 0 && Object.keys(size).length === 0) return merged;
+  return merged.map((p) => {
+    let q: Part = p;
+    const cid = partToggleId(p);
+    if (skip[cid]) q = { ...q, skipNest: true };
+    const so = size[cid];
+    if (so && Number.isFinite(so.w) && so.w > 0 && Number.isFinite(so.h) && so.h > 0) {
+      q = { ...q, w: so.w, h: so.h, sizeOverride: { w: so.w, h: so.h } };
+    }
+    return q;
+  });
 }
 
 /* ================= drilling ================= */
@@ -1901,7 +1992,7 @@ export function validateCabinet(c: Cabinet, S: Settings): { level: "err" | "warn
         const fh = col.drawers.reduce((a, d) => a + d.frontHeight, 0);
         if (Math.abs(fh - r.h) > 20) out.push({ level: "warn", msg: `${label}: drawer fronts Σ${Math.round(fh)}mm vs row ${Math.round(r.h)}mm` });
         col.drawers.forEach((d) => {
-          if (!c.isKitchen && d.slideDepthCm * 10 > c.depth) out.push({ level: "warn", msg: `${label}: ${d.slideDepthCm * 10}mm slide deeper than cabinet (${c.depth}mm)` });
+          if (d.slideDepthCm * 10 > c.depth) out.push({ level: "warn", msg: `${label}: ${d.slideDepthCm * 10}mm slide deeper than cabinet (${c.depth}mm)` });
         });
         if (findNearestDrawerDepth(c.depth) < 25) out.push({ level: "warn", msg: `${label}: too shallow for any slide` });
       } else if (col.door && !col.fixed) {

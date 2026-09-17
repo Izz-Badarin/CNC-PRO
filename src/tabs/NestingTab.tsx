@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { CircleStop, FileSpreadsheet, Package, PackageOpen, Play, TriangleAlert } from "lucide-react";
 import type { Cabinet, PanelItem, Settings } from "../types";
 import { MATERIAL_LABEL } from "../types";
-import { allPartsMerged, type GrainOverrides, type RotationOverrides } from "../lib/model";
+import { allPartsMerged, type GrainOverrides, type RotationOverrides, type SizeOverrides, type SkipNestOverrides } from "../lib/model";
 import { partMatName, plyMaterialById } from "../lib/defaults";
 import { runNesting, partColor, placedOutline, rotPoint, type NestGroup, type NestRunProgress, type PlacedPart, type Sheet } from "../lib/nesting";
 import NestWorker from "../lib/nesting.worker?worker&inline";
@@ -17,6 +17,8 @@ export function NestingTab({
   setSettings,
   panels = [],
   rotation = {},
+  skipNest = {},
+  sizeOverride = {},
 }: {
   cabinets: Cabinet[];
   settings: Settings;
@@ -24,12 +26,14 @@ export function NestingTab({
   setSettings?: (s: Settings) => void;
   panels?: PanelItem[];
   rotation?: RotationOverrides;
+  skipNest?: SkipNestOverrides;
+  sizeOverride?: SizeOverrides;
 }) {
   // cut-list manual 90° rotations are part of the input — nesting packs the
   // rotated pieces exactly as the cut list shows them
   const parts = useMemo(
-    () => allPartsMerged(cabinets, settings, grain, panels, rotation),
-    [cabinets, settings, grain, panels, rotation],
+    () => allPartsMerged(cabinets, settings, grain, panels, rotation, skipNest, sizeOverride),
+    [cabinets, settings, grain, panels, rotation, skipNest, sizeOverride],
   );
   const partsSig = useMemo(() => parts.map((p) => `${p.name}:${p.w}x${p.h}:${p.qty}`).join("|"), [parts]);
   const [prog, setProg] = useState<NestRunProgress>({ running: false, phase: "Idle", done: 0, total: 0, groups: [] });
@@ -82,7 +86,7 @@ export function NestingTab({
             return true;
           });
     defsToExport.forEach((d) => {
-      const dxf = buildDxf(cabinets, settings, d.material, labels, grain, d.matId, panels, rotation);
+      const dxf = buildDxf(cabinets, settings, d.material, labels, grain, d.matId, panels, rotation, skipNest, sizeOverride);
       if (dxf.includes("LINE")) {
         downloadRaw(`${d.filename}${labels ? "" : "_nolabel"}.dxf`, dxf);
         n++;
@@ -195,6 +199,15 @@ export function NestingTab({
 
   return (
     <div className="card p-5 anim-rise">
+      {parts.some((p) => p.sizeOverride) && (
+        <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-200">
+          <TriangleAlert size={15} className="mt-0.5 shrink-0 text-amber-400" />
+          <span>
+            <b>Nest-only size overrides active.</b> Some parts are cut at edited sizes that <b>don't match the 3D model</b> — nesting and DXF
+            use the overridden Length/Width, while the 3D cabinet and drilling stay on the real geometry. Verify before cutting.
+          </span>
+        </div>
+      )}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="card-h"><Package size={17} className="text-amber-400" /> Nesting Optimization — Sheet Layouts</h2>
@@ -235,7 +248,7 @@ export function NestingTab({
               <Btn size="sm" onClick={() => start("none")}>Optimize only</Btn>
             </>
           )}
-          <Btn size="sm" onClick={() => download("nesting.csv", nestingCsv(cabinets, settings, panels, grain, rotation), "text/csv")}>
+          <Btn size="sm" onClick={() => download("nesting.csv", nestingCsv(cabinets, settings, panels, grain, rotation, skipNest, sizeOverride), "text/csv")}>
             <FileSpreadsheet size={14} /> Nesting CSV
           </Btn>
         </div>
@@ -303,6 +316,27 @@ export function NestingTab({
           />
           Clamping Holes
           <span className="text-[10.5px] text-ink-400">(10mm vacuum clamps in sheet free areas on DXF)</span>
+        </label>
+      )}
+
+      {/* quick-access edge-arrow (banding markers) toggle */}
+      {setSettings && (
+        <label
+          className={`ml-2 inline-flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-[12.5px] transition-colors ${
+            settings.bandMarkers !== false
+              ? "border-emerald-400/35 bg-emerald-400/[0.08] text-emerald-100"
+              : "border-white/[0.07] bg-ink-900/60 text-ink-300"
+          }`}
+          title="Edge-banding arrows: 3 small triangle arrowheads per banded edge on the BANDING layer — uncheck to export DXF without them"
+        >
+          <input
+            type="checkbox"
+            className="chk"
+            checked={settings.bandMarkers !== false}
+            onChange={(e) => setSettings({ ...settings, bandMarkers: e.target.checked })}
+          />
+          Edge Arrows
+          <span className="text-[10.5px] text-ink-400">(edge-banding triangle arrows on the DXF BANDING layer)</span>
         </label>
       )}
 

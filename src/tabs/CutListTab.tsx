@@ -1,8 +1,8 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Download, FileSpreadsheet, FileText, LayoutList, Printer, Tags, Lock, RotateCw } from "lucide-react";
 import type { Cabinet, PanelItem, Settings } from "../types";
 import { MATERIAL_LABEL } from "../types";
-import { allPartsMerged, bandLengthMm, bandStr, canonicalPartId, type GrainOverrides, type RotationOverrides } from "../lib/model";
+import { allPartsMerged, bandLengthMm, bandStr, partToggleId, type GrainOverrides, type RotationOverrides, type SizeOverrides, type SkipNestOverrides } from "../lib/model";
 import { partMatName, plyMaterialById } from "../lib/defaults";
 import { cutListCsv, cutListHtml, download, labelsHtml, openPrintWindow } from "../lib/export";
 import { partColor } from "../lib/nesting";
@@ -46,6 +46,10 @@ export function CutListTab({
   setGrain,
   panels = [],
   rotation = {},
+  skipNest = {},
+  setSkipNest,
+  sizeOverride = {},
+  setSizeOverride,
   setRotation,
 }: {
   cabinets: Cabinet[];
@@ -55,15 +59,68 @@ export function CutListTab({
   panels?: PanelItem[];
   rotation?: RotationOverrides;
   setRotation?: (fn: (r: RotationOverrides) => RotationOverrides) => void;
+  skipNest: SkipNestOverrides;
+  setSkipNest: (fn: (s: SkipNestOverrides) => SkipNestOverrides) => void;
+  sizeOverride: SizeOverrides;
+  setSizeOverride: (fn: (s: SizeOverrides) => SizeOverrides) => void;
 }) {
   // heavy recompute — let typing settle first
   const dCabinets = useDebounced(cabinets, 180);
   const dSettings = useDebounced(settings, 180);
   const dPanels = useDebounced(panels, 180);
   const parts = useMemo(
-    () => allPartsMerged(dCabinets, dSettings, grain, dPanels, rotation),
-    [dCabinets, dSettings, grain, dPanels, rotation],
+    () => allPartsMerged(dCabinets, dSettings, grain, dPanels, rotation, skipNest, sizeOverride),
+    [dCabinets, dSettings, grain, dPanels, rotation, skipNest, sizeOverride],
   );
+  const [filterCab, setFilterCab] = useState<string>("all");
+  const [filterMat, setFilterMat] = useState<string>("all");
+  const toggleSkipNest = (cid: string) =>
+    setSkipNest((s) => {
+      const n = { ...s };
+      if (n[cid]) delete n[cid];
+      else n[cid] = true;
+      return n;
+    });
+  /** nest-only size override: set one dimension of a row (Length/Width for the sheet only) */
+  const setSizeOverrideVal = (cid: string, w: number, h: number) =>
+    setSizeOverride((s) => {
+      const n = { ...s };
+      const wv = Math.round((Number.isFinite(w) && w > 0 ? w : 1) * 10) / 10;
+      const hv = Math.round((Number.isFinite(h) && h > 0 ? h : 1) * 10) / 10;
+      n[cid] = { w: wv, h: hv };
+      return n;
+    });
+  /** clear a row's nest-only size override → back to the real cabinet size */
+  const clearSizeOverride = (cid: string) =>
+    setSizeOverride((s) => {
+      const n = { ...s };
+      delete n[cid];
+      return n;
+    });
+  const filtered = useMemo(
+    () =>
+      parts.filter(
+        (p) =>
+          (filterCab === "all" || p.cabName === filterCab) &&
+          (filterMat === "all" || p.material + "@" + p.thickness + "@" + (p.matId ?? "def") === filterMat),
+      ),
+    [parts, filterCab, filterMat],
+  );
+  const cabOptions = [...new Set(parts.map((p) => p.cabName))].sort();
+  const matOptions = (() => {
+    const seen = new Map<string, string>();
+    filtered.forEach((p) => {
+      const key = p.material + "@" + p.thickness + "@" + (p.matId ?? "def");
+      if (seen.has(key)) return;
+      let label: string;
+      if (p.material === "back" || p.material === "plywood") {
+        const m = plyMaterialById(settings, p.matId ?? null);
+        label = p.material === "back" ? partMatName(settings, { material: "back", matId: p.matId ?? null }) : m ? m.name : "Plywood";
+      } else label = MATERIAL_LABEL[p.material];
+      seen.set(key, label + " - " + p.thickness + "mm");
+    });
+    return [...seen.entries()].map(([k, v]) => ({ value: k, label: v })).sort((a, b) => a.label.localeCompare(b.label));
+  })();
   const toggleRotate = (cid: string) =>
     setRotation?.((r) => {
       const n = { ...r };
@@ -74,14 +131,14 @@ export function CutListTab({
 
   const byMat = useMemo(() => {
     const m = new Map<string, typeof parts>();
-    parts.forEach((p) => {
+    filtered.forEach((p) => {
       // plywood material id splits same-thickness plywood into separate groups
       const key = `${p.material}@${p.thickness}@${p.matId ?? "def"}`;
       if (!m.has(key)) m.set(key, []);
       m.get(key)!.push(p);
     });
     return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [parts]);
+  }, [filtered]);
 
   if (cabinets.length === 0 && panels.length === 0) {
     return (
@@ -91,16 +148,19 @@ export function CutListTab({
     );
   }
 
-  const totalParts = parts.reduce((a, p) => a + p.qty, 0);
-  const totalArea = parts.reduce((a, p) => a + (p.w * p.h * p.qty) / 1e6, 0);
-  const totalHoles = parts.reduce((a, p) => a + p.holes.length * p.qty, 0);
+  const totalParts = filtered.reduce((a, p) => a + p.qty, 0);
+  const totalArea = filtered.reduce((a, p) => a + (p.w * p.h * p.qty) / 1e6, 0);
+  const totalHoles = filtered.reduce((a, p) => a + p.holes.length * p.qty, 0);
   const bandM =
-    parts.reduce(
+    filtered.reduce(
       (a, p) => a + ((p.band.top ? p.w : 0) + (p.band.bottom ? p.w : 0) + (p.band.left ? p.h : 0) + (p.band.right ? p.h : 0)) * p.qty,
       0,
     ) / 1000;
-  const lockedCount = parts.filter((p) => p.grain).length;
-  const rotatedCount = parts.filter((p) => p.note.includes("manual 90°")).length;
+  const lockedCount = filtered.filter((p) => p.grain).length;
+  const rotatedCount = filtered.filter((p) => p.note.includes("manual 90°")).length;
+  const excludedInView = filtered.filter((p) => p.skipNest).length;
+  const overriddenCount = parts.filter((p) => p.sizeOverride).length;
+  const overriddenInView = filtered.filter((p) => p.sizeOverride).length;
 
   return (
     <div className="card p-5 anim-rise">
@@ -115,16 +175,16 @@ export function CutListTab({
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <Btn size="sm" onClick={() => download("cut-list.csv", cutListCsv(cabinets, settings, grain, panels, rotation), "text/csv")}>
+          <Btn size="sm" onClick={() => download("cut-list.csv", cutListCsv(cabinets, settings, grain, panels, rotation, sizeOverride), "text/csv")}>
             <FileSpreadsheet size={14} /> {t(lang, "csv")}
           </Btn>
-          <Btn size="sm" variant="ok" onClick={() => openPrintWindow(cutListHtml(cabinets, settings, grain, panels, rotation))}>
+          <Btn size="sm" variant="ok" onClick={() => openPrintWindow(cutListHtml(cabinets, settings, grain, panels, rotation, sizeOverride))}>
             <FileText size={14} /> {t(lang, "print")}
           </Btn>
-          <Btn size="sm" variant="warn" onClick={() => openPrintWindow(cutListHtml(cabinets, settings, grain, panels, rotation))}>
+          <Btn size="sm" variant="warn" onClick={() => openPrintWindow(cutListHtml(cabinets, settings, grain, panels, rotation, sizeOverride))}>
             <Printer size={14} /> {t(lang, "pdf")}
           </Btn>
-          <Btn size="sm" onClick={() => openPrintWindow(labelsHtml(cabinets, settings, grain, panels, rotation))}>
+          <Btn size="sm" onClick={() => openPrintWindow(labelsHtml(cabinets, settings, grain, panels, rotation, sizeOverride))}>
             <Tags size={14} /> {t(lang, "labels")}
           </Btn>
         </div>
@@ -140,19 +200,75 @@ export function CutListTab({
         <Stat label="Rotated 90°" value={String(rotatedCount)} unit={rotatedCount === 1 ? "piece" : "pieces"} tone="#67e8f9" />
       </div>
 
+      <div className="mt-3 flex gap-2 flex-wrap items-center">
+        <span className="text-[11px] text-ink-400">Filter:</span>
+        <select
+          className="rounded-md border border-white/[0.08] bg-ink-900/80 px-2 py-1 text-[12px] text-ink-100"
+          value={filterCab}
+          onChange={(e) => setFilterCab(e.target.value)}
+          title="Only show this cabinet's parts (across all materials)"
+        >
+          <option value="all">All cabinets</option>
+          {cabOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+        <select
+          className="rounded-md border border-white/[0.08] bg-ink-900/80 px-2 py-1 text-[12px] text-ink-100"
+          value={filterMat}
+          onChange={(e) => setFilterMat(e.target.value)}
+          title="Only show this material's parts (across all cabinets)"
+        >
+          <option value="all">All materials</option>
+          {matOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        {excludedInView > 0 && <Chip tone="amber">Excluded from nesting: {excludedInView}</Chip>}
+        {overriddenInView > 0 && (
+          <span title="These parts are cut at edited sizes that don't match the 3D model — nesting/DXF show the override, drilling stays on the real geometry">
+            <Chip tone="amber">Nest-only size override: {overriddenInView} part{overriddenInView === 1 ? "" : "s"}</Chip>
+          </span>
+        )}
+      </div>
+
       <div className="mt-3 flex gap-2 flex-wrap">
-        <Btn size="sm" onClick={() => setGrain(() => Object.fromEntries(parts.map((p) => [canonicalPartId(p), true])))}>
+        <Btn size="sm" onClick={() => setGrain(() => Object.fromEntries(parts.map((p) => [partToggleId(p), true])))}>
           <Lock size={13} /> Lock all
         </Btn>
-        <Btn size="sm" onClick={() => setGrain(() => Object.fromEntries(parts.map((p) => [canonicalPartId(p), false])))}>
+        <Btn size="sm" onClick={() => setGrain(() => Object.fromEntries(parts.map((p) => [partToggleId(p), false])))}>
           Unlock all
         </Btn>
+        {filtered.some((p) => p.skipNest) && (
+          <Btn
+            size="sm"
+            variant="ghost"
+            onClick={() =>
+              setSkipNest((s) => {
+                const n = { ...s };
+                filtered.forEach((p) => {
+                  n[partToggleId(p)] = false;
+                });
+                return n;
+              })
+            }
+            title="Include all parts currently shown (across the active filters)"
+          >
+            <Lock size={13} /> Include {filtered.filter((p) => p.skipNest).length} excluded
+          </Btn>
+        )}
         <Btn size="sm" variant="ghost" onClick={() => setGrain(() => ({}))}>
           Follow system ({settings.grainLock ? "locked" : "free"})
         </Btn>
         {rotatedCount > 0 && (
           <Btn size="sm" variant="ghost" onClick={() => setRotation?.(() => ({}))} title="Clear every manual 90° rotation">
             <RotateCw size={13} /> Reset rotations ({rotatedCount})
+          </Btn>
+        )}
+        {overriddenCount > 0 && (
+          <Btn
+            size="sm"
+            variant="ghost"
+            onClick={() => setSizeOverride(() => ({}))}
+            title="Restore every part to its real cabinet size (clears all nest-only size overrides)"
+          >
+            ↺ Reset size overrides ({overriddenCount})
           </Btn>
         )}
       </div>
@@ -171,7 +287,7 @@ export function CutListTab({
         const setGroupGrain = (v: boolean) =>
           setGrain((g) => {
             const ng = { ...g };
-            list.forEach((p) => (ng[canonicalPartId(p)] = v));
+            list.forEach((p) => (ng[partToggleId(p)] = v));
             return ng;
           });
         return (
@@ -189,7 +305,7 @@ export function CutListTab({
                 title="Rotate every piece of this group 90° (toggles off when all are already rotated)"
                 onClick={() =>
                   setRotation?.((r) => {
-                    const ids = list.map(canonicalPartId);
+                    const ids = list.map(partToggleId);
                     const allOn = ids.every((id) => r[id]);
                     const n = { ...r };
                     ids.forEach((id) => {
@@ -207,6 +323,7 @@ export function CutListTab({
               <table className="tbl w-full min-w-[860px]">
                 <thead className="bg-ink-900/80">
                   <tr>
+                    <th className="!text-center" title="Included in nesting — uncheck to exclude this part from sheet nesting + DXF (it stays in the cut list & BOM)">In nesting</th>
                     <th>#</th>
                     <th>{t(lang, "cabinets")}</th>
                     <th>{t(lang, "part")}</th>
@@ -224,8 +341,8 @@ export function CutListTab({
                         onChange={(e) => setGroupGrain(e.target.checked)}
                       />
                     </th>
-                    <th className="!text-right">{t(lang, "length")}</th>
-                    <th className="!text-right">{t(lang, "width")}</th>
+                    <th className="!text-right" title="Nest-only Length (mm) — editable for the sheet; the 3D model is unchanged">{t(lang, "length")}</th>
+                    <th className="!text-right" title="Nest-only Width (mm) — editable for the sheet; the 3D model is unchanged">{t(lang, "width")}</th>
                     <th className="!text-right">{t(lang, "qty")}</th>
                     <th>{t(lang, "banding")}</th>
                     <th className="!text-right" title="Total banded-edge length for this row (incl. qty) — edge-banding tape to buy">{t(lang, "bend")}</th>
@@ -235,10 +352,19 @@ export function CutListTab({
                 </thead>
                 <tbody className="bg-ink-850/60">
                   {list.map((p, i) => {
-                    const id = canonicalPartId(p);
+                    const id = partToggleId(p);
                     const rotated = !!rotation[id];
                     return (
-                      <tr key={id + i} className={rotated ? "bg-cyan-400/[0.06]" : undefined}>
+                      <tr key={id + i} className={p.skipNest ? "opacity-60" : rotated ? "bg-cyan-400/[0.06]" : undefined}>
+                        <td className="!text-center">
+                          <input
+                            type="checkbox"
+                            className="chk"
+                            checked={!p.skipNest}
+                            title={p.skipNest ? "Excluded from nesting — tick to include it again" : "Included in sheet nesting — untick to exclude it"}
+                            onChange={() => toggleSkipNest(id)}
+                          />
+                        </td>
                         <td className="text-ink-500">{i + 1}</td>
                         <td className="text-ink-300">{p.cabName}</td>
                         <td>
@@ -249,6 +375,15 @@ export function CutListTab({
                               <span className="rounded border border-cyan-400/40 px-1 text-[10px] text-cyan-300" title="Manually rotated 90° — reflected in nesting, DXF, drilling and BOM">
                                 ⟳ 90°
                               </span>
+                            )}
+                            {p.sizeOverride && (
+                              <button
+                                className="rounded border border-amber-400/50 bg-amber-400/10 px-1 text-[10px] text-amber-300 hover:bg-amber-400/20"
+                                title="Nest-only size override — cut at this edited size (doesn't match the 3D model). Click to restore the real cabinet size."
+                                onClick={() => clearSizeOverride(id)}
+                              >
+                                OVR ↺
+                              </button>
                             )}
                           </span>
                         </td>
@@ -274,8 +409,40 @@ export function CutListTab({
                             onChange={(e) => setGrain((g) => ({ ...g, [id]: e.target.checked }))}
                           />
                         </td>
-                        <td className="!text-right font-mono">{p.w}</td>
-                        <td className="!text-right font-mono">{p.h}</td>
+                        <td className="!text-right font-mono">
+                          {p.shape === "rect" ? (
+                            <input
+                              type="number"
+                              className={`w-[74px] rounded-md border px-1 py-0.5 text-right font-mono text-[12px] text-ink-100 focus:outline-none ${
+                                p.sizeOverride ? "border-amber-400/50 bg-amber-400/5 text-amber-200" : "border-white/10 bg-ink-900/80 focus:border-amber-400/60"
+                              }`}
+                              value={p.w}
+                              min={1}
+                              step={1}
+                              title="Nest-only Length (mm) — used for sheet nesting + DXF only, NOT the 3D model"
+                              onChange={(e) => setSizeOverrideVal(id, +e.target.value, p.h)}
+                            />
+                          ) : (
+                            p.w
+                          )}
+                        </td>
+                        <td className="!text-right font-mono">
+                          {p.shape === "rect" ? (
+                            <input
+                              type="number"
+                              className={`w-[74px] rounded-md border px-1 py-0.5 text-right font-mono text-[12px] text-ink-100 focus:outline-none ${
+                                p.sizeOverride ? "border-amber-400/50 bg-amber-400/5 text-amber-200" : "border-white/10 bg-ink-900/80 focus:border-amber-400/60"
+                              }`}
+                              value={p.h}
+                              min={1}
+                              step={1}
+                              title="Nest-only Width (mm) — used for sheet nesting + DXF only, NOT the 3D model"
+                              onChange={(e) => setSizeOverrideVal(id, p.w, +e.target.value)}
+                            />
+                          ) : (
+                            p.h
+                          )}
+                        </td>
                         <td className="!text-right font-mono text-amber-300">{p.qty}</td>
                         <td className="font-mono text-[11px] text-ink-300">{bandStr(p.band)}</td>
                         <td className="!text-right font-mono">{bandLengthMm(p) > 0 ? ((bandLengthMm(p) * p.qty) / 1000).toFixed(2) : "—"}</td>
